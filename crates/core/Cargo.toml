@@ -1,0 +1,17 @@
+[package]
+name = "ra-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# 仅用于文档测试与单元测试中校验 RiboError 的序列化输出形状。
+serde_json.workspace = true
