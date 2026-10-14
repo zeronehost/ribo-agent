@@ -1,0 +1,12 @@
+[package]
+name = "git-hook"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[build-dependencies]
+monk = "0.3.4"
