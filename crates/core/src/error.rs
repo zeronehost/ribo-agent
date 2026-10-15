@@ -151,7 +151,8 @@ pub struct RiboError {
   message: String,
   /// 补充排查信息的键值对集合；缺省为 `None`，且缺省时不出现在序列化结果中。
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  context: Option<HashMap<String, String>>,
+  #[allow(clippy::box_collection)]
+  context: Option<Box<HashMap<String, String>>>,
   /// 触发本错误的上游错误；trait object 无法序列化，因此恒被 serde 跳过。
   #[serde(skip)]
   source: Option<Arc<dyn core::error::Error + Send + Sync>>,
@@ -224,7 +225,7 @@ impl RiboError {
   ) -> Self {
     // ===== 惰性初始化 =====
     // 仅在首次写入时分配 HashMap，避免无上下文的错误承担空 map 的开销。
-    let context = self.context.get_or_insert_with(HashMap::new);
+    let context = self.context.get_or_insert_with(|| Box::new(HashMap::new()));
     // ===== 覆盖写入 =====
     // 同键以新值覆盖，语义与 HashMap::insert 一致。
     context.insert(k.into(), v.into());
@@ -357,7 +358,7 @@ impl RiboError {
   /// assert_eq!(rich.context().map(HashMap::len), Some(1));
   /// ```
   pub fn context(&self) -> Option<&HashMap<String, String>> {
-    self.context.as_ref()
+    self.context.as_deref()
   }
 
   /// 返回上游错误；未挂接任何上游错误时为 `None`。

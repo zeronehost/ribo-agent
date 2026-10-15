@@ -40,16 +40,18 @@ license = "MulanPSL-2.0"
 # dashmap = "6.2"
 # rand = "0.10.2"
 
-# async-trait = "0.1"
-# futures = "0.3"
-# reqwest = "0.13.5"
+async-trait = "0.1"
+futures = "0.3"
+reqwest = "0.13.5"
 thiserror = "2"
-# tokio = { version = "1", features = ["full"] }
-# tokio-util = "0.7"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 tracing = "0.1"
+tracing-subscriber = "0.3"
 # uuid = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # jsonschema = "0.57.0"
 # 
 ra-core = { path = "./crates/core" }
+ra-provider = { path = "./crates/provider" }
