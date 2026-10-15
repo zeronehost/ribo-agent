@@ -65,7 +65,7 @@
 //! # Examples
 //!
 //! ```
-//! use ra_core::{RiboError, Severity};
+//! use ra_core::error::{RiboError, Severity};
 //!
 //! let err = RiboError::new("provider", "upstream_unavailable", "server is down")
 //!   .with_severity(Severity::Critical)
@@ -102,7 +102,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 /// 序列化形状与注意事项见模块文档的「序列化契约」一节，下面的示例对关键字段做可执行校验：
 ///
 /// ```
-/// use ra_core::{RiboError, Severity};
+/// use ra_core::error::{RiboError, Severity};
 ///
 /// let err = RiboError::new("provider", "request_failed", "server is down")
 ///   .with_severity(Severity::Critical)
@@ -122,14 +122,14 @@ use std::{collections::HashMap, fmt, sync::Arc};
 /// # Examples
 ///
 /// ```
-/// use ra_core::RiboError;
+/// use ra_core::error::RiboError;
 ///
 /// let err = RiboError::new("config", "parse_failed", "invalid port");
 /// assert_eq!(err.domain(), "config");
 /// assert_eq!(err.code(), "parse_failed");
 /// assert_eq!(err.message(), "invalid port");
 /// // 未显式设置时严重程度取默认值 Error
-/// assert_eq!(err.severity(), &ra_core::Severity::Error);
+/// assert_eq!(err.severity(), &ra_core::error::Severity::Error);
 /// ```
 // 各派生宏的职责：
 // - Debug：面向开发者的调试输出。
@@ -171,11 +171,11 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let err = RiboError::new("provider", "timeout", "request timed out");
   /// assert_eq!(err.to_string(), "[provider] timeout: request timed out");
-  /// assert_eq!(err.severity(), &ra_core::Severity::Error);
+  /// assert_eq!(err.severity(), &ra_core::error::Severity::Error);
   /// ```
   pub fn new(
     domain: &'static str,
@@ -209,7 +209,7 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let err = RiboError::new("io", "read_failed", "cannot read file")
   ///   .with_context("path", "/tmp/a.txt");
@@ -240,7 +240,7 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::{RiboError, Severity};
+  /// use ra_core::error::{RiboError, Severity};
   ///
   /// let err = RiboError::new("tool", "exec_failed", "command exited")
   ///   .with_severity(Severity::Fatal);
@@ -263,7 +263,7 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let cause = std::io::Error::new(std::io::ErrorKind::NotFound, "missing file");
   /// let err = RiboError::new("config", "load_failed", "cannot load config")
@@ -287,7 +287,7 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let err = RiboError::new("provider", "timeout", "request timed out");
   /// assert_eq!(err.domain(), "provider");
@@ -301,7 +301,7 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let err = RiboError::new("provider", "timeout", "request timed out");
   /// assert_eq!(err.code(), "timeout");
@@ -317,7 +317,7 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let err = RiboError::new("provider", "timeout", "request timed out");
   /// assert_eq!(err.message(), "request timed out");
@@ -332,10 +332,10 @@ impl RiboError {
   /// # Examples
   ///
   /// ```
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let err = RiboError::new("provider", "timeout", "request timed out");
-  /// assert_eq!(err.severity(), &ra_core::Severity::Error);
+  /// assert_eq!(err.severity(), &ra_core::error::Severity::Error);
   /// ```
   pub fn severity(&self) -> &Severity {
     &self.severity
@@ -348,7 +348,7 @@ impl RiboError {
   /// ```
   /// use std::collections::HashMap;
   ///
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let bare = RiboError::new("io", "read_failed", "cannot read file");
   /// assert!(bare.context().is_none());
@@ -371,7 +371,7 @@ impl RiboError {
   /// ```
   /// use std::error::Error;
   ///
-  /// use ra_core::RiboError;
+  /// use ra_core::error::RiboError;
   ///
   /// let bare = RiboError::new("config", "load_failed", "cannot load config");
   /// assert!(bare.source().is_none());
@@ -411,7 +411,7 @@ impl RiboError {
 /// # Examples
 ///
 /// ```
-/// use ra_core::Severity;
+/// use ra_core::error::Severity;
 ///
 /// assert!(Severity::Warning < Severity::Fatal);
 /// assert_eq!(Severity::default(), Severity::Error);
@@ -454,7 +454,7 @@ pub enum Severity {
 /// # Examples
 ///
 /// ```
-/// use ra_core::Severity;
+/// use ra_core::error::Severity;
 ///
 /// assert_eq!(Severity::Fatal.to_string(), "fatal");
 /// ```
@@ -476,7 +476,7 @@ impl fmt::Display for Severity {
 /// # Examples
 ///
 /// ```
-/// use ra_core::{RiboError, RiboResult};
+/// use ra_core::error::{RiboError, RiboResult};
 ///
 /// fn parse_port(input: &str) -> RiboResult<u16> {
 ///   input.parse().map_err(|_| {

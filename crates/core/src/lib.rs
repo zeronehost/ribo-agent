@@ -1,13 +1,19 @@
 //! `ra-core`：整个工作空间共享的核心 crate。
 //!
-//! 目前承载统一的错误处理设施，并按使用频率在 crate 根扁平再导出，
-//! 这样上层 crate（例如未来的 `ra-provider`）可以直接 `use ra_core::RiboError`，
-//! 无需关心内部模块划分；`error` 模块的原始路径同时保留可用。
+//! 目前承载两类基础设施：
+//!
+//! - 统一错误处理：[`error::RiboError`]、[`error::RiboResult`] 与
+//!   [`error::Severity`]；
+//! - 消息模型：[`message`] 模块定义与模型提供方交互的对话消息结构（用户消息、助手消息、
+//!   工具结果、内容块与用量统计）。
+//!
+//! 各模块的原始路径为稳定公开路径，上层 crate（例如未来的 `ra-provider`）
+//! 直接从对应模块引入即可，例如 `use ra_core::error::RiboError`。
 //!
 //! # Examples
 //!
 //! ```
-//! use ra_core::{RiboError, RiboResult, Severity};
+//! use ra_core::error::{RiboError, RiboResult, Severity};
 //!
 //! fn run() -> RiboResult<()> {
 //!   Err(RiboError::new("demo", "not_ready", "feature not ready")
@@ -18,5 +24,5 @@
 //! ```
 
 pub mod error;
-
-pub use error::{RiboError, RiboResult, Severity};
+pub mod message;
+mod utils;
