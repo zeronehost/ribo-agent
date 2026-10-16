@@ -89,6 +89,44 @@ impl StreamOptionsPatch {
   /// 只处理外层为 `Some` 的字段（patch 未涉及的字段保持不变）；
   /// 标量字段整体替换，两个 map 字段按键做插入/删除合并，
   /// 合并后为空的 map 会收敛回 `None`，避免发送无意义的空对象。
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use std::collections::BTreeMap;
+  /// use std::time::Duration;
+  ///
+  /// use ra_provider::options::{StreamOptions, StreamOptionsPatch};
+  /// use tokio_util::sync::CancellationToken;
+  ///
+  /// let mut base = StreamOptions {
+  ///   api_key: None,
+  ///   timeout: Some(Duration::from_secs(30)),
+  ///   max_retries: Some(3),
+  ///   max_retry_delay: None,
+  ///   headers: None,
+  ///   metadata: None,
+  ///   cache_retention: Default::default(),
+  ///   session_id: None,
+  ///   signal: CancellationToken::new(),
+  ///   reasoning: None,
+  ///   max_tokens: None,
+  ///   temperature: None,
+  ///   thinking_budgets: None,
+  /// };
+  /// base.max_retries = Some(3);
+  /// base.timeout = Some(Duration::from_secs(30));
+  ///
+  /// // 把 max_retries 清空、timeout 覆盖为 10 秒
+  /// let patch = StreamOptionsPatch {
+  ///   max_retries: Some(None),
+  ///   timeout: Some(Some(Duration::from_secs(10))),
+  ///   ..Default::default()
+  /// };
+  /// patch.apply(&mut base);
+  /// assert_eq!(base.max_retries, None);
+  /// assert_eq!(base.timeout, Some(Duration::from_secs(10)));
+  /// ```
   pub fn apply(&self, options: &mut StreamOptions) {
     // ===== 标量字段：整体替换 =====
     if let Some(v) = self.timeout {

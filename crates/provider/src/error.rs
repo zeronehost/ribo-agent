@@ -28,6 +28,19 @@ impl ProviderError {
   /// # 参数
   ///
   /// - `source`：底层接收错误，需满足 `Error + Send + Sync + 'static`。
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use ra_provider::error::ProviderError;
+  /// use tokio::sync::oneshot;
+  ///
+  /// async fn demo() {
+  ///   let (_, rx) = oneshot::channel::<()>();
+  ///   let err = rx.await.err().map(ProviderError::recv_error).unwrap();
+  ///   assert_eq!(err.code(), "recv_error");
+  /// }
+  /// ```
   pub fn recv_error<S>(source: S) -> RiboError
   where
     S: core::error::Error + Send + Sync + 'static,

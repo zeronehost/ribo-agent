@@ -38,10 +38,10 @@ Clippy 使用 `-D warnings` 运行，所有警告都被视为编译错误。推�
 
 ```bash
 # 测试单个 crate
-cargo test -p ribo-provider
+cargo test -p ra-provider
 
 # 文档测试
-cargo test -p ribo-provider --doc
+cargo test -p ra-provider --doc
 ```
 
 - 需要外部服务的测试应标记为 `#[ignore]`。

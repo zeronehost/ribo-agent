@@ -42,6 +42,7 @@ pub struct ThinkingContent {
   /// 思考过程的文本内容。
   pub content: String,
   /// 提供方签发的思考内容签名；无签名能力的提供方为 `None`。
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub signature: Option<String>,
   /// 该思考块是否因安全策略被编辑/脱敏；为 `false` 时不参与序列化。
   #[serde(default, skip_serializing_if = "crate::utils::serde_fn::is_false")]
@@ -56,6 +57,7 @@ pub struct TextContent {
   /// 文本正文。
   pub content: String,
   /// 可选的输出签名。
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub signature: Option<String>,
 }
 

@@ -133,7 +133,8 @@ use std::{collections::HashMap, fmt, sync::Arc};
 /// ```
 // 各派生宏的职责：
 // - Debug：面向开发者的调试输出。
-// - Clone：依赖 source 字段的 Arc 共享，见上方「克隆语义」。
+// - Clone：message 与 context（Box<HashMap>）深拷贝，source（Arc）引用计数共享，
+//   克隆体之间互不影响，设计取舍见上方「克隆语义」。
 // - thiserror::Error：生成 Display（格式为 `[domain] code: message`）与 Error::source()。
 // - Serialize/Deserialize：支撑跨进程传输，形状见模块文档。
 #[derive(
@@ -150,6 +151,11 @@ pub struct RiboError {
   /// 面向人类的错误描述，允许是运行时构造的动态文本。
   message: String,
   /// 补充排查信息的键值对集合；缺省为 `None`，且缺省时不出现在序列化结果中。
+  ///
+  /// 采用 `Box<HashMap>` 的原因：HashMap 自身有 24 字节的堆分配结构，
+  /// 绝大多数 RiboError 实例没有 context（`None`），内联 HashMap 会让整个结构体
+  /// 膨胀到 128+ 字节，触发 `result_large_err` lint。用 Box 把 HashMap 挪到堆上，
+  /// `None` 时只占 8 字节指针，零 context 的错误体积保持在合理范围。
   #[serde(default, skip_serializing_if = "Option::is_none")]
   #[allow(clippy::box_collection)]
   context: Option<Box<HashMap<String, String>>>,

@@ -116,6 +116,25 @@ impl ProviderEvent {
   ///
   /// 仅 [`Done`](Self::Done) 与 [`Error`](Self::Error) 返回 `true`；
   /// 事件流以此判定何时停止拉取并兑现最终结果。
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use std::sync::Arc;
+  ///
+  /// use ra_core::message::{AssistantMessage, StopReason};
+  /// use ra_provider::stream::ProviderEvent;
+  ///
+  /// let start = ProviderEvent::Start {
+  ///   partial: Arc::new(AssistantMessage::empty("demo", "gpt", 0)),
+  /// };
+  /// let done = ProviderEvent::Done {
+  ///   reason: StopReason::Stop,
+  ///   message: AssistantMessage::empty("demo", "gpt", 0),
+  /// };
+  /// assert!(!start.is_terminal());
+  /// assert!(done.is_terminal());
+  /// ```
   pub fn is_terminal(&self) -> bool {
     matches!(self, Self::Done { .. } | Self::Error { .. })
   }

@@ -12,11 +12,13 @@
 //!
 //! 当前模块均为私有，属于开发中的脚手架；对外 API 稳定后再按需提升可见性。
 
-mod context;
+pub mod context;
 pub mod error;
-mod model;
-mod options;
-mod provider;
-mod stream;
+pub mod model;
+pub mod options;
+pub mod provider;
+pub mod stream;
 
-pub use self::{context::*, model::*, options::*, provider::*, stream::*};
+pub mod prelude {
+  pub use super::{context::*, model::*, options::*, provider::*, stream::*};
+}

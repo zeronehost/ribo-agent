@@ -19,7 +19,7 @@ pub struct ToolCall {
   pub arguments: serde_json::Value,
   /// 部分提供方对工具调用签发的校验签名；无签名机制时为 `None`，
   /// 为 `None` 时不参与序列化。
-  #[serde(skip_serializing_if = "Option::is_none")]
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub signature: Option<String>,
   /// 工具所属命名空间（部分提供方用于区分内置工具与第三方工具）；
   /// 为 `None` 时不参与序列化。
@@ -47,7 +47,7 @@ pub struct ToolResultMessage {
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub content: Vec<Content>,
   /// 供调试或提供方专用的附加结构化细节；为 `None` 时不参与序列化。
-  #[serde(skip_serializing_if = "Option::is_none")]
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub details: Option<serde_json::Value>,
   /// 本次工具执行额外消耗的 token 用量（工具自身又触发了模型调用时才有）；
   /// 为 `None` 时不参与序列化。

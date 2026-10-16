@@ -22,7 +22,7 @@
 //! 典型的生产/消费配合方式（`stream` 模块尚未在 crate 根导出，
 //! 模块公开后该示例即可编译运行）：
 //!
-//! ```ignore
+//! ```
 //! # #[tokio::main]
 //! # async fn main() {
 //! use std::sync::Arc;
@@ -83,6 +83,18 @@ impl ProviderEventStream {
   ///   同时内部标记结束，此后再次调用恒为 `None`。
   ///
   /// 终结事件中的完整消息请随后通过 [`result`](Self::result) 获取。
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # async fn demo(mut stream: ra_provider::stream::ProviderEventStream) {
+  /// while let Some(event) = stream.next().await {
+  ///   if event.is_terminal() {
+  ///     break;
+  ///   }
+  /// }
+  /// # }
+  /// ```
   pub async fn next(&mut self) -> Option<ProviderEvent> {
     // 终结后短路，避免再次 await 已无需读取的通道。
     if self.done {
@@ -99,6 +111,14 @@ impl ProviderEventStream {
   ///
   /// 生产端推送 Done/Error 时通过 oneshot 兑现该消息；
   /// 若生产端在未推送终结事件的情况下被丢弃，返回 `recv_error` 错误。
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # async fn demo(stream: ra_provider::stream::ProviderEventStream) {
+  /// let message = stream.result().await.expect("producer dropped before terminal event");
+  /// # }
+  /// ```
   pub async fn result(self) -> RiboResult<AssistantMessage> {
     self.result_rx.await.map_err(ProviderError::recv_error)
   }
@@ -111,6 +131,18 @@ impl ProviderEventStream {
   /// # 返回
   ///
   /// 返回二元组：事件流 mpsc 接收端，以及最终消息的 oneshot 接收端。
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # async fn demo(stream: ra_provider::stream::ProviderEventStream) {
+  /// let (mut event_rx, result_rx) = stream.split();
+  /// while let Some(event) = event_rx.recv().await {
+  ///   println!("{event:?}");
+  /// }
+  /// let message = result_rx.await.unwrap();
+  /// # }
+  /// ```
   pub fn split(
     self,
   ) -> (
@@ -151,6 +183,21 @@ impl ProviderEventStreamProducer {
   ///
   /// 返回 `false` 表示事件通道已无接收端；其余情况返回 `true`
   ///（含终结后事件被丢弃的情况）。
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # use std::sync::Arc;
+  /// # use ra_core::message::{AssistantMessage, StopReason};
+  /// # fn demo(mut producer: ra_provider::stream::ProviderEventStreamProducer) {
+  /// let partial = Arc::new(AssistantMessage::empty("demo", "gpt", 0));
+  /// producer.push(ra_provider::stream::ProviderEvent::Start { partial });
+  /// producer.push(ra_provider::stream::ProviderEvent::Done {
+  ///   reason: StopReason::Stop,
+  ///   message: AssistantMessage::empty("demo", "gpt", 0),
+  /// });
+  /// # }
+  /// ```
   pub fn push(&mut self, event: ProviderEvent) -> bool {
     if self.done {
       return true;
@@ -182,6 +229,21 @@ impl ProviderEventStreamProducer {
   }
 
   /// 返回流是否已经终结（已推送过 Done/Error 事件）。
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # use std::sync::Arc;
+  /// # use ra_core::message::{AssistantMessage, StopReason};
+  /// # fn demo(mut producer: ra_provider::stream::ProviderEventStreamProducer) {
+  /// assert!(!producer.is_done());
+  /// producer.push(ra_provider::stream::ProviderEvent::Done {
+  ///   reason: StopReason::Stop,
+  ///   message: AssistantMessage::empty("demo", "gpt", 0),
+  /// });
+  /// assert!(producer.is_done());
+  /// # }
+  /// ```
   pub fn is_done(&self) -> bool {
     self.done
   }
@@ -190,6 +252,14 @@ impl ProviderEventStreamProducer {
   ///
   /// 语义等同于直接丢弃当前实例：事件通道随之关闭，
   /// 消费端拉完缓冲事件后得到 `None`。
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # fn demo(producer: ra_provider::stream::ProviderEventStreamProducer) {
+  /// producer.close();
+  /// # }
+  /// ```
   pub fn close(self) {
     drop(self);
   }
@@ -201,11 +271,10 @@ impl ProviderEventStreamProducer {
   ///
   /// # Examples
   ///
-  /// ```ignore
-  /// // stream 模块尚未在 crate 根导出，模块公开后可编译运行
-  /// let (producer, stream) = ProviderEventStreamProducer::build();
-  /// # drop(producer);
-  /// # drop(stream);
+  /// ```no_run
+  /// let (producer, stream) = ra_provider::stream::ProviderEventStreamProducer::build();
+  /// # let _ = producer;
+  /// # let _ = stream;
   /// ```
   pub fn build() -> (Self, ProviderEventStream) {
     let (tx, rx) = mpsc::unbounded_channel::<ProviderEvent>();

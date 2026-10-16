@@ -169,14 +169,14 @@ pub struct ModelCost {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCostRates {
-  // 每个输入 token 的单价。
-  input_token: f64,
-  // 每个输出 token 的单价。
-  output_token: f64,
-  // 每个缓存读取 token 的单价。
-  cache_read: f64,
-  // 每个缓存写入 token 的单价。
-  cache_write: f64,
+  /// 每个输入 token 的单价。
+  pub input_token: f64,
+  /// 每个输出 token 的单价。
+  pub output_token: f64,
+  /// 每个缓存读取 token 的单价。
+  pub cache_read: f64,
+  /// 每个缓存写入 token 的单价。
+  pub cache_write: f64,
 }
 
 /// 一档阶梯费率：当输入 token 用量达到 [`input_token_above`](Self::input_token_above)

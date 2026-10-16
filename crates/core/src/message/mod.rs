@@ -57,7 +57,7 @@ pub use self::{assistant::*, content::*, tool::*, usage::*, user::*};
 ///     Message::Assistant(_)
 /// ));
 /// ```
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum Message {
   /// 用户发出的消息。
@@ -66,40 +66,6 @@ pub enum Message {
   Assistant(AssistantMessage),
   /// 工具执行结果回灌消息。
   ToolResult(ToolResultMessage),
-}
-
-/// 手动实现反序列化：先取出 `role` 标签判定目标变体，再把整个 JSON 对象
-/// 交给对应具体消息类型反序列化；未知角色直接报错，避免静默丢数据。
-impl<'de> serde::Deserialize<'de> for Message {
-  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-  where
-    D: serde::Deserializer<'de>,
-  {
-    // ===== 取值阶段 =====
-    // 先反序列化为通用 JSON 值，才能 peek 其中的 role 字段而不消耗输入。
-    let value = serde_json::Value::deserialize(deserializer)?;
-    let role = value
-      .get("role")
-      .and_then(serde_json::Value::as_str)
-      .ok_or_else(|| serde::de::Error::missing_field("role"))?;
-    // ===== 分发阶段 =====
-    // 按角色选择具体变体；错误信息原样转交，便于定位具体字段问题。
-    match role {
-      "user" => serde_json::from_value(value)
-        .map(Message::User)
-        .map_err(serde::de::Error::custom),
-      "assistant" => serde_json::from_value(value)
-        .map(Message::Assistant)
-        .map_err(serde::de::Error::custom),
-      "toolResult" => serde_json::from_value(value)
-        .map(Message::ToolResult)
-        .map_err(serde::de::Error::custom),
-      other => Err(serde::de::Error::unknown_field(
-        other,
-        &["user", "assistant", "toolResult"],
-      )),
-    }
-  }
 }
 
 /// 便于将具体消息直接收集为 [`Message`]，例如 `.map(Message::from)`。
@@ -189,5 +155,42 @@ mod tests {
     });
 
     assert!(serde_json::from_value::<Message>(json).is_err());
+  }
+
+  // 场景：User role 消息先序列化再反序列化。
+  // 预期：JSON 中 role 字段按 camelCase 输出为 "user"，往返后消息完全相等。
+  #[test]
+  fn user_role_roundtrip_test() {
+    let original = Message::User(UserMessage {
+      content: UserContent::Text("hello".to_string()),
+      timestamp: 1700000000000,
+    });
+
+    let json = serde_json::to_value(&original).expect("should serialize");
+    // role 字段应为 "user"
+    assert_eq!(json["role"], "user");
+
+    let restored =
+      serde_json::from_value::<Message>(json).expect("should deserialize");
+    assert_eq!(restored, original);
+  }
+
+  // 场景：Assistant role 消息先序列化再反序列化。
+  // 预期：JSON 中 role 字段按 camelCase 输出为 "assistant"，往返后消息完全相等。
+  #[test]
+  fn assistant_role_roundtrip_test() {
+    let original = Message::Assistant(AssistantMessage::empty(
+      "demo-provider",
+      "demo-model",
+      0,
+    ));
+
+    let json = serde_json::to_value(&original).expect("should serialize");
+    // role 字段应为 "assistant"
+    assert_eq!(json["role"], "assistant");
+
+    let restored =
+      serde_json::from_value::<Message>(json).expect("should deserialize");
+    assert_eq!(restored, original);
   }
 }
