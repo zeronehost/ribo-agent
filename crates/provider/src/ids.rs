@@ -1,0 +1,140 @@
+//! 强类型标识模块：避免裸字符串在"provider id / model id"之间被混用。
+//!
+//! 两个 newtype 都禁止 `From<String>`，强制走 [`ProviderId::parse`] /
+//! [`ModelId::parse`] 显式校验——把"标识合法性"从运行期假设变成编译前检查。
+
+use std::sync::Arc;
+
+use ra_core::error::RiboResult;
+
+use crate::error::{INVALID_REQUEST, pre_stream};
+
+/// 提供方标识（小写 ASCII，例如 `openai`、`anthropic`）。
+///
+/// 不变量：非空、仅含 `[a-z0-9_-]`。构造失败返回
+/// [`crate::error::pre_stream`] 构造的 [`INVALID_REQUEST`] 错误。
+///
+/// 收窄字符集的原因：该标识会直接进入配置键、指标标签与日志字段，
+/// 限制字符集可避免转义与大小写归一化的歧义（例如 `OpenAI` 与 `openai`
+/// 是否算同一个 provider）。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderId(Arc<str>);
+
+impl ProviderId {
+  /// 校验并构造。
+  ///
+  /// # Errors
+  ///
+  /// 空串或含非法字符时返回
+  /// [`pre_stream(INVALID_REQUEST, ..)`](crate::error::pre_stream)。
+  ///
+  /// # 实现说明
+  ///
+  /// 大写字母同样视为非法——大小写不归一化，强制调用方显式提供小写形式，
+  /// 避免"同一 provider 注册出两个键"。
+  pub fn parse(raw: &str) -> RiboResult<Self> {
+    // ===== 第一步：非空检查 =====
+    // 空标识无法作为注册表键，也无法出现在日志字段中定位问题。
+    if raw.is_empty() {
+      return Err(pre_stream(INVALID_REQUEST, "provider id must not be empty"));
+    }
+
+    // ===== 第二步：字符集检查 =====
+    // 首个非法字符即短路返回，消息中带出该字符与原始输入以利排查。
+    if let Some(ch) = raw
+      .chars()
+      .find(|c| !matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
+    {
+      return Err(pre_stream(
+        INVALID_REQUEST,
+        format!("provider id contains invalid character {ch:?}: {raw:?}"),
+      ));
+    }
+
+    // ===== 构造 =====
+    // 校验通过后一次性转入 `Arc<str>`，后续克隆只增引用计数。
+    Ok(Self(Arc::from(raw)))
+  }
+}
+
+/// 模型标识（由提供方定义，例如 `gpt-4o`、`claude-sonnet-4`）。
+///
+/// 不变量：非空且不得仅由空白组成。不同 provider 的同一 `ModelId`
+/// 不保证是同一模型——模型是否存在由 provider 的 `supports()` 判定，
+/// 不在此处校验。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModelId(Arc<str>);
+
+impl ModelId {
+  /// 校验并构造。
+  ///
+  /// # Errors
+  ///
+  /// 空串或仅含空白时返回
+  /// [`pre_stream(INVALID_REQUEST, ..)`](crate::error::pre_stream)。
+  ///
+  /// # 实现说明
+  ///
+  /// 只校验非空：模型名由各提供方自行定义（含点、斜杠、冒号等），
+  /// 强行收窄字符集会误杀合法模型。
+  pub fn parse(raw: &str) -> RiboResult<Self> {
+    if raw.trim().is_empty() {
+      return Err(pre_stream(INVALID_REQUEST, "model id must not be empty"));
+    }
+
+    Ok(Self(Arc::from(raw)))
+  }
+}
+
+/// 为两个 newtype 批量补齐通用实现：
+///
+/// - [`new`](Self::new) 内部构造器（已通过 parse 校验的场景可绕过，通常由 `parse` 或测试使用）
+/// - [`as_str`](Self::as_str) 取原始字符串
+/// - `Display` / `AsRef<str>`：便于日志 `%provider` 字段与错误消息拼接
+/// - `Serialize` / `Deserialize`：按原始字符串序列化
+///
+/// 宏展开前：`ProviderId` / `ModelId` 各有自己的校验逻辑（`parse`），
+/// 宏只负责公共样板，两者互不干扰。
+macro_rules! impl_id {
+  ($name: ident) => {
+    impl $name {
+      fn new(id: impl Into<Arc<str>>) -> Self {
+        Self(id.into())
+      }
+      /// 取原始字符串。
+      pub fn as_str(&self) -> &str {
+        &self.0
+      }
+    }
+    impl core::fmt::Display for $name {
+      fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+      }
+    }
+    impl AsRef<str> for $name {
+      fn as_ref(&self) -> &str {
+        &self.0
+      }
+    }
+    impl serde::Serialize for $name {
+      fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+      where
+        S: serde::Serializer,
+      {
+        serializer.serialize_str(&self.0)
+      }
+    }
+    impl<'de> serde::Deserialize<'de> for $name {
+      fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+      where
+        D: serde::Deserializer<'de>,
+      {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::new(s))
+      }
+    }
+  };
+}
+
+impl_id!(ProviderId);
+impl_id!(ModelId);

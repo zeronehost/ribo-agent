@@ -12,4 +12,5 @@ license.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+jiff.workspace = true
 

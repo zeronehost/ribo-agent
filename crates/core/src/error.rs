@@ -78,7 +78,7 @@
 //! assert_eq!(err.severity(), &Severity::Critical);
 //! ```
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 /// 跨模块传递的统一错误类型。
 ///
@@ -465,8 +465,8 @@ pub enum Severity {
 ///
 /// assert_eq!(Severity::Fatal.to_string(), "fatal");
 /// ```
-impl fmt::Display for Severity {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl core::fmt::Display for Severity {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let level = match self {
       Self::Debug => "debug",
       Self::Warning => "warning",

@@ -1,23 +1,23 @@
-//! 流式响应过程中的事件定义。
+//! Provider 事件模型。
+//!
+//! 每个事件都携带截至该事件的半成品快照 `partial: Arc<AssistantMessage>`，
+//! 消费方无须自行聚合增量即可获得最新状态。终结事件（`Done` / `Error`）
+//! 携带完整的最终消息（不带 partial，改为顶层 `message` 字段）。
 
 use std::sync::Arc;
 
 use ra_core::message::{AssistantMessage, StopReason, ToolCall};
 
-/// 提供方流式产出回复过程中的单个事件。
+/// 流式事件。
 ///
-/// 事件按「开始 → 若干增量 → 结束」的模式描述三类内容：
-/// 思考过程（Reasoning*）、文本（Text*）与工具调用（ToolCall*）；
-/// 流首尾另有 [`Start`](Self::Start) 与终结事件 [`Done`](Self::Done) /
-/// [`Error`](Self::Error)。
-///
-/// 每个进行中事件都携带 `partial`：截至当前事件、仍在累积中的
-/// [`AssistantMessage`] 快照，调用方可直接用于实时渲染，无需自行拼装。
+/// 除终结事件外，顺序即语义。事件由网络字节流驱动，生产速率不受本进程控制。
+/// 每个事件的 `partial` 字段是 [`Arc<AssistantMessage>`]（克隆廉价），
+/// 消费方可以随时取出截至当前的聚合状态。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
   /// 流开始：提供方已接受请求，即将开始产出内容。
   Start {
-    /// 初始的助手消息快照。
+    /// 初始的助手消息快照（空 content，只有 provider/model 元信息）。
     partial: Arc<AssistantMessage>,
   },
   /// 一段思考过程（推理链）开始。
@@ -95,47 +95,74 @@ pub enum ProviderEvent {
     /// 当前的助手消息快照。
     partial: Arc<AssistantMessage>,
   },
-  /// 流正常结束：模型已停止生成，消息为最终收敛结果。
+  /// 流正常结束（终结事件）：模型已停止生成，消息为最终收敛结果。
   Done {
     /// 模型给出的停止原因。
     reason: StopReason,
     /// 收敛完成的最终助手消息。
     message: AssistantMessage,
   },
-  /// 流因错误结束：消息中通常带有错误描述。
+  /// 流因错误结束（终结事件）：消息中通常带有错误描述。
   Error {
-    /// 对应的失败停止原因。
+    /// 对应的失败停止原因（`StopReason::Error` 或 `StopReason::Aborted`）。
     reason: StopReason,
-    /// 携带错误信息的最终助手消息。
+    /// 携带错误信息的最终助手消息（人类可读文本见 `message.error_message`）。
     message: AssistantMessage,
+    /// 结构化错误码（取自 [`crate::error::constants`] 常量）；
+    /// 提供方无法归类时为 `None`。
+    ///
+    /// 供上层区分处置路径：例如 `TIMEOUT` / `TRANSPORT` 提示重试，
+    /// `CONTENT_FILTERED` 提示改写输入，`CANCELLED` 不视为故障。
+    code: Option<&'static str>,
   },
 }
 
 impl ProviderEvent {
-  /// 判断事件是否为终结事件。
+  /// 判断是否为终结事件（`Done` 或 `Error`）。
   ///
-  /// 仅 [`Done`](Self::Done) 与 [`Error`](Self::Error) 返回 `true`；
-  /// 事件流以此判定何时停止拉取并兑现最终结果。
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use std::sync::Arc;
-  ///
-  /// use ra_core::message::{AssistantMessage, StopReason};
-  /// use ra_provider::stream::ProviderEvent;
-  ///
-  /// let start = ProviderEvent::Start {
-  ///   partial: Arc::new(AssistantMessage::empty("demo", "gpt", 0)),
-  /// };
-  /// let done = ProviderEvent::Done {
-  ///   reason: StopReason::Stop,
-  ///   message: AssistantMessage::empty("demo", "gpt", 0),
-  /// };
-  /// assert!(!start.is_terminal());
-  /// assert!(done.is_terminal());
-  /// ```
+  /// 终结事件出现后，后续再调用
+  /// [`ProviderEventStream::next`](crate::stream::ProviderEventStream::next)
+  /// 一律返回 `None`。
   pub fn is_terminal(&self) -> bool {
     matches!(self, Self::Done { .. } | Self::Error { .. })
+  }
+
+  /// 判断是否为内容事件（推理/文本/工具调用开始、增量、结束）。
+  ///
+  /// `Start` 事件不算内容——这对 TTFT 守卫至关重要：
+  /// "从建流成功到首内容事件的间隔"不能把 `Start` 算进去。
+  pub fn is_content(&self) -> bool {
+    matches!(
+      self,
+      Self::ReasoningStart { .. }
+        | Self::ReasoningDelta { .. }
+        | Self::ReasoningEnd { .. }
+        | Self::TextStart { .. }
+        | Self::TextDelta { .. }
+        | Self::TextEnd { .. }
+        | Self::ToolCallStart { .. }
+        | Self::ToolCallDelta { .. }
+        | Self::ToolCallEnd { .. }
+    )
+  }
+
+  /// 取事件携带的半成品快照。
+  ///
+  /// 终结事件（`Done` / `Error`）不带 partial，返回 `None`；
+  /// 其余事件一律返回 `Some`。
+  pub fn partial(&self) -> Option<&Arc<AssistantMessage>> {
+    match self {
+      Self::Start { partial }
+      | Self::ReasoningStart { partial, .. }
+      | Self::ReasoningDelta { partial, .. }
+      | Self::ReasoningEnd { partial, .. }
+      | Self::TextStart { partial, .. }
+      | Self::TextDelta { partial, .. }
+      | Self::TextEnd { partial, .. }
+      | Self::ToolCallStart { partial, .. }
+      | Self::ToolCallDelta { partial, .. }
+      | Self::ToolCallEnd { partial, .. } => Some(partial),
+      _ => None,
+    }
   }
 }

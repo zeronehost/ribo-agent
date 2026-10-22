@@ -145,3 +145,16 @@ pub enum GrammarFormat {
 
 /// 按语法格式组织的语法映射。
 pub type GrammarVariants = BTreeMap<GrammarFormat, String>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ToolChoice {
+  /// 由模型自行决定。
+  #[default]
+  Auto,
+  /// 禁止调用工具。
+  None,
+  /// 必须调用工具。
+  Required,
+  /// 必须调用指定工具。
+  Named(String),
+}

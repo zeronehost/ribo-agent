@@ -1,24 +1,20 @@
-//! `ra-provider`：模型提供方接入层。
+//! ra-provider：统一的模型提供方抽象层。
 //!
-//! 本 crate 定义对接各家大模型服务所需的抽象与数据模型：
+//! 本 crate 为上层（网关、工作流引擎等）屏蔽各家 LLM 提供方的线格式差异，
+//! 对外暴露统一的事件流与错误模型。核心模块：
 //!
-//! - `model`：模型元信息，包括能力、模态、计费与思考档位；
-//! - `context`：一次请求的对话上下文（系统提示词、消息历史、可用工具）；
-//! - `options`：流式请求的运行选项及其局部覆盖（patch）；
-//! - `stream`：流式响应的事件模型与生产/消费双通道；
-//! - `provider`：提供方实现需要满足的 `Provider` trait
-//!   以及请求前后的 `ProviderHooks` 钩子；
-//! - `error`：本 crate 的错误构造工具。
-//!
-//! 当前模块均为私有，属于开发中的脚手架；对外 API 稳定后再按需提升可见性。
+//! - [`ids`]：`ProviderId` / `ModelId` 强类型标识。
+//! - [`model`]：模型元信息结构体（能力、计费、思考档位等）。
+//! - [`context`]：一次请求的上下文聚合（系统提示、历史消息、工具）。
+//! - [`traits`]：`Provider` trait 与 `ProviderErrorExt` 错误谓词扩展。
+//! - [`error`]：本地化错误码常量、阶段门构造器与 `RiboError` 扩展。
+//! - [`stream`]：`ProviderEvent` 事件模型与 `ProviderEventStream` /
+//!   `ProviderEventStreamProducer` 传输机制。
 
 pub mod context;
 pub mod error;
+pub mod ids;
 pub mod model;
 pub mod options;
-pub mod provider;
 pub mod stream;
-
-pub mod prelude {
-  pub use super::{context::*, model::*, options::*, provider::*, stream::*};
-}
+pub mod traits;
