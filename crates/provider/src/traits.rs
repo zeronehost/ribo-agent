@@ -81,68 +81,45 @@ pub trait ProviderErrorExt {
 pub trait Provider: Send + Sync {
   /// 提供方标识，在同一注册表内唯一。
   fn id(&self) -> &ProviderId;
-
-  /// 该提供方当前可用的全部模型描述。
-  ///
-  /// 返回借用切片而非克隆，调用方不得跨越 `await` 长期持有。
+  /// 该提供方当前可用的模型列表。
   fn models(&self) -> &[Model];
-
-  /// 判断该提供方是否支持指定模型。
+  /// 判断本提供方是否支持指定模型。
   ///
-  /// 默认实现按 [`Self::models`] 的 `id` 做精确匹配；
-  /// 若模型列表是远端动态拉取的，可在实现中覆写。
+  /// 默认实现按 [`Provider::models`] 列表线性查找，实现方可按需覆盖。
   fn supports(&self, model: &ModelId) -> bool {
     self.models().iter().any(|m| &m.id == model)
   }
-
-  /// 该实现内部是否已自带重试能力。
+  /// 提供方内部是否已自带重试。
   ///
-  /// 默认 `false`。返回 `true` 时网关不得再叠加自身重试，
-  /// 否则会形成"重试的重试"放大上游压力。
-  /// 由于 `Arc<dyn Provider>` 无法通过 `type_name` 判别具体类型，
-  /// 该标记是唯一的叠加防护手段。
+  /// 默认为 `false`；自带重试的包装器应返回 `true`，
+  /// 供上层避免叠加多层重试。
   fn is_retrying_provider(&self) -> bool {
     false
   }
-
-  /// 发起一次流式请求，返回事件流消费端。
-  ///
-  /// # 参数
-  ///
-  /// - `options`：模型描述与请求上下文，字段均为借用，生命周期绑定本次调用。
-  ///
-  /// # 返回
-  ///
-  /// `Ok(stream)` 表示建流成功，后续内容与终结事件通过事件流交付；
-  /// `Err(err)` 仅表示建流阶段失败（见上方契约第 1 条）。
+  /// 发起一次流式请求，返回统一的事件流。
   ///
   /// # Errors
   ///
-  /// provider/模型不存在、鉴权失败、限流、连接失败等建流阶段错误，
-  /// 均以 `Err(RiboError)` 返回，且 `stage` 应为 PreStream。
+  /// 仅在建流阶段失败（HTTP 连接、认证、限流等）时返回 `Err`，
+  /// 且错误阶段应为 PreStream；流内失败必须经
+  /// [`crate::stream::ProviderEventStreamProducer::error`] 终结。
   async fn stream(
     &self,
     options: ProviderOptions<'_>,
   ) -> RiboResult<ProviderEventStream>;
 }
 
-/// 注册表的只读查询视图。
+/// 提供方注册表抽象。
 ///
-/// 网关与工作流引擎通过该 trait 解析路由目标，不关心注册表的具体实现
-/// （静态注册、动态加载或测试替身）。所有方法只读，实现必须支持并发调用。
+/// 支持按 ID 精确查找提供方与模型，并支持跨全部已注册提供方检索模型，
+/// 供网关层做路由与降级选型。
 pub trait ProviderCatalog: Send + Sync {
-  /// 按 provider 标识取实现实例，不存在时返回 `None`。
+  /// 按提供方 ID 查找提供方实例。
   fn provider(&self, id: &ProviderId) -> Option<Arc<dyn Provider>>;
-
-  /// 按 `(provider, model)` 二元组查询完整模型描述。
+  /// 在指定提供方下查找模型元信息。
   fn model(&self, id: &ProviderId, model: &ModelId) -> Option<Model>;
-
-  /// 在全部 provider 中查找声明了该模型的提供方。
-  ///
-  /// 返回 `(provider_id, model)`；多个 provider 声明同名模型时，
-  /// 由实现方决定优先级（建议取注册顺序首个）。
+  /// 在已注册的全部提供方中查找指定模型，返回 `(提供方 ID, 模型)`。
   fn find_model(&self, model: &ModelId) -> Option<(ProviderId, Model)>;
-
-  /// 列出全部已注册的 provider 标识。
+  /// 列出当前已注册的全部提供方 ID。
   fn providers(&self) -> Vec<ProviderId>;
 }

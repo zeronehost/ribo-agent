@@ -129,16 +129,16 @@ pub type ThinkingLevelMap = BTreeMap<ThinkingLevel, Option<String>>;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ThinkingBudgets {
-  /// 最小思考档位的 Token 预算。
+  /// 极低强度思考的 Token 上限。
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub minimal: Option<u32>,
-  /// 低强度思考档位的 Token 预算。
+  /// 低强度思考的 Token 上限。
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub low: Option<u32>,
-  /// 中等强度思考档位的 Token 预算。
+  /// 中等强度思考的 Token 上限。
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub medium: Option<u32>,
-  /// 高强度思考档位的 Token 预算。
+  /// 高强度思考的 Token 上限。
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub high: Option<u32>,
 }

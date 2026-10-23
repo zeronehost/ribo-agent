@@ -2,9 +2,9 @@
 //!
 //! 本模块为整个 crate 提供一套本地化的错误设施：
 //!
-//! 1. [`constants`]：17 个 `&'static str` 错误码常量，取值形如
+//! 1. `constants` 子模块：17 个 `&'static str` 错误码常量，取值形如
 //!    `"provider.auth_failed"`，与 `RiboError::domain = "provider"` 配对。
-//! 2. [`stage`]：`ErrorStage` 枚举，区分 PreStream / InStream 生命周期。
+//! 2. `stage` 子模块：`ErrorStage` 枚举，区分 PreStream / InStream 生命周期。
 //! 3. 本文件：构造器（`pre_stream` / `in_stream` / `from_http` / `from_reqwest` /
 //!    `from_stream_terminal`）+ [`ProviderErrorExt`] trait 扩展，实现阶段门自动纠正
 //!    与分类谓词。

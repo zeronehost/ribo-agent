@@ -10,11 +10,14 @@
 //! - [`error`]：本地化错误码常量、阶段门构造器与 `RiboError` 扩展。
 //! - [`stream`]：`ProviderEvent` 事件模型与 `ProviderEventStream` /
 //!   `ProviderEventStreamProducer` 传输机制。
+//! - [`options`]：流式请求入参封装（超时、重试、采样与取消令牌）。
+//! - [`retry`]：请求级重试设施（退避策略、首包超时守卫）。
 
 pub mod context;
 pub mod error;
 pub mod ids;
 pub mod model;
 pub mod options;
+pub mod retry;
 pub mod stream;
 pub mod traits;

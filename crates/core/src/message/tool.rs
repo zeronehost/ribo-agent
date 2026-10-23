@@ -95,13 +95,13 @@ pub struct Schema(pub serde_json::Value);
 pub enum ConstrainedSamplingConfig {
   /// 要求工具输出符合一份 JSON Schema。
   JsonSchema {
-    // 对结构符合度的要求强度（偏好或强制）。
+    /// 对结构符合度的要求强度（偏好或强制）。
     #[serde(rename = "strict")]
     strict: ConstrainedStrictness,
   },
   /// 要求工具输出符合某种形式语法（正则、Lark 文法等）。
   Grammar {
-    // 按提供方支持的语法格式组织的语法定义集合。
+    /// 按提供方支持的语法格式组织的语法定义集合。
     variants: GrammarVariants,
   },
 }
@@ -146,6 +146,7 @@ pub enum GrammarFormat {
 /// 按语法格式组织的语法映射。
 pub type GrammarVariants = BTreeMap<GrammarFormat, String>;
 
+/// 工具调用策略：本次请求允许模型以何种方式使用工具。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ToolChoice {
   /// 由模型自行决定。

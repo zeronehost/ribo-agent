@@ -236,7 +236,7 @@ impl ProviderEventStreamProducer {
   ///
   /// `reason = StopReason::Aborted` 时表示用户取消（不计入上游故障）。
   /// 旧版本的 code 是 `Option<ErrorKind>`——现已统一为 `Option<&'static str>`，
-  /// 取自 [`crate::error::constants`] 常量模块。
+  /// 取自 `crate::error` 的错误码常量模块。
   pub fn error(
     mut self,
     reason: StopReason,

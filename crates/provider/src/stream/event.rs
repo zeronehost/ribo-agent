@@ -108,7 +108,7 @@ pub enum ProviderEvent {
     reason: StopReason,
     /// 携带错误信息的最终助手消息（人类可读文本见 `message.error_message`）。
     message: AssistantMessage,
-    /// 结构化错误码（取自 [`crate::error::constants`] 常量）；
+    /// 结构化错误码（取自 `crate::error` 的错误码常量）；
     /// 提供方无法归类时为 `None`。
     ///
     /// 供上层区分处置路径：例如 `TIMEOUT` / `TRANSPORT` 提示重试，
@@ -120,9 +120,7 @@ pub enum ProviderEvent {
 impl ProviderEvent {
   /// 判断是否为终结事件（`Done` 或 `Error`）。
   ///
-  /// 终结事件出现后，后续再调用
-  /// [`ProviderEventStream::next`](crate::stream::ProviderEventStream::next)
-  /// 一律返回 `None`。
+  /// 终结事件出现后，后续再调用 `next` 一律返回 `None`。
   pub fn is_terminal(&self) -> bool {
     matches!(self, Self::Done { .. } | Self::Error { .. })
   }

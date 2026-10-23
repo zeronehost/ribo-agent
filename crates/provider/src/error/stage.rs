@@ -8,14 +8,12 @@
 //!   这个阶段的失败**不可重试**——重试会重新发起请求、与已产出的部分内容重复。
 //!
 //! 阶段信息写入 [`RiboError::context`] 的 `"stage"` 键，由
-//! [`crate::error::ProviderErrorExt::stage`] 读回。
-
-use std::fmt;
+//! [`crate::traits::ProviderErrorExt::stage`] 读回。
 
 /// 错误生命周期阶段。
 ///
 /// 序列化形式为小写字符串 `"pre_stream"` / `"in_stream"`，写入
-/// [`RiboError::context`] 键时同样使用该形式。
+/// `RiboError::context` 键时同样使用该形式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStage {
   /// 建流前失败：HTTP 连接、认证、限流等。可重试。
@@ -45,8 +43,8 @@ impl ErrorStage {
   }
 }
 
-impl fmt::Display for ErrorStage {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl core::fmt::Display for ErrorStage {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     f.write_str(self.as_str())
   }
 }
