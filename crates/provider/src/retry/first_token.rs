@@ -162,3 +162,177 @@ fn terminal_producer(
     _ => unreachable!("只在 is_terminal() 命中后才调用"),
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use super::*;
+
+  /// 默认守卫策略（虚拟时钟下使用，不会真实等待）。
+  fn policy(timeout: Duration) -> FirstTokenPolicy {
+    FirstTokenPolicy {
+      timeout,
+      retry_on_timeout: true,
+    }
+  }
+
+  /// 构造一个事件快照。
+  fn partial() -> Arc<AssistantMessage> {
+    Arc::new(AssistantMessage::terminal(
+      "",
+      "",
+      StopReason::Pending,
+      "",
+      0,
+    ))
+  }
+
+  /// 场景：内容事件在时限内到达 → 返回 Ready，且窥视到的事件
+  /// 连同后续事件与终结事件被无损转发到新流（数量、顺序、内容一致）。
+  ///
+  /// 预期：新流依次收到 Start、TextStart（窥视缓存）、TextDelta（后续
+  /// 转发）、Done（终结分派），最后流关闭。
+  #[tokio::test(start_paused = true)]
+  async fn ready_stream_forwards_events_losslessly() {
+    let (producer, stream) = ProviderEventStreamProducer::build();
+    let start_ev = ProviderEvent::Start { partial: partial() };
+    let text_start = ProviderEvent::TextStart {
+      index: 0,
+      partial: partial(),
+    };
+    let text_delta = ProviderEvent::TextDelta {
+      index: 0,
+      delta: "hi".into(),
+      partial: partial(),
+    };
+    producer.push(start_ev.clone());
+    producer.push(text_start.clone());
+    producer.push(text_delta.clone());
+    producer.done(
+      StopReason::Stop,
+      AssistantMessage::terminal("stub", "stub-model", StopReason::Stop, "", 0),
+    );
+
+    let Peeked::Ready(mut new_stream) =
+      peek_first_content(stream, &policy(Duration::from_millis(50)), None)
+        .await
+    else {
+      panic!("已推入 TextStart，应返回 Ready");
+    };
+
+    assert_eq!(new_stream.next().await, Some(start_ev));
+    assert_eq!(new_stream.next().await, Some(text_start));
+    assert_eq!(new_stream.next().await, Some(text_delta));
+    assert!(matches!(
+      new_stream.next().await,
+      Some(ProviderEvent::Done { .. })
+    ));
+    assert_eq!(new_stream.next().await, None);
+  }
+
+  /// 场景：`Start` 事件不算内容（TTFT 语义）——只有 Start 时守卫
+  /// 继续等待，直至策略超时返回 Timeout 而非 Ready。
+  ///
+  /// 预期：Start 之后无内容事件，守卫在 50ms 虚拟时间后返回 Timeout。
+  #[tokio::test(start_paused = true)]
+  async fn start_event_is_not_treated_as_content() {
+    let (producer, stream) = ProviderEventStreamProducer::build();
+    producer.push(ProviderEvent::Start { partial: partial() });
+
+    let res =
+      peek_first_content(stream, &policy(Duration::from_millis(50)), None)
+        .await;
+
+    assert!(
+      matches!(res, Peeked::Timeout),
+      "Start 不应被判为内容，应等待至超时: {res:?}"
+    );
+  }
+
+  /// 场景：时限内无任何事件 → 返回 Timeout。
+  #[tokio::test(start_paused = true)]
+  async fn times_out_when_no_event_arrives() {
+    let (_producer, stream) = ProviderEventStreamProducer::build();
+
+    let res =
+      peek_first_content(stream, &policy(Duration::from_millis(10)), None)
+        .await;
+
+    assert!(matches!(res, Peeked::Timeout));
+  }
+
+  /// 场景：等待期间取消令牌已触发 → 返回 Aborted。
+  #[tokio::test(start_paused = true)]
+  async fn aborted_when_cancel_token_fired() {
+    let (_producer, stream) = ProviderEventStreamProducer::build();
+    let token = CancelToken::new();
+    token.cancel();
+
+    let res = peek_first_content(
+      stream,
+      &policy(Duration::from_secs(60)),
+      Some(&token),
+    )
+    .await;
+
+    assert!(matches!(res, Peeked::Aborted));
+  }
+
+  /// 场景：原流未终结即关闭（生产端 drop）→ 返回 Closed。
+  #[tokio::test(start_paused = true)]
+  async fn closed_when_producer_dropped_without_terminal() {
+    let (producer, stream) = ProviderEventStreamProducer::build();
+    drop(producer);
+
+    let res =
+      peek_first_content(stream, &policy(Duration::from_secs(60)), None).await;
+
+    assert!(matches!(res, Peeked::Closed));
+  }
+
+  /// 场景：原流在终结事件前意外关闭 → forward_loop 合成
+  /// STREAM_INTERRUPTED 终结事件，消费端不永久挂起。
+  ///
+  /// 预期：先收到窥视转发的 Start、TextStart，随后收到 code 为
+  /// STREAM_INTERRUPTED 的 Error 终结事件；流随即关闭，`result()`
+  /// 路径同样能拿到终态消息（stop_reason 为 Error）。
+  #[tokio::test(start_paused = true)]
+  async fn synthesized_interrupted_when_source_closes_before_terminal() {
+    let (producer, stream) = ProviderEventStreamProducer::build();
+    producer.push(ProviderEvent::Start { partial: partial() });
+    producer.push(ProviderEvent::TextStart {
+      index: 0,
+      partial: partial(),
+    });
+
+    let Peeked::Ready(mut new_stream) =
+      peek_first_content(stream, &policy(Duration::from_secs(60)), None).await
+    else {
+      panic!("已推入 TextStart，应返回 Ready");
+    };
+
+    // 原流在生产端 drop 后关闭，且从未出现终结事件
+    drop(producer);
+
+    assert!(matches!(
+      new_stream.next().await,
+      Some(ProviderEvent::Start { .. })
+    ));
+    assert!(matches!(
+      new_stream.next().await,
+      Some(ProviderEvent::TextStart { .. })
+    ));
+    match new_stream.next().await {
+      Some(ProviderEvent::Error {
+        code: Some(code), ..
+      }) => assert_eq!(code, STREAM_INTERRUPTED),
+      other => panic!("应收到 STREAM_INTERRUPTED 终结事件，实际为 {other:?}"),
+    }
+    assert_eq!(new_stream.next().await, None);
+
+    // result() 路径不永久挂起，能拿到合成终态消息
+    let final_msg = new_stream.result().await.expect("终态应被兑现");
+    assert_eq!(final_msg.stop_reason, StopReason::Error);
+  }
+}

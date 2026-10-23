@@ -207,3 +207,262 @@ impl<P: Provider> Provider for RetryingProvider<P> {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use std::collections::VecDeque;
+  use std::sync::Mutex;
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::time::Duration;
+
+  use super::*;
+  use ra_core::message::{AssistantMessage, StopReason};
+
+  use crate::{
+    context::Context,
+    error::{SERVER_ERROR, STREAM_INTERRUPTED, in_stream},
+    options::{CancelToken, StreamOptions},
+    stream::ProviderEventStreamProducer,
+  };
+
+  /// 可编排建流结果的测试桩：按队列依次返回结果并统计调用次数；
+  /// 编排耗尽后再被调用会 panic，用于暴露"计划外的额外尝试"。
+  struct StubProvider {
+    id: ProviderId,
+    outcomes: Mutex<VecDeque<RiboResult<ProviderEventStream>>>,
+    calls: AtomicUsize,
+  }
+
+  impl StubProvider {
+    /// 单结果测试桩。
+    fn new(outcome: RiboResult<ProviderEventStream>) -> Self {
+      Self::new_many(vec![outcome])
+    }
+
+    /// 多结果测试桩（按顺序逐次返回）。
+    fn new_many(outcomes: Vec<RiboResult<ProviderEventStream>>) -> Self {
+      Self {
+        id: ProviderId::parse("stub").expect("stub id 合法"),
+        outcomes: Mutex::new(outcomes.into()),
+        calls: AtomicUsize::new(0),
+      }
+    }
+
+    /// 已被调用的次数。
+    fn calls(&self) -> usize {
+      self.calls.load(Ordering::SeqCst)
+    }
+  }
+
+  #[async_trait::async_trait]
+  impl Provider for StubProvider {
+    fn id(&self) -> &ProviderId {
+      &self.id
+    }
+    fn models(&self) -> &[Model] {
+      &[]
+    }
+    async fn stream(
+      &self,
+      _options: ProviderOptions<'_>,
+    ) -> RiboResult<ProviderEventStream> {
+      self.calls.fetch_add(1, Ordering::SeqCst);
+      self
+        .outcomes
+        .lock()
+        .expect("测试桩锁不应中毒")
+        .pop_front()
+        .expect("编排结果已耗尽——出现计划外的额外调用")
+    }
+  }
+
+  /// 零退避策略：重试瞬间完成，测试无需推进虚拟时钟。
+  fn instant_policy() -> RetryPolicy {
+    RetryPolicy {
+      initial_backoff: Duration::ZERO,
+      jitter_ratio: 0.,
+      ..RetryPolicy::default()
+    }
+  }
+
+  /// 构造一条已正常终结的空流，作为建流成功结果。
+  fn ok_stream() -> ProviderEventStream {
+    let (producer, stream) = ProviderEventStreamProducer::build();
+    producer.done(
+      StopReason::Stop,
+      AssistantMessage::terminal("", "", StopReason::Stop, "", 0),
+    );
+    stream
+  }
+
+  /// 场景：内层前 2 次返回 `Err(SERVER_ERROR)`、第 3 次成功
+  /// → 最终返回 Ok，且实际调用次数为 3。
+  #[tokio::test]
+  async fn retries_until_success_within_budget() {
+    let stub = StubProvider::new_many(vec![
+      Err(pre_stream(SERVER_ERROR, "boom 1")),
+      Err(pre_stream(SERVER_ERROR, "boom 2")),
+      Ok(ok_stream()),
+    ]);
+    let retrying = RetryingProvider::new(stub, instant_policy());
+
+    let model = Model::new(
+      ProviderId::parse("stub").expect("stub id 合法"),
+      ModelId::parse("stub-model").expect("stub model 合法"),
+      "Stub Model",
+      "http://stub.local",
+    );
+    let context = Context::default();
+    let stream_options = StreamOptions::default();
+    let res = retrying
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &stream_options,
+      })
+      .await;
+
+    assert!(res.is_ok(), "第 3 次尝试应成功");
+    assert_eq!(retrying.inner.calls(), 3);
+  }
+
+  /// 场景：内层始终失败 → 重试耗尽后原样上抛原始错误（不吞错、不改码）。
+  ///
+  /// 预期：错误码与消息与首次失败完全一致；调用次数为 1 次首发 + 2 次重试。
+  #[tokio::test]
+  async fn bubbles_original_error_when_retries_exhausted() {
+    let stub = StubProvider::new_many(vec![
+      Err(pre_stream(SERVER_ERROR, "boom")),
+      Err(pre_stream(SERVER_ERROR, "boom")),
+      Err(pre_stream(SERVER_ERROR, "boom")),
+    ]);
+    let policy = RetryPolicy {
+      max_retries: 2,
+      ..instant_policy()
+    };
+    let retrying = RetryingProvider::new(stub, policy);
+
+    let model = Model::new(
+      ProviderId::parse("stub").expect("stub id 合法"),
+      ModelId::parse("stub-model").expect("stub model 合法"),
+      "Stub Model",
+      "http://stub.local",
+    );
+    let context = Context::default();
+    let stream_options = StreamOptions::default();
+    let res = retrying
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &stream_options,
+      })
+      .await;
+
+    match res {
+      Err(err) => {
+        assert_eq!(err.code(), SERVER_ERROR);
+        assert_eq!(err.message(), "boom");
+      }
+      Ok(_) => panic!("重试耗尽后应上抛错误"),
+    }
+    assert_eq!(retrying.inner.calls(), 3);
+  }
+
+  /// 场景：包装器自报 `is_retrying_provider() == true`，
+  /// 供上层避免叠加多层重试。
+  #[test]
+  fn reports_itself_as_retrying_provider() {
+    let stub = StubProvider::new(Ok(ok_stream()));
+    let retrying = RetryingProvider::new(stub, instant_policy());
+
+    assert!(retrying.is_retrying_provider());
+  }
+
+  /// 场景：退避期间触发取消 → 返回 CANCELLED，且重试次数不再增加。
+  ///
+  /// 预期：首次尝试失败进入 1h 退避，10ms 虚拟时间被取消打断；
+  /// 最终错误码为 CANCELLED，调用次数保持 1。
+  #[tokio::test(start_paused = true)]
+  async fn cancellation_during_backoff_stops_retrying() {
+    let stub = StubProvider::new(Err(pre_stream(SERVER_ERROR, "boom")));
+    let policy = RetryPolicy {
+      initial_backoff: Duration::from_secs(3600),
+      jitter_ratio: 0.,
+      ..RetryPolicy::default()
+    };
+    let retrying = RetryingProvider::new(stub, policy);
+
+    let token = CancelToken::new();
+    // 模拟上层在退避进行到 10ms 时触发取消
+    let canceller = {
+      let token = token.clone();
+      tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        token.cancel();
+      })
+    };
+
+    let model = Model::new(
+      ProviderId::parse("stub").expect("stub id 合法"),
+      ModelId::parse("stub-model").expect("stub model 合法"),
+      "Stub Model",
+      "http://stub.local",
+    );
+    let context = Context::default();
+    let stream_options = StreamOptions {
+      cancel: Some(token),
+      ..Default::default()
+    };
+    let res = retrying
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &stream_options,
+      })
+      .await;
+
+    canceller.await.expect("取消任务不应 panic");
+    match res {
+      Err(err) => assert_eq!(err.code(), CANCELLED),
+      Ok(_) => panic!("退避期取消应返回 CANCELLED"),
+    }
+    assert_eq!(retrying.inner.calls(), 1, "取消后不得再发起新尝试");
+  }
+
+  /// 契约回归：InStream 阶段错误绝不触发重试（阶段门短路生效）。
+  ///
+  /// 预期：第一次失败即原样上抛，不发生任何重试调用。
+  #[tokio::test]
+  async fn in_stream_error_is_never_retried() {
+    let stub = StubProvider::new(Err(in_stream(
+      STREAM_INTERRUPTED,
+      "mid-stream failure",
+    )));
+    let retrying = RetryingProvider::new(stub, instant_policy());
+
+    let model = Model::new(
+      ProviderId::parse("stub").expect("stub id 合法"),
+      ModelId::parse("stub-model").expect("stub model 合法"),
+      "Stub Model",
+      "http://stub.local",
+    );
+    let context = Context::default();
+    let stream_options = StreamOptions::default();
+    let res = retrying
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &stream_options,
+      })
+      .await;
+
+    match res {
+      Err(err) => {
+        assert_eq!(err.code(), STREAM_INTERRUPTED);
+        assert_eq!(err.message(), "mid-stream failure");
+      }
+      Ok(_) => panic!("InStream 错误应原样上抛"),
+    }
+    assert_eq!(retrying.inner.calls(), 1);
+  }
+}
