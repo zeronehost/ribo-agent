@@ -129,7 +129,12 @@ impl RetryPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryDecision {
   /// 继续重试，等待 `delay` 后发起第 `attempt + 1` 次尝试。
-  Retry { attempt: u32, delay: Duration },
+  Retry {
+    /// 本次决策时已失败的尝试次数。
+    attempt: u32,
+    /// 重试前的等待时长（已含抖动与 retry_after 协商）。
+    delay: Duration,
+  },
   /// 重试次数已耗尽。
   Exhausted,
   /// 该错误不可重试。

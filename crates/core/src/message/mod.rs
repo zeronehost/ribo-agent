@@ -94,7 +94,7 @@ mod tests {
   use super::*;
 
   // 场景：反序列化时 role 为 toolResult。
-  // 预期：能够命中 ToolResult 分支并成功解析，证明该 match 臂完整闭合。
+  // 预期：解析出的消息与完整期望对象相等（逐字段校验分支闭合）。
   #[test]
   fn deserialize_tool_result_message_test() {
     let json = serde_json::json!({
@@ -107,7 +107,17 @@ mod tests {
 
     let message = serde_json::from_value::<Message>(json)
       .expect("toolResult message should deserialize");
-    assert!(matches!(message, Message::ToolResult(_)));
+    let expected = Message::ToolResult(ToolResultMessage {
+      tool_call_id: "call_1".to_string(),
+      tool_name: "search".to_string(),
+      is_error: false,
+      timestamp: 0,
+      content: Vec::new(),
+      details: None,
+      usage: None,
+      added_tool_names: Vec::new(),
+    });
+    assert_eq!(message, expected);
   }
 
   // 场景：content 为空的 ToolResultMessage 先序列化再反序列化。
@@ -192,5 +202,34 @@ mod tests {
     let restored =
       serde_json::from_value::<Message>(json).expect("should deserialize");
     assert_eq!(restored, original);
+  }
+
+  // 场景：三种具体消息类型通过 From 转换为 Message。
+  // 预期：分别落到 User / Assistant / ToolResult 分支，便于 map(Message::from)。
+  #[test]
+  fn from_impls_map_to_expected_variants_test() {
+    let user = UserMessage {
+      content: UserContent::Text("hi".to_string()),
+      timestamp: 0,
+    };
+    assert_eq!(Message::from(user.clone()), Message::User(user));
+
+    let assistant = AssistantMessage::empty("p1", "m1", 0);
+    assert_eq!(
+      Message::from(assistant.clone()),
+      Message::Assistant(assistant)
+    );
+
+    let tool = ToolResultMessage {
+      tool_call_id: "call_1".to_string(),
+      tool_name: "search".to_string(),
+      is_error: false,
+      timestamp: 0,
+      content: Vec::new(),
+      details: None,
+      usage: None,
+      added_tool_names: Vec::new(),
+    };
+    assert_eq!(Message::from(tool.clone()), Message::ToolResult(tool));
   }
 }

@@ -164,3 +164,107 @@ impl ProviderEvent {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn partial() -> Arc<AssistantMessage> {
+    Arc::new(AssistantMessage::empty("p1", "m1", 0))
+  }
+
+  fn tool_call() -> ToolCall {
+    ToolCall {
+      id: "call-1".to_string(),
+      name: "lookup".to_string(),
+      arguments: serde_json::json!({ "q": "rust" }),
+      signature: None,
+      namespace: None,
+    }
+  }
+
+  /// 场景：除 `Start` 外的非终结事件都属于内容事件，且携带半成品快照。
+  #[test]
+  fn content_events_carry_partial_snapshot() {
+    let events = vec![
+      ProviderEvent::ReasoningStart {
+        index: 0,
+        partial: partial(),
+      },
+      ProviderEvent::ReasoningDelta {
+        index: 0,
+        delta: "思考".to_string(),
+        partial: partial(),
+      },
+      ProviderEvent::ReasoningEnd {
+        index: 0,
+        content: "思考".to_string(),
+        partial: partial(),
+      },
+      ProviderEvent::TextStart {
+        index: 0,
+        partial: partial(),
+      },
+      ProviderEvent::TextDelta {
+        index: 0,
+        delta: "hi".to_string(),
+        partial: partial(),
+      },
+      ProviderEvent::TextEnd {
+        index: 0,
+        content: "hi".to_string(),
+        partial: partial(),
+      },
+      ProviderEvent::ToolCallStart {
+        index: 0,
+        partial: partial(),
+      },
+      ProviderEvent::ToolCallDelta {
+        index: 0,
+        delta: "{}".to_string(),
+        partial: partial(),
+      },
+      ProviderEvent::ToolCallEnd {
+        index: 0,
+        tool_call: tool_call(),
+        partial: partial(),
+      },
+    ];
+
+    for event in events {
+      assert!(!event.is_terminal());
+      assert!(event.is_content());
+      assert!(event.partial().is_some());
+    }
+  }
+
+  /// 场景：`Start` 携带快照但不算内容事件（TTFT 统计必须跳过它）。
+  #[test]
+  fn start_is_not_content_but_carries_partial() {
+    let event = ProviderEvent::Start { partial: partial() };
+
+    assert!(!event.is_terminal());
+    assert!(!event.is_content());
+    assert!(event.partial().is_some());
+  }
+
+  /// 场景：终结事件不可再当内容消费，且不带半成品快照。
+  #[test]
+  fn terminal_events_have_no_partial() {
+    let done = ProviderEvent::Done {
+      reason: StopReason::Stop,
+      message: AssistantMessage::empty("p1", "m1", 0),
+    };
+    let error = ProviderEvent::Error {
+      reason: StopReason::Error,
+      message: AssistantMessage::empty("p1", "m1", 0),
+      code: Some(crate::error::STREAM_INTERRUPTED),
+    };
+
+    for event in [done, error] {
+      assert!(event.is_terminal());
+      assert!(!event.is_content());
+      assert!(event.partial().is_none());
+    }
+  }
+}

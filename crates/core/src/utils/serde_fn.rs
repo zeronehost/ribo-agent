@@ -15,3 +15,15 @@
 pub(crate) fn is_false(b: &bool) -> bool {
   !*b
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 场景：`skip_serializing_if` 谓词只在值为 `false` 时要求跳过。
+  #[test]
+  fn skips_only_false() {
+    assert!(is_false(&false));
+    assert!(!is_false(&true));
+  }
+}

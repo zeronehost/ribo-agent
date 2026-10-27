@@ -220,7 +220,7 @@ mod tests {
 
   use crate::{
     context::Context,
-    error::{SERVER_ERROR, STREAM_INTERRUPTED, in_stream},
+    error::{SERVER_ERROR, STREAM_INTERRUPTED, TIMEOUT, in_stream},
     options::{CancelToken, StreamOptions},
     stream::ProviderEventStreamProducer,
   };
@@ -241,6 +241,7 @@ mod tests {
 
     /// 多结果测试桩（按顺序逐次返回）。
     fn new_many(outcomes: Vec<RiboResult<ProviderEventStream>>) -> Self {
+      crate::test_support::init();
       Self {
         id: ProviderId::parse("stub").expect("stub id 合法"),
         outcomes: Mutex::new(outcomes.into()),
@@ -293,6 +294,16 @@ mod tests {
       AssistantMessage::terminal("", "", StopReason::Stop, "", 0),
     );
     stream
+  }
+
+  /// 构造重试包装器使用的测试模型。
+  fn stub_model() -> Model {
+    Model::new(
+      ProviderId::parse("stub").expect("stub id 合法"),
+      ModelId::parse("stub-model").expect("stub model 合法"),
+      "Stub Model",
+      "http://stub.local",
+    )
   }
 
   /// 场景：内层前 2 次返回 `Err(SERVER_ERROR)`、第 3 次成功
@@ -358,13 +369,9 @@ mod tests {
       })
       .await;
 
-    match res {
-      Err(err) => {
-        assert_eq!(err.code(), SERVER_ERROR);
-        assert_eq!(err.message(), "boom");
-      }
-      Ok(_) => panic!("重试耗尽后应上抛错误"),
-    }
+    let err = res.err().expect("重试耗尽后应上抛错误");
+    assert_eq!(err.code(), SERVER_ERROR);
+    assert_eq!(err.message(), "boom");
     assert_eq!(retrying.inner.calls(), 3);
   }
 
@@ -422,10 +429,8 @@ mod tests {
       .await;
 
     canceller.await.expect("取消任务不应 panic");
-    match res {
-      Err(err) => assert_eq!(err.code(), CANCELLED),
-      Ok(_) => panic!("退避期取消应返回 CANCELLED"),
-    }
+    let err = res.err().expect("退避期取消应返回 CANCELLED");
+    assert_eq!(err.code(), CANCELLED);
     assert_eq!(retrying.inner.calls(), 1, "取消后不得再发起新尝试");
   }
 
@@ -456,13 +461,113 @@ mod tests {
       })
       .await;
 
-    match res {
-      Err(err) => {
-        assert_eq!(err.code(), STREAM_INTERRUPTED);
-        assert_eq!(err.message(), "mid-stream failure");
-      }
-      Ok(_) => panic!("InStream 错误应原样上抛"),
-    }
+    let err = res.err().expect("InStream 错误应原样上抛");
+    assert_eq!(err.code(), STREAM_INTERRUPTED);
+    assert_eq!(err.message(), "mid-stream failure");
     assert_eq!(retrying.inner.calls(), 1);
+  }
+
+  /// 场景：首包守卫超时且禁止重试。
+  ///
+  /// 预期：立即返回 TIMEOUT，内层只被调用一次。
+  #[tokio::test(start_paused = true)]
+  async fn first_token_timeout_without_retry_returns_timeout() {
+    let (producer, pending) = ProviderEventStreamProducer::build();
+    let stub = StubProvider::new(Ok(pending));
+    let retrying = RetryingProvider::new(stub, instant_policy())
+      .with_first_token_guard(FirstTokenPolicy {
+        timeout: Duration::from_millis(10),
+        retry_on_timeout: false,
+      });
+    let model = stub_model();
+    let context = Context::default();
+    let options = StreamOptions::default();
+
+    let res = retrying
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &options,
+      })
+      .await;
+
+    let err = res.err().expect("首包超时且禁止重试时应返回 TIMEOUT");
+    assert_eq!(err.code(), TIMEOUT);
+    assert_eq!(retrying.inner.calls(), 1);
+    drop(producer);
+  }
+
+  /// 场景：包装器透传内层的身份与模型查询。
+  ///
+  /// 预期：`id` / `models` / `supports` 与内层一致。
+  #[test]
+  fn delegates_identity_and_model_queries() {
+    let stub = StubProvider::new(Ok(ok_stream()));
+    let retrying = RetryingProvider::new(stub, instant_policy());
+    let missing = ModelId::parse("missing-model").expect("model id 合法");
+
+    assert_eq!(retrying.id().as_str(), "stub");
+    assert!(retrying.models().is_empty());
+    assert!(!retrying.supports(&missing));
+    assert_eq!(retrying.inner.id().as_str(), "stub");
+    assert!(retrying.inner.models().is_empty());
+  }
+
+  /// 场景：首包守卫超时允许重试，第二次尝试收到终结事件。
+  ///
+  /// 预期：返回 Ok，内层被调用两次。
+  #[tokio::test(start_paused = true)]
+  async fn first_token_timeout_retries_then_succeeds() {
+    let (producer, pending) = ProviderEventStreamProducer::build();
+    let stub = StubProvider::new_many(vec![Ok(pending), Ok(ok_stream())]);
+    let retrying = RetryingProvider::new(stub, instant_policy())
+      .with_first_token_guard(FirstTokenPolicy {
+        timeout: Duration::from_millis(10),
+        retry_on_timeout: true,
+      });
+    let model = stub_model();
+    let context = Context::default();
+    let options = StreamOptions::default();
+
+    let res = retrying
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &options,
+      })
+      .await;
+
+    assert!(res.is_ok(), "第二次尝试应收到终结事件");
+    assert_eq!(retrying.inner.calls(), 2);
+    drop(producer);
+  }
+
+  /// 场景：首包守卫等待期间原流异常关闭。
+  ///
+  /// 预期：按 TRANSPORT 错误重试，第二次尝试成功。
+  #[tokio::test]
+  async fn first_token_closed_retries_as_transport() {
+    let (producer, closed) = ProviderEventStreamProducer::build();
+    drop(producer);
+    let stub = StubProvider::new_many(vec![Ok(closed), Ok(ok_stream())]);
+    let retrying = RetryingProvider::new(stub, instant_policy())
+      .with_first_token_guard(FirstTokenPolicy {
+        timeout: Duration::from_millis(10),
+        retry_on_timeout: true,
+      });
+    let model = stub_model();
+    let context = Context::default();
+    let options = StreamOptions::default();
+
+    let res = retrying
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &options,
+      })
+      .await;
+
+    assert!(res.is_ok(), "流提前关闭后应重试并成功");
+    assert_eq!(retrying.inner.calls(), 2);
   }
 }

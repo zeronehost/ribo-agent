@@ -12,12 +12,35 @@
 //!   `ProviderEventStreamProducer` 传输机制。
 //! - [`options`]：流式请求入参封装（超时、重试、采样与取消令牌）。
 //! - [`retry`]：请求级重试设施（退避策略、首包超时守卫）。
+//! - [`gateway`]：多提供方网关（路由、熔断、重试与降级编排）。
 
 pub mod context;
 pub mod error;
+pub mod gateway;
 pub mod ids;
 pub mod model;
 pub mod options;
 pub mod retry;
 pub mod stream;
 pub mod traits;
+
+/// 测试辅助工具（仅测试构建启用）。
+#[cfg(test)]
+pub(crate) mod test_support {
+  use std::sync::Once;
+
+  /// 安装全局 tracing 订阅者（输出丢弃），使日志宏内的字段表达式真正执行。
+  ///
+  /// `tracing` 宏默认在无订阅者时跳过字段求值；覆盖率统计需要这些行被执行。
+  /// 多次调用只生效一次，测试可安全并发调用。
+  pub(crate) fn init() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+      let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(std::io::sink)
+        .finish();
+      let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+  }
+}

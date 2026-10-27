@@ -123,3 +123,99 @@ pub trait ProviderCatalog: Send + Sync {
   /// 列出当前已注册的全部提供方 ID。
   fn providers(&self) -> Vec<ProviderId>;
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{
+    context::Context,
+    error::{INVALID_REQUEST, pre_stream},
+    options::StreamOptions,
+  };
+
+  /// 最小实现：只提供必填方法，其余依赖 trait 默认实现。
+  struct DefaultsProvider {
+    id: ProviderId,
+    models: Vec<Model>,
+  }
+
+  #[async_trait::async_trait]
+  impl Provider for DefaultsProvider {
+    fn id(&self) -> &ProviderId {
+      &self.id
+    }
+    fn models(&self) -> &[Model] {
+      &self.models
+    }
+    async fn stream(
+      &self,
+      _options: ProviderOptions<'_>,
+    ) -> RiboResult<ProviderEventStream> {
+      Err(pre_stream(INVALID_REQUEST, "not implemented"))
+    }
+  }
+
+  /// 场景：默认 `supports` 按 `models` 列表线性查找。
+  ///
+  /// 预期：已注册模型返回 `true`，未注册模型返回 `false`。
+  #[test]
+  fn default_supports_matches_registered_models() {
+    let provider_id = ProviderId::parse("p1").expect("测试提供方 ID 合法");
+    let supported = ModelId::parse("m1").expect("测试模型 ID 合法");
+    let missing = ModelId::parse("m2").expect("测试模型 ID 合法");
+    let provider = DefaultsProvider {
+      id: provider_id.clone(),
+      models: vec![Model::new(
+        provider_id,
+        supported.clone(),
+        "m1",
+        "http://stub.local",
+      )],
+    };
+
+    assert!(provider.supports(&supported));
+    assert!(!provider.supports(&missing));
+  }
+
+  /// 场景：默认 `is_retrying_provider` 返回 `false`。
+  #[test]
+  fn default_is_retrying_provider_is_false() {
+    let provider = DefaultsProvider {
+      id: ProviderId::parse("p1").expect("测试提供方 ID 合法"),
+      models: Vec::new(),
+    };
+
+    assert!(!provider.is_retrying_provider());
+  }
+
+  /// 场景：最小实现的必填方法（`id` 与 `stream`）。
+  ///
+  /// 预期：`id` 返回注册标识；`stream` 未实现时返回 INVALID_REQUEST。
+  #[tokio::test]
+  async fn required_provider_methods_are_exercised() {
+    let provider = DefaultsProvider {
+      id: ProviderId::parse("p1").expect("测试提供方 ID 合法"),
+      models: Vec::new(),
+    };
+    let model = Model::new(
+      ProviderId::parse("p1").expect("测试提供方 ID 合法"),
+      ModelId::parse("m1").expect("测试模型 ID 合法"),
+      "m1",
+      "http://stub.local",
+    );
+    let context = Context::default();
+    let options = StreamOptions::default();
+
+    assert_eq!(provider.id().as_str(), "p1");
+    let err = provider
+      .stream(ProviderOptions {
+        model: &model,
+        context: &context,
+        options: &options,
+      })
+      .await
+      .err()
+      .expect("未实现的建流应返回错误");
+    assert_eq!(err.code(), INVALID_REQUEST);
+  }
+}

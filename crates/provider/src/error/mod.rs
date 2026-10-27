@@ -168,6 +168,10 @@ pub fn pre_stream(code: &'static str, msg: impl Into<String>) -> RiboError {
   RiboError::new(DOMAIN, code, msg)
     .with_severity(default_severity(code))
     .with_context("stage", "pre_stream")
+    // 预留 provider / model 元信息槽位，供 `from_result` 折叠错误时还原；
+    // 适配器可用同键覆盖为真实值，缺失时保持空串。
+    .with_context("provider", "")
+    .with_context("model", "")
 }
 
 /// 构造 InStream 阶段错误。
@@ -179,6 +183,9 @@ pub fn in_stream(code: &'static str, msg: impl Into<String>) -> RiboError {
   RiboError::new(DOMAIN, code, msg)
     .with_severity(default_severity(code))
     .with_context("stage", "in_stream")
+    // 同上：为 `from_result` 预留元信息槽位。
+    .with_context("provider", "")
+    .with_context("model", "")
 }
 
 /// 由 HTTP 状态码映射为 PreStream 错误。
@@ -242,16 +249,33 @@ pub fn from_http(status: u16, body: &str) -> RiboError {
 /// - `is_decode()` / `is_body()` → `INVALID_RESPONSE`
 /// - 其余 → `TRANSPORT`（保守回退）
 pub fn from_reqwest(err: reqwest::Error) -> RiboError {
-  let code = if err.is_timeout() {
+  let code = reqwest_code(
+    err.is_timeout(),
+    err.is_connect(),
+    err.is_decode(),
+    err.is_body(),
+  );
+  pre_stream(code, err.to_string()).with_source(err)
+}
+
+/// 按 `reqwest::Error` 的四类判定结果选择错误码。
+///
+/// 抽成纯函数便于对每个分支做表驱动测试，避免依赖真实网络故障。
+fn reqwest_code(
+  is_timeout: bool,
+  is_connect: bool,
+  is_decode: bool,
+  is_body: bool,
+) -> &'static str {
+  if is_timeout {
     TIMEOUT
-  } else if err.is_connect() {
+  } else if is_connect {
     TRANSPORT
-  } else if err.is_decode() || err.is_body() {
+  } else if is_decode || is_body {
     INVALID_RESPONSE
   } else {
     TRANSPORT
-  };
-  pre_stream(code, err.to_string()).with_source(err)
+  }
 }
 
 /// 由流式终结事件还原为完整错误。
@@ -266,4 +290,181 @@ pub fn from_stream_terminal(
   message: impl Into<String>,
 ) -> RiboError {
   in_stream(code.unwrap_or(STREAM_INTERRUPTED), message)
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::Duration;
+
+  use super::*;
+  use crate::traits::ProviderErrorExt;
+
+  /// 场景：HTTP 状态码映射表覆盖常见请求错误类别。
+  ///
+  /// 预期：每个状态码落到文档约定的错误码，并写入 `http_status` 上下文。
+  #[test]
+  fn http_status_maps_to_documented_codes() {
+    let cases = [
+      (400, INVALID_REQUEST),
+      (409, INVALID_REQUEST),
+      (418, INVALID_REQUEST),
+      (422, INVALID_REQUEST),
+      (401, AUTH_FAILED),
+      (403, AUTH_FAILED),
+      (402, QUOTA_EXCEEDED),
+      (408, TIMEOUT),
+      (504, TIMEOUT),
+      (429, RATE_LIMITED),
+      (500, SERVER_ERROR),
+      (599, SERVER_ERROR),
+    ];
+
+    for (status, expected_code) in cases {
+      let err = from_http(status, "body");
+      assert_eq!(err.code(), expected_code, "HTTP {status}");
+      let context = err.context().expect("错误应携带 context");
+      assert_eq!(context["http_status"], status.to_string());
+    }
+  }
+
+  /// 场景：严重程度按错误码映射。
+  #[test]
+  fn severity_follows_documented_mapping() {
+    assert_eq!(from_http(400, "").severity(), &Severity::Warning);
+    assert_eq!(from_http(429, "").severity(), &Severity::Error);
+    assert_eq!(pre_stream(CANCELLED, "").severity(), &Severity::Debug);
+    assert_eq!(
+      pre_stream(PROVIDER_NOT_FOUND, "").severity(),
+      &Severity::Critical
+    );
+  }
+
+  /// 场景：响应体超过 512 字节时截断，并保证不切开多字节字符。
+  #[test]
+  fn long_body_is_truncated_safely() {
+    let ascii = "a".repeat(600);
+    let err = from_http(400, &ascii);
+    assert!(err.message().ends_with("...(truncated)"));
+
+    // 每个汉字 3 字节，512 字节处不是字符边界，截断逻辑需向前回退。
+    let chinese = "中".repeat(300);
+    let err = from_http(400, &chinese);
+    assert!(err.message().ends_with("...(truncated)"));
+  }
+
+  /// 场景：`pre_stream` 把流式专属 code 纠正为建流阶段语义。
+  #[test]
+  fn pre_stream_coerces_stream_only_codes() {
+    assert_eq!(pre_stream(STREAM_INTERRUPTED, "x").code(), TRANSPORT);
+    assert_eq!(pre_stream(CONTENT_FILTERED, "x").code(), INVALID_REQUEST);
+  }
+
+  /// 场景：`in_stream` 把网关专属 code 纠正为流中断。
+  #[test]
+  fn in_stream_coerces_gateway_codes() {
+    assert_eq!(
+      in_stream(PROVIDER_NOT_FOUND, "x").code(),
+      STREAM_INTERRUPTED
+    );
+    assert_eq!(in_stream(TIMEOUT, "x").code(), TIMEOUT);
+  }
+
+  /// 场景：流终结事件未携带 code 时回落为 STREAM_INTERRUPTED。
+  #[test]
+  fn from_stream_terminal_defaults_to_interrupted() {
+    let err = from_stream_terminal(None, "closed");
+
+    assert_eq!(err.code(), STREAM_INTERRUPTED);
+    assert_eq!(err.stage(), ErrorStage::InStream);
+  }
+
+  /// 场景：InStream 阶段短路降级判定。
+  ///
+  /// 预期：即使是可降级的 code，流内也不可重试/降级，但仍可触发熔断。
+  #[test]
+  fn in_stream_predicates_are_short_circuited() {
+    let err = in_stream(SERVER_ERROR, "mid-stream");
+
+    assert!(!err.is_retryable());
+    assert!(!err.is_degradable());
+    assert!(!err.is_cross_provider_degradable());
+    assert!(err.is_circuit_trigger());
+  }
+
+  /// 场景：`from_reqwest` 将连接失败映射为 TRANSPORT。
+  #[tokio::test]
+  async fn from_reqwest_maps_connect_error_to_transport() {
+    let err = reqwest::Client::new()
+      .get("http://127.0.0.1:1/")
+      .send()
+      .await
+      .expect_err("连接应失败");
+    assert!(err.is_connect(), "前置条件：应为连接错误");
+
+    assert_eq!(from_reqwest(err).code(), TRANSPORT);
+  }
+
+  /// 场景：`from_reqwest` 对无法归类的错误回退为 TRANSPORT。
+  #[tokio::test]
+  async fn from_reqwest_falls_back_to_transport() {
+    let err = reqwest::Client::new()
+      .get("http://")
+      .send()
+      .await
+      .expect_err("非法 URL 应失败");
+    assert!(
+      !err.is_timeout()
+        && !err.is_connect()
+        && !err.is_decode()
+        && !err.is_body(),
+      "前置条件：不应命中其他分支"
+    );
+
+    assert_eq!(from_reqwest(err).code(), TRANSPORT);
+  }
+
+  /// 场景：`reqwest` 四类判定结果到错误码的映射。
+  ///
+  /// 预期：timeout / connect / decode / body / 其余分支各自落到约定错误码。
+  #[test]
+  fn reqwest_code_maps_each_condition() {
+    assert_eq!(reqwest_code(true, true, true, true), TIMEOUT);
+    assert_eq!(reqwest_code(false, true, true, true), TRANSPORT);
+    assert_eq!(reqwest_code(false, false, true, false), INVALID_RESPONSE);
+    assert_eq!(reqwest_code(false, false, false, true), INVALID_RESPONSE);
+    assert_eq!(reqwest_code(false, false, false, false), TRANSPORT);
+  }
+
+  /// 场景：服务端接受连接但迟迟不返回响应。
+  ///
+  /// 预期：客户端超时被映射为 TIMEOUT。
+  #[tokio::test]
+  async fn from_reqwest_maps_timeout_to_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+      .await
+      .expect("绑定本地端口");
+    let addr = listener.local_addr().expect("读取本地地址");
+    let server = tokio::spawn(async move {
+      let (socket, _) = listener.accept().await.expect("应接受测试连接");
+      // 保持连接但不发送响应，等待客户端超时
+      tokio::time::sleep(Duration::from_millis(100)).await;
+      drop(socket);
+    });
+
+    let client = reqwest::Client::builder()
+      .timeout(Duration::from_millis(50))
+      .build()
+      .expect("构建客户端");
+    let err = client
+      .get(format!("http://{addr}/"))
+      .send()
+      .await
+      .expect_err("应超时");
+    assert!(err.is_timeout(), "前置条件：应为超时错误");
+
+    assert_eq!(from_reqwest(err).code(), TIMEOUT);
+    // 等待服务端任务收尾，保证其清理路径被完整执行。
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    server.await.expect("服务端任务不应 panic");
+  }
 }

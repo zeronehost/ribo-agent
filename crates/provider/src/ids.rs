@@ -138,3 +138,80 @@ macro_rules! impl_id {
 
 impl_id!(ProviderId);
 impl_id!(ModelId);
+
+/// 模型引用：定位一个模型所需的 `(提供方 ID, 模型 ID)` 二元组。
+pub type ModelRef = (ProviderId, ModelId);
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 场景：合法 provider id 可通过多种访问方式读回原值。
+  #[test]
+  fn provider_id_roundtrips_through_accessors() {
+    let id = ProviderId::parse("openai-1_x").expect("合法标识应通过");
+
+    assert_eq!(id.as_str(), "openai-1_x");
+    assert_eq!(id.to_string(), "openai-1_x");
+    assert_eq!(id.as_ref(), "openai-1_x");
+  }
+
+  /// 场景：空串与大写/空格/点等非法字符均被拒绝为 INVALID_REQUEST。
+  #[test]
+  fn provider_id_rejects_invalid_input() {
+    for raw in ["", "OpenAI", "open ai", "open.ai"] {
+      let err = ProviderId::parse(raw).expect_err("非法标识应被拒绝");
+      assert_eq!(err.code(), INVALID_REQUEST, "输入: {raw:?}");
+    }
+  }
+
+  /// 场景：模型名由提供方定义，允许点、斜杠、冒号等字符。
+  #[test]
+  fn model_id_accepts_provider_defined_charset() {
+    let id = ModelId::parse("openai/gpt-4o:latest").expect("合法模型名应通过");
+
+    assert_eq!(id.as_str(), "openai/gpt-4o:latest");
+    assert_eq!(id.to_string(), "openai/gpt-4o:latest");
+    assert_eq!(id.as_ref(), "openai/gpt-4o:latest");
+  }
+
+  /// 场景：空串与纯空白模型名被拒绝。
+  #[test]
+  fn model_id_rejects_blank_input() {
+    for raw in ["", "   ", "\t\n"] {
+      let err = ModelId::parse(raw).expect_err("空白模型名应被拒绝");
+      assert_eq!(err.code(), INVALID_REQUEST, "输入: {raw:?}");
+    }
+  }
+
+  /// 场景：两个 newtype 的 serde 表示为原始字符串，可往返转换。
+  #[test]
+  fn ids_serialize_as_plain_strings() {
+    let provider = ProviderId::parse("p1").expect("合法标识");
+    assert_eq!(
+      serde_json::to_value(&provider).expect("序列化应成功"),
+      serde_json::json!("p1")
+    );
+    let provider: ProviderId =
+      serde_json::from_value(serde_json::json!("p2")).expect("反序列化应成功");
+    assert_eq!(provider.as_str(), "p2");
+
+    let model = ModelId::parse("gpt-4o").expect("合法标识");
+    assert_eq!(
+      serde_json::to_value(&model).expect("序列化应成功"),
+      serde_json::json!("gpt-4o")
+    );
+    let model: ModelId = serde_json::from_value(serde_json::json!("claude"))
+      .expect("反序列化应成功");
+    assert_eq!(model.as_str(), "claude");
+  }
+
+  /// 场景：反序列化时输入不是字符串。
+  ///
+  /// 预期：`String::deserialize` 返回错误并被 `?` 传播。
+  #[test]
+  fn ids_deserialize_reject_non_string() {
+    assert!(serde_json::from_str::<ProviderId>("123").is_err());
+    assert!(serde_json::from_str::<ModelId>("null").is_err());
+  }
+}

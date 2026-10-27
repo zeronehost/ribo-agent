@@ -382,3 +382,159 @@ impl Model {
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 构造一个通过校验的基础模型，供各用例复用。
+  fn base_model() -> Model {
+    Model::new(
+      ProviderId::parse("p1").expect("测试提供方 ID 合法"),
+      ModelId::parse("m1").expect("测试模型 ID 合法"),
+      "Model One",
+      "http://stub.local",
+    )
+    .with_context_window(8192)
+    .with_max_tokens(1024)
+  }
+
+  /// 场景：`new` 只填充基础字段，其余字段取文档约定的默认值。
+  #[test]
+  fn new_applies_documented_defaults() {
+    let model = Model::new(
+      ProviderId::parse("p1").expect("测试提供方 ID 合法"),
+      ModelId::parse("m1").expect("测试模型 ID 合法"),
+      "Model One",
+      "http://stub.local",
+    );
+
+    assert_eq!(model.name, "Model One");
+    assert_eq!(model.base_url, "http://stub.local");
+    assert_eq!(model.context_window, 0);
+    assert_eq!(model.max_tokens, 0);
+    assert_eq!(model.input, vec![InputModality::Text]);
+    assert_eq!(model.capabilities, ModelCapabilities::default());
+    assert_eq!(model.thinking_level_map, None);
+    assert_eq!(model.thinking_budgets, None);
+    assert_eq!(model.cost, ModelCost::default());
+    assert_eq!(model.header, None);
+    assert_eq!(model.sampling_params, None);
+    assert_eq!(model.compat, None);
+  }
+
+  /// 场景：链式构造器逐项写入对应字段。
+  #[test]
+  fn builders_set_each_field() {
+    let mut level_map = ThinkingLevelMap::new();
+    level_map.insert(ThinkingLevel::Low, Some("low".to_string()));
+    let mut header = BTreeMap::new();
+    header.insert("x-trace-id".to_string(), "1".to_string());
+    let sampling = serde_json::json!({ "frequencyPenalty": 0.5 })
+      .as_object()
+      .expect("应为 JSON 对象")
+      .clone();
+    let cost = ModelCost {
+      rates: ModelCostRates {
+        input_per_million_micros: 1,
+        output_per_million_micros: 2,
+        cache_read_per_million_micros: 3,
+        cache_write_per_million_micros: 4,
+      },
+      tiers: vec![ModelCostTiers {
+        rates: ModelCostRates {
+          input_per_million_micros: 5,
+          output_per_million_micros: 6,
+          cache_read_per_million_micros: 7,
+          cache_write_per_million_micros: 8,
+        },
+        input_token_above: 128_000,
+      }],
+    };
+    let capabilities = ModelCapabilities {
+      streaming: true,
+      tool_calling: true,
+      parallel_tool_calls: true,
+      structured_output: true,
+    };
+    let budgets = ThinkingBudgets {
+      minimal: Some(1),
+      low: Some(2),
+      medium: Some(3),
+      high: Some(4),
+    };
+
+    let model = base_model()
+      .with_input(vec![InputModality::Text, InputModality::Image])
+      .with_capabilities(capabilities)
+      .with_thinking_level_map(level_map.clone())
+      .with_thinking_budgets(budgets)
+      .with_cost(cost.clone())
+      .with_header(header.clone())
+      .with_sampling_params(sampling.clone())
+      .with_compat(serde_json::json!({ "version": 2 }));
+
+    assert_eq!(model.context_window, 8192);
+    assert_eq!(model.max_tokens, 1024);
+    assert_eq!(model.input, vec![InputModality::Text, InputModality::Image]);
+    assert_eq!(model.capabilities, capabilities);
+    assert_eq!(model.thinking_level_map, Some(level_map));
+    assert_eq!(model.thinking_budgets, Some(budgets));
+    assert_eq!(model.cost, cost);
+    assert_eq!(model.header, Some(header));
+    assert_eq!(model.sampling_params, Some(sampling));
+    assert_eq!(model.compat, Some(serde_json::json!({ "version": 2 })));
+  }
+
+  /// 场景：合法配置通过校验。
+  #[test]
+  fn validate_accepts_valid_model() {
+    assert_eq!(base_model().validate(), Ok(()));
+  }
+
+  /// 场景：四类非法配置分别返回对应的错误文本。
+  #[test]
+  fn validate_rejects_invalid_models() {
+    let empty_url = Model::new(
+      ProviderId::parse("p1").expect("测试提供方 ID 合法"),
+      ModelId::parse("m1").expect("测试模型 ID 合法"),
+      "Model One",
+      "",
+    )
+    .with_context_window(1)
+    .with_max_tokens(1);
+    assert!(empty_url.validate().unwrap_err().contains("empty base_url"));
+
+    let zero_window = base_model().with_context_window(0).with_max_tokens(0);
+    assert!(
+      zero_window
+        .validate()
+        .unwrap_err()
+        .contains("context_window cannot be zero")
+    );
+
+    let zero_max = base_model().with_max_tokens(0);
+    assert!(
+      zero_max
+        .validate()
+        .unwrap_err()
+        .contains("max_tokens cannot be zero")
+    );
+
+    let exceed = base_model().with_context_window(8).with_max_tokens(9);
+    assert!(exceed.validate().unwrap_err().contains("cannot exceed"));
+  }
+
+  /// 场景：serde 往返完整保留模型字段。
+  #[test]
+  fn serde_roundtrip_preserves_fields() {
+    let model = base_model()
+      .with_input(vec![InputModality::Text, InputModality::Video])
+      .with_compat(serde_json::json!({ "apiVersion": 2 }));
+
+    let value = serde_json::to_value(&model).expect("序列化应成功");
+    let back: Model = serde_json::from_value(value).expect("反序列化应成功");
+
+    assert_eq!(back, model);
+  }
+}

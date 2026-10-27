@@ -15,4 +15,5 @@ mod first_token;
 mod policy;
 mod retrying;
 
+pub(crate) use self::backoff::*;
 pub use self::{first_token::*, policy::*, retrying::*};

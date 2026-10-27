@@ -53,6 +53,7 @@ serde_json = "1"
 # jsonschema = "0.57.0"
 jiff = "0.2.38"
 rand = "0.10.2"
+dashmap = "6.2"
 # 
 ra-core = { path = "./crates/core" }
 ra-provider = { path = "./crates/provider" }

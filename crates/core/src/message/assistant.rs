@@ -216,3 +216,30 @@ pub struct DeferredHandle {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub data: Option<serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 场景：`StopReason::as_str` 与 serde 的蛇形表示保持一致。
+  ///
+  /// 预期：每个变体的字符串与序列化结果相同。
+  #[test]
+  fn stop_reason_as_str_matches_serde() {
+    let cases = [
+      (StopReason::Pending, "pending"),
+      (StopReason::Stop, "stop"),
+      (StopReason::Length, "length"),
+      (StopReason::ToolUse, "tool_use"),
+      (StopReason::Error, "error"),
+      (StopReason::Aborted, "aborted"),
+      (StopReason::Deferred, "deferred"),
+    ];
+
+    for (reason, expected) in cases {
+      let serialized = serde_json::to_value(&reason).expect("序列化应成功");
+      assert_eq!(serialized, serde_json::json!(expected));
+      assert_eq!(reason.as_str(), expected);
+    }
+  }
+}

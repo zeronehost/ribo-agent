@@ -72,7 +72,6 @@ mod tests {
   use ra_core::error::Severity;
 
   /// 场景：零延迟直接返回 `Ok`，不进入休眠分支。
-  ///
   /// 预期：立即返回 `Ok(())`，且不改变取消令牌状态。
   #[tokio::test(start_paused = true)]
   async fn zero_delay_returns_ok_immediately() {
@@ -92,6 +91,20 @@ mod tests {
     let start = tokio::time::Instant::now();
 
     let res = sleep_backoff(Duration::from_millis(100), None).await;
+
+    assert!(res.is_ok());
+    assert_eq!(start.elapsed(), Duration::from_millis(100));
+  }
+
+  /// 场景：提供未触发的取消令牌，退避正常完成。
+  ///
+  /// 预期：`select!` 的休眠分支胜出，虚拟时间推进 100ms 后返回 `Ok(())`。
+  #[tokio::test(start_paused = true)]
+  async fn sleeps_fully_with_unfired_cancel_token() {
+    let token = CancelToken::new();
+    let start = tokio::time::Instant::now();
+
+    let res = sleep_backoff(Duration::from_millis(100), Some(&token)).await;
 
     assert!(res.is_ok());
     assert_eq!(start.elapsed(), Duration::from_millis(100));
@@ -120,10 +133,10 @@ mod tests {
 
     canceller.await.expect("取消任务不应 panic");
     assert_eq!(err.code(), CANCELLED);
-    assert!(
-      matches!(err.severity(), Severity::Debug),
-      "CANCELLED 不应计入上游故障: {:?}",
-      err.severity()
+    assert_eq!(
+      err.severity(),
+      &Severity::Debug,
+      "CANCELLED 不应计入上游故障"
     );
   }
 }

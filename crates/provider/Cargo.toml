@@ -19,7 +19,10 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 rand.workspace = true
+dashmap.workspace = true
 
 [dev-dependencies]
 # start_paused 测试需要 test-util 特性（tokio 的 full 特性不包含它）。
 tokio = { workspace = true, features = ["test-util"] }
+# 覆盖率测试需要启用 tracing 订阅者，以执行日志宏内的字段表达式。
+tracing-subscriber.workspace = true

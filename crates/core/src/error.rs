@@ -548,4 +548,56 @@ mod tests {
 
     assert!(serde_json::from_str::<Severity>("\"Critical\"").is_err());
   }
+
+  // 场景：通过 with_source 挂载上游错误。
+  // 预期：固有 source() 与 Error trait 的 source() 返回同一条错误链；
+  // Display 只呈现「领域 + 错误码 + 消息」三要素。
+  #[test]
+  fn error_with_source_and_display_test() {
+    let err = RiboError::new("config", "load_failed", "cannot load config")
+      .with_source(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "missing file",
+      ));
+
+    assert_eq!(
+      err.source().map(ToString::to_string).as_deref(),
+      Some("missing file")
+    );
+    assert_eq!(
+      core::error::Error::source(&err)
+        .map(ToString::to_string)
+        .as_deref(),
+      Some("missing file")
+    );
+    assert_eq!(err.to_string(), "[config] load_failed: cannot load config");
+  }
+
+  // 场景：无上游错误时两条 source() 路径均返回 None。
+  #[test]
+  fn error_without_source_returns_none_test() {
+    let err = RiboError::new("config", "load_failed", "cannot load config");
+
+    assert!(err.source().is_none());
+    assert!(core::error::Error::source(&err).is_none());
+  }
+
+  // 场景：Severity 的 Display 与声明顺序。
+  // 预期：字符串为小写变体名，且可按严重程度比较。
+  #[test]
+  fn severity_display_and_ordering_test() {
+    let levels = [
+      (Severity::Debug, "debug"),
+      (Severity::Warning, "warning"),
+      (Severity::Error, "error"),
+      (Severity::Critical, "critical"),
+      (Severity::Fatal, "fatal"),
+    ];
+    for (level, expected) in levels {
+      assert_eq!(level.to_string(), expected);
+    }
+
+    assert!(Severity::Debug < Severity::Warning);
+    assert!(Severity::Critical < Severity::Fatal);
+  }
 }

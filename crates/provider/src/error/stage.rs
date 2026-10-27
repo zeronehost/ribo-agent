@@ -48,3 +48,25 @@ impl core::fmt::Display for ErrorStage {
     f.write_str(self.as_str())
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 场景：字符串表示与反序列化互为逆运算。
+  ///
+  /// 预期：`as_str()` / `Display` / `from` 三者对同一阶段保持一致。
+  #[test]
+  fn as_str_and_from_roundtrip() {
+    for stage in [ErrorStage::PreStream, ErrorStage::InStream] {
+      assert_eq!(ErrorStage::from(stage.as_str()), Some(stage));
+      assert_eq!(stage.to_string(), stage.as_str());
+    }
+  }
+
+  /// 场景：未知字符串无法反序列化为阶段。
+  #[test]
+  fn from_unknown_returns_none() {
+    assert_eq!(ErrorStage::from("mid_stream"), None);
+  }
+}
