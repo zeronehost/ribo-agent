@@ -98,6 +98,7 @@ impl ModelId {
 macro_rules! impl_id {
   ($name: ident) => {
     impl $name {
+      /// 内部构造器：跳过校验，仅供已通过 `parse` 或反序列化的场景使用。
       fn new(id: impl Into<Arc<str>>) -> Self {
         Self(id.into())
       }
@@ -106,16 +107,19 @@ macro_rules! impl_id {
         &self.0
       }
     }
+    // `Display` 用于日志字段（`%provider`）与错误消息拼接，输出与原始字符串一致。
     impl core::fmt::Display for $name {
       fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.0)
       }
     }
+    // `AsRef<str>` 便于泛型 API 以 `&str` 形式接收该标识，无需显式 `as_str`。
     impl AsRef<str> for $name {
       fn as_ref(&self) -> &str {
         &self.0
       }
     }
+    // 序列化为原始字符串，保证与 `parse` 的输入形式一致。
     impl serde::Serialize for $name {
       fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
       where
@@ -124,12 +128,19 @@ macro_rules! impl_id {
         serializer.serialize_str(&self.0)
       }
     }
+    // 反序列化：先按字符串读取，再走内部构造器。
+    //
+    // 注意：此处不重复 `parse` 的字符集/非空校验（见审查报告 R17）；
+    // 需要强校验的入口应使用 `parse`。
     impl<'de> serde::Deserialize<'de> for $name {
       fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
       where
         D: serde::Deserializer<'de>,
       {
+        // ===== 第一步：读取字符串 =====
+        // 非字符串输入（数字、null 等）在此处直接返回反序列化错误。
         let s = String::deserialize(deserializer)?;
+        // ===== 第二步：包装为强类型标识 =====
         Ok(Self::new(s))
       }
     }

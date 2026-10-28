@@ -42,6 +42,7 @@ impl ProviderCatalog for CatalogIndex {
       .cloned()
   }
   fn find_model(&self, model: &ModelId) -> Option<(ProviderId, Model)> {
+    // 逐个提供方扫描，命中首个同名模型即返回；遍历顺序不保证稳定。
     self.providers.iter().find_map(|(pid, p)| {
       p.models()
         .iter()

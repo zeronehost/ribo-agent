@@ -14,6 +14,7 @@
 //! - [`retry`]：请求级重试设施（退避策略、首包超时守卫）。
 //! - [`gateway`]：多提供方网关（路由、熔断、重试与降级编排）。
 
+pub mod adapters;
 pub mod context;
 pub mod error;
 pub mod gateway;

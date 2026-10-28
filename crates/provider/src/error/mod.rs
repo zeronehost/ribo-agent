@@ -267,6 +267,7 @@ fn reqwest_code(
   is_decode: bool,
   is_body: bool,
 ) -> &'static str {
+  // 判定顺序与 `reqwest::Error` 的语义优先级一致：超时 > 连接 > 解码/读体 > 其他。
   if is_timeout {
     TIMEOUT
   } else if is_connect {
@@ -274,6 +275,7 @@ fn reqwest_code(
   } else if is_decode || is_body {
     INVALID_RESPONSE
   } else {
+    // 无法归类的请求错误保守视为传输层问题。
     TRANSPORT
   }
 }

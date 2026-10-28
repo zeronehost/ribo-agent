@@ -215,12 +215,14 @@ impl ObservedStream {
           );
         }
         Err(e) => match e.code() {
+          // 通道在终态前关闭属于契约破坏：单独记录错误日志，并计入熔断失败。
           STREAM_INTERRUPTED => {
             tracing::error!(
               "gateway stream closed before terminal event (contract violation)"
             );
             breaker.record_failure();
           }
+          // `result()` 的 Err 侧只可能来自空闲超时（TIMEOUT），同样记一次失败。
           _ => breaker.record_failure(),
         },
       }
