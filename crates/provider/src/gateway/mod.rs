@@ -18,6 +18,10 @@ mod option;
 mod router;
 mod utils;
 
+// `GatewayConfig` / `RouteMap` 是 `Gateway` 公开方法（`new` / `with_routes`）
+// 的参数类型，定义在私有子模块中；必须在此再导出，否则 crate 外部无法命名。
+pub use self::{fallback::RouteMap, option::GatewayConfig};
+
 use std::{
   collections::HashMap,
   sync::{Arc, RwLock},
@@ -42,8 +46,7 @@ use crate::{
 
 use self::{
   circuit::{Admission, CircuitBreaker},
-  fallback::{Candidate, RouteMap},
-  option::GatewayConfig,
+  fallback::Candidate,
   router::CatalogIndex,
   utils::validate_provider,
 };
@@ -410,7 +413,6 @@ fn with_chain_summary(err: RiboError, chain: &[String]) -> RiboError {
   }
   rebuilt
 }
-
 #[cfg(test)]
 mod tests {
   use std::{
