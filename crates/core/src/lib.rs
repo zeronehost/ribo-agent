@@ -1,14 +1,16 @@
 //! `ra-core`：整个工作空间共享的核心 crate。
 //!
-//! 目前承载两类基础设施：
+//! 目前承载三类基础设施：
 //!
 //! - 统一错误处理：[`error::RiboError`]、[`error::RiboResult`] 与
 //!   [`error::Severity`]；
 //! - 消息模型：[`message`] 模块定义与模型提供方交互的对话消息结构（用户消息、助手消息、
-//!   工具结果、内容块与用量统计）。
+//!   工具结果、内容块与用量统计）；
+//! - 熔断器：[`circuit`] 模块提供无锁三态熔断器（闭合 / 打开 / 半开），
+//!   供网关（每提供方）与工具管理器（每工具）等调用方复用。
 //!
-//! 各模块的原始路径为稳定公开路径，上层 crate（例如未来的 `ra-provider`）
-//! 直接从对应模块引入即可，例如 `use ra_core::error::RiboError`。
+//! 各模块的原始路径为稳定公开路径，上层 crate（例如 `ra-provider`、
+//! `ra-tools`）直接从对应模块引入即可，例如 `use ra_core::error::RiboError`。
 //!
 //! # Examples
 //!
@@ -23,6 +25,7 @@
 //! assert!(run().is_err());
 //! ```
 
+pub mod circuit;
 pub mod error;
 pub mod message;
 pub mod utils;

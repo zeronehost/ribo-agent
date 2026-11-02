@@ -148,6 +148,13 @@ impl Provider for OpenAiCompatibleAdapter {
     // per-request timeout——后者覆盖整个 body 读取期，会把建流超时
     // 误扩展为"流总时长超时"，与阶段语义冲突。
     // options.timeout 为 None 表示不限制（crate::options 语义）。
+    // 外部调用起点：记录出站请求锚点（endpoint 不含鉴权信息）
+    tracing::debug!(
+      provider = self.id().as_str(),
+      model = model.id.as_str(),
+      endpoint = %endpoint,
+      "sending chat completion request"
+    );
     let response = tokio::select! {
       biased;
       // 建流等待中取消：立即放弃，
@@ -207,6 +214,14 @@ impl Provider for OpenAiCompatibleAdapter {
         return Err(from_reqwest(err));
       }
     };
+
+    // 外部调用成功锚点：响应头已到达（此分支保证 2xx）
+    tracing::debug!(
+      provider = self.id().as_str(),
+      model = model.id.as_str(),
+      status = response.status().as_u16(),
+      "response headers received"
+    );
 
     // ===== 阶段 4：建立事件通道（PreStream）=====
     let (producer, stream) = ProviderEventStreamProducer::build();

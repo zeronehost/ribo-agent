@@ -14,6 +14,7 @@
 use std::{sync::Arc, time::Duration};
 
 use ra_core::{
+  circuit::{Admission, CircuitBreaker},
   error::RiboResult,
   message::{AssistantMessage, StopReason},
   utils::time::now_ms,
@@ -24,7 +25,6 @@ use crate::{
   error::{
     CANCELLED, CONTENT_FILTERED, STREAM_INTERRUPTED, TIMEOUT, in_stream,
   },
-  gateway::circuit::{Admission, CircuitBreaker},
   stream::ProviderEvent,
 };
 
@@ -236,13 +236,13 @@ impl ObservedStream {
 mod tests {
   use std::time::Duration;
 
+  use ra_core::circuit::CircuitState;
   use ra_core::message::{AssistantMessage, StopReason};
   use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
   use super::*;
   use crate::{
     error::{CANCELLED, CONTENT_FILTERED, SERVER_ERROR, STREAM_INTERRUPTED},
-    gateway::circuit::CircuitState,
     stream::ProviderEventStreamProducer,
   };
 

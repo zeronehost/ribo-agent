@@ -2,17 +2,19 @@
 //!
 //! 由以下子模块组成：
 //!
-//! - [`circuit`]：每提供方熔断器（Closed / Open / HalfOpen 三态）；
 //! - `router`：提供方注册目录（[`ProviderCatalog`] 的内存实现）；
 //! - `fallback`：降级路由表（显式映射 / 同提供方链 / 跨提供方链）；
 //! - `option`：网关静态配置；
 //! - `utils`：注册前的提供方合法性校验。
 //!
+//! 每提供方熔断器复用 [`ra_core::circuit`] 的无锁三态实现
+//! （Closed / Open / HalfOpen），与工具管理器（`ra-tools::manager`）
+//! 共用同一实现。
+//!
 //! 请求路径：信号量准入 → 目录解析主候选 → 熔断准入 → 建流
 //! （带超时与重试）→ 可降级时沿候选链切换 → 成功后以
 //! [`ObservedStream`] 观察流的终结并回报熔断。
 
-pub mod circuit;
 mod fallback;
 mod option;
 mod router;
@@ -28,7 +30,10 @@ use std::{
 };
 
 use dashmap::DashMap;
-use ra_core::error::{RiboError, RiboResult};
+use ra_core::{
+  circuit::{Admission, CircuitBreaker},
+  error::{RiboError, RiboResult},
+};
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -45,10 +50,7 @@ use crate::{
 };
 
 use self::{
-  circuit::{Admission, CircuitBreaker},
-  fallback::Candidate,
-  router::CatalogIndex,
-  utils::validate_provider,
+  fallback::Candidate, router::CatalogIndex, utils::validate_provider,
 };
 
 /// 多提供方网关：统一入口，负责路由、熔断、重试与降级。
@@ -927,7 +929,7 @@ mod tests {
       .expect("探测请求应失败");
 
     assert_eq!(err.code(), INVALID_REQUEST);
-    assert_eq!(breaker.state(), circuit::CircuitState::Open);
+    assert_eq!(breaker.state(), ra_core::circuit::CircuitState::Open);
     assert_eq!(stub.calls(), 1);
   }
 

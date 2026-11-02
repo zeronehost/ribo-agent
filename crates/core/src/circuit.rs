@@ -1,8 +1,12 @@
-//! 每提供方熔断器：Closed → Open → HalfOpen 三态自动机。
+//! 通用熔断器：Closed → Open → HalfOpen 三态自动机。
 //!
 //! 连续失败达到阈值后打开熔断（拒绝全部请求），冷却期满后进入
 //! 半开状态放行单个探测请求，探测成功即闭合、失败则重新打开。
 //! 状态用原子变量实现，无锁，可在并发请求路径上直接调用。
+//!
+//! 典型调用方按"受保护资源各持一个实例"使用：网关为每个模型
+//! 提供方持有一个（见 `ra-provider::gateway`），工具管理器为整个
+//! 工具面持有一个（见 `ra-tools::manager`）。
 
 use std::{
   sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
@@ -27,10 +31,30 @@ pub enum CircuitState {
   HalfOpen,
 }
 
-/// 无锁熔断器（每提供方一个实例）。
+/// 无锁熔断器（每个受保护资源一个实例，如单个提供方或整个工具面）。
 ///
 /// 用原子变量维护状态与失败计数；时间均以实例创建时刻（`base`）
 /// 为基准的相对毫秒数表达，避免依赖系统墙钟。
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+///
+/// use ra_core::circuit::{Admission, CircuitBreaker, CircuitState};
+///
+/// # fn main() {
+/// // 连续失败 2 次即打开，冷却 30 秒
+/// let breaker = CircuitBreaker::new(2, Duration::from_secs(30));
+/// assert_eq!(breaker.admit(), Admission::Allow);
+///
+/// breaker.record_failure();
+/// assert_eq!(breaker.admit(), Admission::Allow, "未达阈值继续放行");
+/// breaker.record_failure();
+/// assert_eq!(breaker.state(), CircuitState::Open);
+/// assert_eq!(breaker.admit(), Admission::Reject, "冷却期内拒绝全部请求");
+/// # }
+/// ```
 pub struct CircuitBreaker {
   /// 连续失败计数（观测到成功即清零）。
   failures: AtomicU64,
@@ -123,6 +147,7 @@ impl CircuitBreaker {
       }
     }
   }
+
   /// 观测到一次成功：清零失败计数并闭合熔断、复位探测标志。
   pub fn record_success(&self) {
     self.failures.store(0, Ordering::Release);
@@ -166,6 +191,7 @@ impl CircuitBreaker {
     tracing::debug!("circuit probe released after cancellation");
   }
 }
+
 /// 准入结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
