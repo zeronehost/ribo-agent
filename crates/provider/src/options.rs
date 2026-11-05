@@ -121,4 +121,59 @@ impl CancelToken {
   pub async fn cancelled(&self) {
     self.0.cancelled().await;
   }
+
+  /// 由既有的 [`CancellationToken`] 构造取消令牌（桥接转换）。
+  ///
+  /// 用于上层已持有 `tokio_util` 令牌树（如 abort 树派生的子令牌）时，
+  /// 将其包装进 [`StreamOptions::cancel`]，使外部取消信号传播到流式调用。
+  /// 返回值与源令牌共享同一取消状态：源触发则本令牌立即观测到取消。
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use ra_provider::options::CancelToken;
+  /// use tokio_util::sync::CancellationToken;
+  ///
+  /// let root = CancellationToken::new();
+  /// let token = CancelToken::from_token(root.child_token());
+  /// assert!(!token.is_cancelled());
+  /// root.cancel();
+  /// assert!(token.is_cancelled());
+  /// ```
+  pub fn from_token(token: CancellationToken) -> Self {
+    Self(token)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  // 场景：from_token 桥接的令牌与源令牌共享取消状态。
+  // 预期：根令牌触发后，包装令牌立即观测到取消，且 cancelled() 可等待完成。
+  #[tokio::test]
+  async fn from_token_shares_cancellation_with_source() {
+    let root = CancellationToken::new();
+    let token = CancelToken::from_token(root.child_token());
+    assert!(!token.is_cancelled());
+    root.cancel();
+    assert!(token.is_cancelled());
+    tokio::time::timeout(
+      std::time::Duration::from_millis(50),
+      token.cancelled(),
+    )
+    .await
+    .expect("bridged token must observe cancellation");
+  }
+
+  // 场景：两个令牌各自独立（from_token 不产生隐式关联）。
+  // 预期：触发 a 不影响默认构造的 b，保持取消语义隔离。
+  #[tokio::test]
+  async fn from_token_keeps_tokens_independent() {
+    let a = CancelToken::from_token(CancellationToken::new());
+    let b = CancelToken::default();
+    a.cancel();
+    assert!(a.is_cancelled());
+    assert!(!b.is_cancelled());
+  }
 }

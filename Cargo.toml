@@ -55,10 +55,12 @@ rand = "0.10.2"
 dashmap = "6.2"
 
 jsonschema = "0.60.0"
-meval = "0.2"
 glob = "0.3"
 regex = "1"
+evalexpr = "13.1.0"
+
 # 
 ra-core = { path = "./crates/core" }
 ra-provider = { path = "./crates/provider" }
 ra-tools = { path = "./crates/tools" }
+ra-agent = { path = "./crates/agent" }
