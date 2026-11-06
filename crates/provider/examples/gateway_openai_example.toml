@@ -1,0 +1,10 @@
+# gateway_openai 示例：真实 API 配置
+#
+# 三个字段齐全时示例走真实 API 模式；任一缺失（或整文件被删除）
+# 则回退到离线服务桩演示。
+#
+# 适配器在 base_url 后自动拼接 `/chat/completions`（尾 `/` 会被剥离）。
+
+base_url = "https://api.openai.com/v1"
+api_key  = "sk-..."
+model    = "gpt-4o-mini"

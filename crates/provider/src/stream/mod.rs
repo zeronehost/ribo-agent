@@ -17,8 +17,11 @@
 //!    消费端 [`ProviderEventStream::result`] 以
 //!    `Err(STREAM_INTERRUPTED, InStream)` 结束，保证永不永久挂起。
 
+mod aggregator;
 mod event;
 mod event_stream;
 mod observed_stream;
+mod sse;
 
+pub(crate) use self::{aggregator::*, sse::*};
 pub use self::{event::ProviderEvent, event_stream::*, observed_stream::*};

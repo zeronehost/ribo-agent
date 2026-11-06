@@ -27,21 +27,4 @@ pub mod traits;
 
 /// 测试辅助工具（仅测试构建启用）。
 #[cfg(test)]
-pub(crate) mod test_support {
-  use std::sync::Once;
-
-  /// 安装全局 tracing 订阅者（输出丢弃），使日志宏内的字段表达式真正执行。
-  ///
-  /// `tracing` 宏默认在无订阅者时跳过字段求值；覆盖率统计需要这些行被执行。
-  /// 多次调用只生效一次，测试可安全并发调用。
-  pub(crate) fn init() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-      let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_writer(std::io::sink)
-        .finish();
-      let _ = tracing::subscriber::set_global_default(subscriber);
-    });
-  }
-}
+pub(crate) mod test_support;

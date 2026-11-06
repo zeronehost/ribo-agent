@@ -4,5 +4,9 @@
 //! [`crate::error`]），内部零重试（依赖单向原则）——重试由
 //! 上层调用方或网关组合。
 
+mod common;
+mod parse_task;
+
+pub mod anthropic;
 pub mod mock;
 pub mod openai;

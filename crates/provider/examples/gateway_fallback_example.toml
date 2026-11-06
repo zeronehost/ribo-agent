@@ -1,0 +1,37 @@
+# gateway_fallback 示例：三家真实提供商适配器
+#
+# 三家都注册同一个逻辑主模型 `gpt-fallback`；跨 provider 降级链
+# 按每个提供方的 cross_provider 表逐跳尝试。
+#
+# 任一分组的 base_url / api_key / model 缺失（或整文件被删除）
+# 则回退到离线服务桩演示。
+
+# === 提供商定义 ===
+
+[[providers]]
+provider_id  = "chat-primary"
+adapter     = "openai-chat"
+base_url    = "https://api.openai.com/v1"
+api_key     = "sk-..."
+model       = "gpt-4o-mini"
+
+[[providers]]
+provider_id  = "responses-primary"
+adapter     = "openai-responses"
+base_url    = "https://api.openai.com/v1"
+api_key     = "sk-..."
+model       = "gpt-4o-mini"
+
+[[providers]]
+provider_id  = "anthropic-primary"
+adapter     = "anthropic"
+base_url    = "https://api.anthropic.com"
+api_key     = "sk-ant-..."
+model       = "claude-3-5-haiku-20241022"
+
+# === 降级路由 ===
+# cross_provider.<from> = [候选 1, 候选 2, ...]
+
+[routing.cross_provider]
+"chat-primary" = ["responses-primary", "anthropic-primary"]
+"responses-primary" = ["anthropic-primary"]

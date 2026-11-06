@@ -1,9 +1,8 @@
 use super::{build_params, sse};
-use crate::error::{from_http, from_reqwest};
+use crate::adapters::common::ProviderCore;
 use ra_core::error::RiboResult;
 
 use crate::{
-  error::{AUTH_FAILED, CANCELLED, INVALID_REQUEST, TIMEOUT, pre_stream},
   ids::ProviderId,
   model::Model,
   options::ProviderOptions,
@@ -16,15 +15,8 @@ use crate::{
 /// 持有状态与 [`Provider`] 实现解耦：请求体构造委托 `build_params`、
 /// 流式解析委托 `sse::spawn_parse_task`。
 pub struct OpenAiCompatibleAdapter {
-  /// 提供方标识（注册校验保证目录内 `Model.provider` 与之一致）。
-  id: ProviderId,
-  /// 模型目录快照（只读，注册后不得就地修改；端点取自 `Model.base_url`）。
-  models: Vec<Model>,
-  /// 共享 HTTP 客户端：只设 `connect_timeout`，**不得**设全局 `timeout`——
-  /// 建流超时必须只约束到响应头到达，否则会把慢启动误判为失败。
-  http: reqwest::Client,
-  /// 鉴权密钥：只进入请求头，禁止进入日志与错误 context。
-  api_key: Option<String>,
+  /// 适配器公共骨架：身份、模型目录、HTTP 客户端与鉴权密钥。
+  core: ProviderCore,
 }
 
 impl OpenAiCompatibleAdapter {
@@ -63,10 +55,7 @@ impl OpenAiCompatibleAdapter {
     api_key: Option<String>,
   ) -> Self {
     Self {
-      id,
-      models,
-      http,
-      api_key,
+      core: ProviderCore::new(id, models, http, api_key),
     }
   }
 }
@@ -74,10 +63,10 @@ impl OpenAiCompatibleAdapter {
 #[async_trait::async_trait]
 impl Provider for OpenAiCompatibleAdapter {
   fn id(&self) -> &ProviderId {
-    &self.id
+    self.core.id()
   }
   fn models(&self) -> &[Model] {
-    &self.models
+    self.core.models()
   }
   // is_retrying_provider：裸适配器不带重试，使用 trait 默认实现（false）。
   async fn stream(
@@ -93,131 +82,26 @@ impl Provider for OpenAiCompatibleAdapter {
     } = options;
 
     // ===== 阶段 1：本地校验（PreStream）=====
-    // 1a. 模型归属：不支持的模型属路由错误，立即拒绝。
-    if !self.supports(&model.id) {
-      tracing::warn!(
-        provider = self.id().as_str(),
-        model = model.id.as_str(),
-        "model not exposed by provider"
-      );
-      return Err(pre_stream(
-        INVALID_REQUEST,
-        format!(
-          "model {} is not exposed by provider {}",
-          model.id.as_str(),
-          self.id().as_str()
-        ),
-      ));
-    }
-    // 1b. 鉴权配置：StreamOptions 不携带密钥（见 crate::options），
-    //     缺失即部署配置错误，在本地校验阶段拦截。
-    let Some(api_key) = &self.api_key else {
-      tracing::error!(provider = self.id().as_str(), "api key not configured");
-      return Err(pre_stream(
-        AUTH_FAILED,
-        "api key not configured for provider",
-      ));
-    };
-    // 1c. 选项合法性：非法采样参数不带病发出。
-    if let Some(t) = options.sampling.temperature
-      && !(0.0..=2.0).contains(&t)
-    {
-      return Err(pre_stream(
-        INVALID_REQUEST,
-        format!("temperature {t} out of range [0, 2]"),
-      ));
-    }
+    // 模型归属 / 鉴权配置 / 采样参数合法性由共享骨架统一校验。
+    let api_key = self.core.validate(model, options, 2.0)?;
 
     // ===== 阶段 2：构造请求（PreStream）=====
-    // 端点取自模型快照（支持按模型代理）；鉴权外附加头 = 模型自带 header
-    // + 调用方 extra_headers。请求体由 build_params 模块负责
-    // （Context / StreamOptions → 线格式）。
+    // 端点取自模型快照（支持按模型代理）；请求体由 build_params 模块负责。
     let endpoint =
       format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
     let body = build_params::build(model, context, options);
-    let mut req = self.http.post(&endpoint).bearer_auth(api_key).json(&body);
-    for (key, value) in model.header.iter().flatten() {
-      req = req.header(key, value);
-    }
-    for (key, value) in &options.extra_headers {
-      req = req.header(key, value);
-    }
 
     // ===== 阶段 3：发送并等待响应头（PreStream，受 timeout 约束）=====
-    // 建流超时只约束到响应头到达：用 select! 竞争实现而非
-    // per-request timeout——后者覆盖整个 body 读取期，会把建流超时
-    // 误扩展为"流总时长超时"，与阶段语义冲突。
-    // options.timeout 为 None 表示不限制（crate::options 语义）。
-    // 外部调用起点：记录出站请求锚点（endpoint 不含鉴权信息）
-    tracing::debug!(
-      provider = self.id().as_str(),
-      model = model.id.as_str(),
-      endpoint = %endpoint,
-      "sending chat completion request"
-    );
-    let response = tokio::select! {
-      biased;
-      // 建流等待中取消：立即放弃，
-      // 被 drop 的 send future 会中止底层请求。
-      _ = async {
-        match &options.cancel {
-          Some(t) => t.cancelled().await,
-          // 显式 None = 不可取消：退化为永不触发的分支
-          None => std::future::pending::<()>().await,
-        }
-      } => {
-        tracing::info!(
-          provider = self.id().as_str(), model = model.id.as_str(),
-          "pre-stream cancelled"
-        );
-        return Err(pre_stream(
-          CANCELLED,
-          "cancelled while awaiting response headers",
-        ));
-      }
-      _ = async {
-        match options.timeout {
-          Some(d) => tokio::time::sleep(d).await,
-          None => std::future::pending::<()>().await,
-        }
-      } => {
-        tracing::warn!(
-          provider = self.id().as_str(), model = model.id.as_str(),
-          "pre-stream timeout while awaiting response headers"
-        );
-        return Err(pre_stream(TIMEOUT, "response headers not received in time"));
-      }
-      resp = req.send() => resp,
-    };
+    let response = self
+      .core
+      .send_stream(&endpoint, model, options, |req| {
+        req.bearer_auth(api_key).json(&body)
+      })
+      .await?;
 
-    // ===== 非 2xx / 传输失败：建流错误（可重试 / 可降级）=====
-    let response = match response {
-      Ok(resp) if resp.status().is_success() => resp,
-      Ok(resp) => {
-        let status = resp.status();
-        // body 截断（512 字节、UTF-8 边界）与换行清理由 from_http 统一处理
-        let body_text = resp.text().await.unwrap_or_default();
-        tracing::warn!(
-          provider = self.id().as_str(),
-          model = model.id.as_str(),
-          status = status.as_u16(),
-          "pre-stream http error"
-        );
-        return Err(from_http(status.as_u16(), &body_text));
-      }
-      // DNS / TCP / TLS / 连接超时：保留 source 链
-      Err(err) => {
-        tracing::warn!(
-          provider = self.id().as_str(), model = model.id.as_str(),
-          error = %err, "pre-stream transport error"
-        );
-        return Err(from_reqwest(err));
-      }
-    };
-
-    // 外部调用成功锚点：响应头已到达（此分支保证 2xx）
+    // 外部调用成功锚点：响应头已到达（send_stream 保证 2xx）
     tracing::debug!(
-      provider = self.id().as_str(),
+      provider = self.core.id().as_str(),
       model = model.id.as_str(),
       status = response.status().as_u16(),
       "response headers received"
@@ -229,12 +113,11 @@ impl Provider for OpenAiCompatibleAdapter {
     // ===== 阶段 5：spawn 解析任务（InStream）=====
     // 建流 Promise：此处返回 Ok 不保证已有任何内容事件；
     // 首字迟滞由 TTFT 守卫或看门狗处理，绝不在建流路径等待首包。
-    // 解析任务骨架见，各适配器在自己的 sse 模块中提供同构实现。
     sse::spawn_parse_task(
       response,
       producer,
       options.cancel.clone().unwrap_or_default(),
-      self.id().clone(),
+      self.core.id().clone(),
       model.id.clone(),
     );
 
@@ -252,9 +135,12 @@ mod tests {
   use super::*;
   use crate::{
     context::Context,
-    error::{RATE_LIMITED, TRANSPORT},
+    error::{
+      AUTH_FAILED, CANCELLED, INVALID_REQUEST, RATE_LIMITED, TIMEOUT, TRANSPORT,
+    },
     ids::ModelId,
     options::{CancelToken, SamplingOptions, StreamOptions},
+    test_support::http_response,
   };
 
   /// 启动一次性本地 HTTP 服务。
@@ -309,14 +195,6 @@ mod tests {
       let _ = socket.shutdown().await;
     });
     (addr, handle)
-  }
-
-  /// 构造固定 Content-Length 的 HTTP 响应。
-  fn http_response(status_line: &str, body: &str) -> String {
-    format!(
-      "HTTP/1.1 {status_line}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-      body.len()
-    )
   }
 
   fn model_id(raw: &str) -> ModelId {
@@ -645,11 +523,12 @@ mod tests {
     handle.await.expect("服务端任务不应 panic");
   }
 
-  /// 场景：SSE 在最后一个帧后直接 EOF（无空行哨兵）。
+  /// 场景：SSE 在最后一个帧后直接 EOF（无 [DONE] 哨兵）。
   ///
-  /// 预期：解析器冲刷残余帧，finalize 正常收敛。
+  /// 预期：R2 截断检测生效——finalize 收敛为 Error + STREAM_INTERRUPTED，
+  /// 已聚合内容（"x"）仍保留在 terminal_error 消息里。
   #[tokio::test]
-  async fn stream_eof_without_done_still_converges() {
+  async fn stream_eof_without_done_converges_to_error() {
     let body =
       r#"data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}"#;
     let (addr, handle) = serve(Some(http_response("200 OK", body))).await;
@@ -669,8 +548,16 @@ mod tests {
     let message = stream.result().await.expect("EOF 后应收敛");
     handle.await.expect("服务端任务不应 panic");
 
-    assert_eq!(message.stop_reason, ra_core::message::StopReason::Stop);
-    assert_eq!(message.content.len(), 1);
+    // R2 修复：EOF 无 [DONE] 应收敛为 Error + STREAM_INTERRUPTED
+    assert_eq!(message.stop_reason, ra_core::message::StopReason::Error);
+    assert!(message.content.len() == 1, "已聚合内容应保留");
+    assert!(
+      message
+        .error_message
+        .as_ref()
+        .is_some_and(|m| m.contains("truncated")),
+      "error_message 应说明截断原因"
+    );
   }
 
   /// 场景：流式传输中途取消。

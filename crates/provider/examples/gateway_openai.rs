@@ -2,22 +2,23 @@
 //!
 //! 支持两种模式：
 //!
-//! 1. **真实 API 模式**：设置环境变量后运行，经网关请求任意
+//! 1. **真实 API 模式**：在同目录的 `gateway_openai.toml` 中填写
+//!    `base_url` / `api_key` / `model` 后运行，经网关请求任意
 //!    OpenAI 兼容端点（OpenAI / DeepSeek / 各类聚合网关）：
 //!
 //!    ```text
-//!    # PowerShell 示例
-//!    $env:OPENAI_BASE_URL = "https://api.openai.com/v1"
-//!    $env:OPENAI_API_KEY  = "sk-..."
-//!    $env:OPENAI_MODEL    = "gpt-4o-mini"
 //!    cargo run -p ra-provider --example gateway_openai
 //!    ```
 //!
-//!    `OPENAI_BASE_URL` 为基础地址，适配器在其后拼接
+//!    `base_url` 为基础地址，适配器在其后拼接
 //!    `/chat/completions`（尾 `/` 自动剥离）。
 //!
-//! 2. **离线演示模式**（未设置环境变量时回退）：本地起一个
+//! 2. **离线演示模式**（配置文件缺失或字段为空时回退）：本地起一个
 //!    OpenAI 兼容 HTTP 服务桩，完全离线可运行。
+//!
+//! 日志：`main` 中初始化 `tracing` 订阅者（默认 INFO 级别），配置加载、
+//! 提供方注册、网关建流与错误分支均输出英文日志；流的逐事件内容仍用
+//! `println!` 面向读者展示。
 //!
 //! 演示要点：
 //!
@@ -30,7 +31,7 @@
 //! 4. 离线模式额外演示建流错误：服务桩返回 HTTP 429——适配器映射
 //!    为 `RATE_LIMITED`，由网关上抛（消息附降级链摘要）。
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use ra_core::message::{
   AssistantMessage, Content, Message, UserContent, UserMessage,
@@ -46,6 +47,7 @@ use ra_provider::{
   retry::RetryPolicy,
   stream::{ObservedStream, ProviderEvent},
 };
+use serde::Deserialize;
 use tokio::{
   io::{AsyncReadExt, AsyncWriteExt},
   net::TcpListener,
@@ -70,6 +72,11 @@ async fn consume(mut stream: ObservedStream) {
   while let Some(event) = stream.next().await {
     match event {
       ProviderEvent::Start { partial } => {
+        tracing::info!(
+          provider = %partial.provider,
+          model = %partial.model,
+          "stream started"
+        );
         println!(
           "[start] provider={} model={}",
           partial.provider, partial.model
@@ -79,6 +86,12 @@ async fn consume(mut stream: ObservedStream) {
         println!("[text-delta] {delta}");
       }
       ProviderEvent::Done { reason, message } => {
+        tracing::info!(
+          reason = ?reason,
+          input = message.usage.input,
+          output = message.usage.output,
+          "stream done"
+        );
         println!("[done] reason={reason:?}");
         println!("[done] 文本：{}", first_text(&message));
         println!(
@@ -87,6 +100,7 @@ async fn consume(mut stream: ObservedStream) {
         );
       }
       ProviderEvent::Error { code, message, .. } => {
+        tracing::warn!(code = ?code, "stream error event");
         println!(
           "[error] code={code:?} msg={}",
           message.error_message.as_deref().unwrap_or("(no message)")
@@ -96,6 +110,7 @@ async fn consume(mut stream: ObservedStream) {
     }
   }
   let message = stream.result().await.expect("终态消息应可用");
+  tracing::info!(stop_reason = ?message.stop_reason, "stream finalized");
   println!(
     "[result] stop_reason={:?} text={:?}",
     message.stop_reason,
@@ -104,40 +119,87 @@ async fn consume(mut stream: ObservedStream) {
 }
 
 // ============================================================================
-// 真实 API 模式（环境变量驱动）
+// 真实 API 模式（配置文件驱动）
 // ============================================================================
 
-/// 读取真实 API 配置：三个环境变量齐全才生效，任一缺失返回 `None`。
+/// 真实 API 配置：从 `gateway_openai.toml` 读取。
 ///
-/// - `OPENAI_BASE_URL`：API 基础地址（适配器在其后拼接 `/chat/completions`）；
-/// - `OPENAI_API_KEY`：Bearer 鉴权密钥；
-/// - `OPENAI_MODEL`：模型名（即请求线格式中的 `model` 字段）。
-fn env_config() -> Option<(String, String, String)> {
-  // 空串与纯空白视同未设置，避免留下无效配置
-  let read = |key: &str| {
-    std::env::var(key)
+/// 任一字段为空或文件不存在 → 示例自动回退离线服务桩演示。
+#[derive(Debug, Deserialize)]
+struct RealConfig {
+  /// API 基础地址（适配器在其后拼接 `/chat/completions`）。
+  base_url: String,
+  /// Bearer 鉴权密钥。
+  api_key: String,
+  /// 模型名（请求线格式中的 `model` 字段）。
+  model: String,
+}
+
+/// 尝试从候选路径读取并解析配置文件。
+///
+/// 候选顺序：
+/// 1. `crates/provider/examples/gateway_openai.toml`（工作目录相对）；
+/// 2. `examples/gateway_openai.toml`（Cargo 在 workspace 根运行时生效）。
+///
+/// 文件不存在 / 解析失败 / 字段为空串 → 返回 `None`（回退离线桩）。
+fn load_config() -> Option<RealConfig> {
+  let candidates = [
+    "crates/provider/examples/gateway_openai.toml",
+    "examples/gateway_openai.toml",
+    "gateway_openai.toml",
+    // 模板文件（占位配置）：命中后字段不完整，自动回退离线服务桩
+    "crates/provider/examples/gateway_openai_example.toml",
+    "examples/gateway_openai_example.toml",
+  ];
+  let loaded = candidates.iter().find_map(|path| {
+    std::fs::read_to_string(Path::new(path))
       .ok()
-      .filter(|value| !value.trim().is_empty())
+      .map(|text| (*path, text))
+  });
+  let Some((path, text)) = loaded else {
+    tracing::warn!("no gateway_openai.toml found, using offline stubs");
+    return None;
   };
-  let base_url = read("OPENAI_BASE_URL")?;
-  let api_key = read("OPENAI_API_KEY")?;
-  let model_name = read("OPENAI_MODEL")?;
-  Some((base_url, api_key, model_name))
+  tracing::info!(path = %path, "config file loaded");
+  let cfg: RealConfig = toml::from_str(&text)
+    .inspect_err(|e| {
+      tracing::warn!(
+        error = %e,
+        "config parse failed, falling back to offline stubs"
+      );
+    })
+    .ok()?;
+  // 空串与纯空白视同未配置。
+  if cfg.base_url.trim().is_empty()
+    || cfg.api_key.trim().is_empty()
+    || cfg.model.trim().is_empty()
+  {
+    tracing::warn!("config fields incomplete, using offline stubs");
+    return None;
+  }
+  tracing::info!(base_url = %cfg.base_url, model = %cfg.model, "config validated");
+  Some(cfg)
 }
 
 /// 真实 API 模式：经网关向 OpenAI 兼容端点发起一次流式请求。
-async fn run_real(base_url: String, api_key: String, model_name: String) {
-  println!("===== 真实 API 模式：base={base_url} model={model_name} =====");
+async fn run_real(cfg: RealConfig) {
+  println!(
+    "===== 真实 API 模式：base={} model={} =====",
+    cfg.base_url, cfg.model
+  );
+  tracing::info!(
+    base_url = %cfg.base_url,
+    model = %cfg.model,
+    "real api mode"
+  );
 
   // ===== 组装模型与适配器 =====
-  // 模型 ID 即请求线格式中的 model 名；ModelId 只要求非空，
-  // 真实模型命名（含点、斜杠等）可直接使用。
-  let model_id = ModelId::parse(&model_name).expect("模型名非空即合法");
+  let model_id = ModelId::parse(&cfg.model).expect("模型名非空即合法");
   let model = Model::new(
     ProviderId::parse("openai").expect("提供方 ID 合法"),
     model_id.clone(),
-    model_name,
-    base_url,
+    cfg.model.clone(),
+    cfg.base_url.clone(),
   )
   .with_context_window(8192)
   .with_max_tokens(1024);
@@ -145,17 +207,18 @@ async fn run_real(base_url: String, api_key: String, model_name: String) {
     ProviderId::parse("openai").expect("提供方 ID 合法"),
     vec![model],
     reqwest::Client::new(),
-    Some(api_key),
+    Some(cfg.api_key),
   );
 
   // ===== 注册进网关 =====
+  tracing::info!(provider = "openai", model = %cfg.model, "registering provider");
   let mut gateway = Gateway::new(GatewayConfig::default());
   gateway
     .register(Arc::new(adapter))
     .expect("适配器应通过注册校验");
+  tracing::info!(provider = "openai", "provider registered");
 
   // ===== 构造上下文并发起请求 =====
-  // 真实 API 要求至少一条用户消息（离线服务桩不校验，故仅此处构造）。
   let ctx = Context {
     message: vec![Message::User(UserMessage {
       content: UserContent::Text(
@@ -165,13 +228,20 @@ async fn run_real(base_url: String, api_key: String, model_name: String) {
     })],
     ..Context::default()
   };
+  tracing::info!(model = %model_id.as_str(), "gateway stream requested");
   match gateway
     .stream(&model_id, &ctx, StreamOptions::default())
     .await
   {
     Ok(stream) => consume(stream).await,
-    // 建流失败（鉴权、限流、网络等）直接打印而非 panic，便于对照错误码排障
-    Err(e) => println!("[建流失败] code={} message={}", e.code(), e.message()),
+    Err(e) => {
+      tracing::warn!(
+        code = %e.code(),
+        error = %e.message(),
+        "gateway stream failed"
+      );
+      println!("[建流失败] code={} message={}", e.code(), e.message());
+    }
   }
 }
 
@@ -209,6 +279,7 @@ async fn serve_once(response: String) -> SocketAddr {
     .await
     .expect("绑定本地端口");
   let addr = listener.local_addr().expect("读取本地地址");
+  tracing::info!(addr = %addr, "offline stub listening");
   tokio::spawn(async move {
     let (mut socket, _) = listener.accept().await.expect("接受连接");
     let mut request = [0u8; 8192];
@@ -259,19 +330,24 @@ fn zero_retry_config() -> GatewayConfig {
 
 /// 离线演示模式：本地服务桩驱动「SSE 成功流」与「HTTP 429 建流错误」。
 async fn run_offline() {
-  println!(
-    "未检测到 OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL，回退到离线服务桩演示。"
-  );
+  println!("gateway_openai.toml 缺失或字段不完整，回退到离线服务桩演示。");
+  tracing::info!("offline demo mode: using local stubs");
   let ctx = Context::default();
 
   // ===== 场景 1：正常 SSE 流 =====
   // 服务桩返回两段文本增量 + [DONE]；网关建流成功后由消费端逐事件读取。
   println!("\n===== 场景 1：网关建流成功（SSE 增量）=====");
   let addr = serve_once(sse_success_body()).await;
+  tracing::info!(
+    addr = %addr,
+    scenario = "sse-success",
+    "offline stub ready"
+  );
   let mut gateway = Gateway::new(zero_retry_config());
   gateway
     .register(Arc::new(adapter(addr)))
     .expect("适配器应通过注册校验");
+  tracing::info!(model = "gpt-local", "gateway stream requested");
   let stream = gateway
     .stream(
       &ModelId::parse("gpt-local").expect("模型 ID 合法"),
@@ -289,10 +365,16 @@ async fn run_offline() {
   let err_body =
     r#"{"error":{"message":"insufficient quota","type":"insufficient_quota"}}"#;
   let addr = serve_once(http_response("429 Too Many Requests", err_body)).await;
+  tracing::info!(
+    addr = %addr,
+    scenario = "http-429",
+    "offline stub ready"
+  );
   let mut failing_gateway = Gateway::new(zero_retry_config());
   failing_gateway
     .register(Arc::new(adapter(addr)))
     .expect("适配器应通过注册校验");
+  tracing::warn!(model = "gpt-local", "gateway stream expected to fail");
 
   // ObservedStream 未实现 Debug，先映射为 () 再用 expect_err。
   let err = failing_gateway
@@ -305,16 +387,29 @@ async fn run_offline() {
     .map(|_| ())
     .expect_err("429 建流应失败");
   assert_eq!(err.code(), RATE_LIMITED);
+  tracing::warn!(
+    code = %err.code(),
+    error = %err.message(),
+    "build stream failed as expected"
+  );
   println!("[场景2] code={}", err.code());
   println!("[场景2] message={}", err.message());
 }
 
+/// 初始化 `tracing` 订阅者：示例默认输出 INFO 及以上级别的英文日志。
+fn init_tracing() {
+  tracing_subscriber::fmt()
+    .with_max_level(tracing::Level::INFO)
+    .init();
+}
+
 #[tokio::main]
 async fn main() {
-  match env_config() {
-    Some((base_url, api_key, model_name)) => {
-      run_real(base_url, api_key, model_name).await
-    }
+  init_tracing();
+  tracing::info!("gateway_openai example starting");
+  match load_config() {
+    Some(cfg) => run_real(cfg).await,
     None => run_offline().await,
   }
+  tracing::info!("gateway_openai example finished");
 }

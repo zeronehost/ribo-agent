@@ -10,7 +10,10 @@
 
 use ra_core::message::{Content, Message, ToolChoice, ToolSchema, UserContent};
 
-use crate::{context::Context, model::Model, options::StreamOptions};
+use crate::{
+  adapters::common::join_text, context::Context, model::Model,
+  options::StreamOptions,
+};
 
 /// 构造一次 OpenAI 流式请求的 JSON 请求体。
 ///
@@ -146,20 +149,6 @@ fn push_message(messages: &mut Vec<serde_json::Value>, message: &Message) {
       }));
     }
   }
-}
-
-/// 拼接内容块中的文本片段（忽略思考、工具调用等非文本块）。
-///
-/// 多个文本块以换行符连接，与 OpenAI 多段文本的常见表示一致。
-fn join_text(blocks: &[Content]) -> String {
-  blocks
-    .iter()
-    .filter_map(|block| match block {
-      Content::Text(text) => Some(text.content.as_str()),
-      _ => None,
-    })
-    .collect::<Vec<_>>()
-    .join("\n")
 }
 
 /// 把工具声明转换为 OpenAI 的 function 定义。

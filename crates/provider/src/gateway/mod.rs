@@ -24,10 +24,7 @@ mod utils;
 // 的参数类型，定义在私有子模块中；必须在此再导出，否则 crate 外部无法命名。
 pub use self::{fallback::RouteMap, option::GatewayConfig};
 
-use std::{
-  collections::HashMap,
-  sync::{Arc, RwLock},
-};
+use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 use ra_core::{
@@ -83,9 +80,7 @@ impl Gateway {
     let semaphore = Arc::new(Semaphore::new(config.max_in_flight));
     Self {
       config,
-      catalog: RwLock::new(CatalogIndex {
-        providers: HashMap::new(),
-      }),
+      catalog: RwLock::new(CatalogIndex::default()),
       breakers: DashMap::new(),
       route: RouteMap::default(),
       semaphore,

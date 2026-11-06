@@ -12,9 +12,16 @@ use crate::{
 ///
 /// 以 `HashMap` 存储注册的提供方实例；写侧由网关注册路径保护，
 /// 读侧可并发查询，并实现 [`ProviderCatalog`] 供路由与降级解析复用。
+///
+/// 同时维护注册顺序（`order`）：多个提供方暴露同名模型时，
+/// [`find_model`](ProviderCatalog::find_model) 按注册顺序取首个命中，
+/// 使主候选选择稳定可预期（先注册者优先）。
+#[derive(Default)]
 pub struct CatalogIndex {
   /// 已注册的提供方表（键为提供方 ID）。
   pub providers: HashMap<ProviderId, Arc<dyn Provider>>,
+  /// 注册顺序（用于同名模型的主候选选择）。
+  pub order: Vec<ProviderId>,
 }
 
 impl CatalogIndex {
@@ -23,8 +30,13 @@ impl CatalogIndex {
     self.providers.contains_key(id)
   }
   /// 插入（或覆盖）一个提供方实例，键取自其自身 ID。
+  ///
+  /// 覆盖已有 ID 时保持原注册顺序；新 ID 追加到顺序末尾。
   pub fn insert(&mut self, provider: Arc<dyn Provider>) {
-    self.providers.insert(provider.id().clone(), provider);
+    let id = provider.id().clone();
+    if self.providers.insert(id.clone(), provider).is_none() {
+      self.order.push(id);
+    }
   }
 }
 
@@ -42,9 +54,12 @@ impl ProviderCatalog for CatalogIndex {
       .cloned()
   }
   fn find_model(&self, model: &ModelId) -> Option<(ProviderId, Model)> {
-    // 逐个提供方扫描，命中首个同名模型即返回；遍历顺序不保证稳定。
-    self.providers.iter().find_map(|(pid, p)| {
-      p.models()
+    // 按注册顺序逐个提供方扫描，命中首个同名模型即返回。
+    self.order.iter().find_map(|pid| {
+      self
+        .providers
+        .get(pid)?
+        .models()
         .iter()
         .find(|m| &m.id == model)
         .map(|m| (pid.clone(), m.clone()))
@@ -52,7 +67,7 @@ impl ProviderCatalog for CatalogIndex {
   }
 
   fn providers(&self) -> Vec<ProviderId> {
-    self.providers.keys().cloned().collect()
+    self.order.clone()
   }
 }
 
@@ -113,9 +128,7 @@ mod tests {
   #[test]
   fn indexes_provider_and_models() {
     let pid = provider_id("alpha");
-    let mut catalog = CatalogIndex {
-      providers: HashMap::new(),
-    };
+    let mut catalog = CatalogIndex::default();
     catalog.insert(Arc::new(CatalogStub {
       id: pid.clone(),
       models: vec![model("alpha", "alpha-model")],
@@ -140,9 +153,7 @@ mod tests {
   /// 预期：`provider` / `model` / `find_model` 全部返回 `None`。
   #[test]
   fn returns_none_for_unknown_entities() {
-    let catalog = CatalogIndex {
-      providers: HashMap::new(),
-    };
+    let catalog = CatalogIndex::default();
     let pid = provider_id("missing");
     let mid = ModelId::parse("missing-model").unwrap();
 
@@ -157,9 +168,7 @@ mod tests {
   /// 预期：`find_model` 遍历首个提供方未命中后继续扫描并命中第二个。
   #[test]
   fn find_model_scans_all_providers() {
-    let mut catalog = CatalogIndex {
-      providers: HashMap::new(),
-    };
+    let mut catalog = CatalogIndex::default();
     catalog.insert(Arc::new(CatalogStub {
       id: provider_id("alpha"),
       models: vec![model("alpha", "alpha-model")],
@@ -175,6 +184,29 @@ mod tests {
 
     assert_eq!(pid, provider_id("beta"));
     assert_eq!(found.id, ModelId::parse("beta-model").unwrap());
+  }
+
+  /// 场景：两个提供方暴露同名模型。
+  ///
+  /// 预期：`find_model` 按注册顺序返回首个注册者，主候选选择稳定可预期。
+  #[test]
+  fn find_model_prefers_earlier_registration() {
+    let mut catalog = CatalogIndex::default();
+    catalog.insert(Arc::new(CatalogStub {
+      id: provider_id("alpha"),
+      models: vec![model("alpha", "shared-model")],
+    }));
+    catalog.insert(Arc::new(CatalogStub {
+      id: provider_id("beta"),
+      models: vec![model("beta", "shared-model")],
+    }));
+
+    let mid = ModelId::parse("shared-model").unwrap();
+    let (pid, found) =
+      catalog.find_model(&mid).expect("同名模型应命中首个注册者");
+
+    assert_eq!(pid, provider_id("alpha"));
+    assert_eq!(found.provider, provider_id("alpha"));
   }
 
   /// 场景：测试桩的建流方法。
