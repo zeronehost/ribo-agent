@@ -1,0 +1,31 @@
+# ra-harness 真实 provider 示例配置（模板）。
+#
+# 复制为 harness_fallback.toml 并填入真实端点与密钥后运行：
+#   cargo run -p ra-harness --example harness_fallback
+#
+# 本模板保持占位状态时，示例会自动回退离线桩模式（本地 HTTP 桩演示
+# 主链 429 → 兜底成功的跨提供方降级）。
+#
+# 字段说明：
+# - query_model：网关查询入口，必须是某个 provider 暴露的 model；
+# - providers[].adapter：openai-chat | openai-responses | anthropic；
+# - routing.cross_provider：主 provider → 候选列表（须引用已注册 provider_id）。
+
+query_model = "your-model-name"
+
+[[providers]]
+provider_id = "chat-primary"
+adapter = "openai-chat"
+base_url = "https://your-endpoint.example.com"
+api_key = "your-api-key"
+model = "your-model-name"
+
+[[providers]]
+provider_id = "anthropic-backup"
+adapter = "anthropic"
+base_url = "https://your-anthropic-endpoint.example.com"
+api_key = "your-api-key"
+model = "your-model-name"
+
+[routing.cross_provider]
+"chat-primary" = ["anthropic-backup"]
