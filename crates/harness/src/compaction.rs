@@ -265,6 +265,25 @@ fn estimate_tokens(messages: &[Message]) -> usize {
   chars / 4 + 4 * messages.len()
 }
 
+/// 估算消息序列的 token 占用（公开包装，供状态行上下文占比使用）。
+///
+/// 口径与压缩触发估算完全一致（字符 / 4 + 每条消息 4 token 附加，
+/// 内联图片 base64 不计）——估算值偏保守，仅作展示与阈值参考，
+/// 不承诺与真实 tokenizer 对齐。
+///
+/// # Examples
+///
+/// ```
+/// use ra_harness::estimate_context_tokens;
+/// use ra_core::message::Message;
+///
+/// let empty: Vec<Message> = Vec::new();
+/// assert_eq!(estimate_context_tokens(&empty), 0);
+/// ```
+pub fn estimate_context_tokens(messages: &[Message]) -> usize {
+  estimate_tokens(messages)
+}
+
 /// 单条消息的字符统计（不含内联图片 base64，避免严重高估）。
 fn message_chars(msg: &Message) -> usize {
   match msg {

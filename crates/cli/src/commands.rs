@@ -20,11 +20,77 @@ pub enum Command {
   Skills,
   /// `/sessions`：列出会话键。
   Sessions,
+  /// `/status`：状态行摘要（token 累计 / 在途 / 上下文占比）。
+  Status,
   /// `/history [n]`：最近 n 条转录（默认 10）。
   History(usize),
   /// `/exit` / `/quit`：退出。
   Exit,
 }
+
+/// 命令元数据表条目：CLI `/help` 展示与 TUI Tab 补全的同源候选（16 §10）。
+pub struct CommandMeta {
+  /// 主名（含 `/` 前缀）。
+  pub name: &'static str,
+  /// 别名（含 `/` 前缀；无别名为空切片）。
+  pub aliases: &'static [&'static str],
+  /// 参数占位文本（无参数为空串）。
+  pub args: &'static str,
+  /// 一句话说明。
+  pub description: &'static str,
+}
+
+/// 全部命令的元数据表（与 `parse_line` 支持集一一对应；新增命令须同步）。
+pub const COMMANDS: &[CommandMeta] = &[
+  CommandMeta {
+    name: "/help",
+    aliases: &["/?"],
+    args: "",
+    description: "显示本清单",
+  },
+  CommandMeta {
+    name: "/new",
+    aliases: &[],
+    args: "[name]",
+    description: "轮换会话键（缺省自动轮换）",
+  },
+  CommandMeta {
+    name: "/stop",
+    aliases: &["/cancel"],
+    args: "",
+    description: "取消在途回合",
+  },
+  CommandMeta {
+    name: "/skills",
+    aliases: &[],
+    args: "",
+    description: "列出技能与诊断",
+  },
+  CommandMeta {
+    name: "/sessions",
+    aliases: &[],
+    args: "",
+    description: "列出会话键",
+  },
+  CommandMeta {
+    name: "/status",
+    aliases: &[],
+    args: "",
+    description: "状态摘要（会话/模式/在途）",
+  },
+  CommandMeta {
+    name: "/history",
+    aliases: &[],
+    args: "[n]",
+    description: "最近 n 条转录（默认 10）",
+  },
+  CommandMeta {
+    name: "/exit",
+    aliases: &["/quit"],
+    args: "",
+    description: "退出",
+  },
+];
 
 /// 解析失败（未知命令 / 非法参数）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +127,7 @@ pub fn parse_line(line: &str) -> Result<Command, ParseError> {
     "/cancel" => Ok(Command::Cancel),
     "/skills" => Ok(Command::Skills),
     "/sessions" => Ok(Command::Sessions),
+    "/status" => Ok(Command::Status),
     "/history" => match rest.parse::<usize>() {
       Ok(n) => Ok(Command::History(n)),
       Err(_) if rest.is_empty() => Ok(Command::History(10)),
@@ -77,7 +144,7 @@ mod tests {
 
   /// 场景：全部命令解析（CMD-01）。
   ///
-  /// 预期：8 命令含参数形态、非命令行直通 Chat、未知命令报错、
+  /// 预期：9 命令含参数形态、非命令行直通 Chat、未知命令报错、
   /// /history 缺省与非法参数分支。
   #[test]
   fn parse_line_parses_all_commands() {
@@ -93,6 +160,7 @@ mod tests {
     assert_eq!(parse_line("/cancel"), Ok(Command::Cancel));
     assert_eq!(parse_line("/skills"), Ok(Command::Skills));
     assert_eq!(parse_line("/sessions"), Ok(Command::Sessions));
+    assert_eq!(parse_line("/status"), Ok(Command::Status));
     assert_eq!(parse_line("/quit"), Ok(Command::Exit));
     assert_eq!(parse_line("/exit"), Ok(Command::Exit));
     // /new：缺省轮换 vs 自定义键名

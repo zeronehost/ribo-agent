@@ -20,7 +20,9 @@ use ra_agent::{
 };
 use ra_core::{error::RiboResult, message::Message};
 
-pub use self::compaction::{CompactionOutcome, Compactor};
+pub use self::compaction::{
+  CompactionOutcome, Compactor, estimate_context_tokens,
+};
 pub use self::config::{CompactionConfig, ContextConfig, HarnessConfig};
 pub use self::context::HarnessContext;
 pub use self::session_provider::PersistentSessionProvider;

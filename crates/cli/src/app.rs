@@ -251,9 +251,27 @@ impl<S: LineSource + Send + 'static> Repl<S> {
       Command::Stop | Command::Cancel => self.handle_stop().await,
       Command::Skills => self.print_skills(),
       Command::Sessions => self.print_sessions().await,
+      Command::Status => self.print_status(),
       Command::History(n) => self.print_history(n).await,
       Command::Exit => unreachable!("Exit 已在主循环分流"),
     }
+  }
+
+  /// `/status`：状态摘要（会话键 / 模式 / 在途回合）。
+  ///
+  /// token 累计与上下文占比为 TUI 状态行专属（CLI 事件流不做累计），
+  /// 此处仅输出 REPL 已持有的事实。
+  fn print_status(&self) {
+    let in_flight = matches!(self.turn, TurnState::Running { .. });
+    let mode = match self.session.mode {
+      ConfigMode::Real => "real",
+      ConfigMode::Mock => "mock",
+    };
+    println!(
+      "session: {} | mode: {mode} | in_flight: {in_flight} | warnings: {}",
+      self.current_key,
+      self.session.warnings.len()
+    );
   }
 
   /// `/skills`：技能名 + 装配期诊断。
@@ -324,19 +342,27 @@ fn banner(session: &CliSession) {
   println!("输入 /help 查看命令。");
 }
 
-/// `/help` 命令清单。
+/// `/help` 命令清单（与 TUI 帮助浮层共用 `COMMANDS` 元数据表，16 §10）。
 fn print_help() {
-  println!(
-    "命令：\n\
-     /help            显示本清单\n\
-     /new [name]      轮换会话键（缺省自动轮换）\n\
-     /stop | /cancel  取消在途回合\n\
-     /skills          列出技能与诊断\n\
-     /sessions        列出会话键\n\
-     /history [n]     最近 n 条转录（默认 10）\n\
-     /exit | /quit    退出\n\
-     其余输入作为消息发送给模型。"
-  );
+  println!("命令：");
+  for meta in crate::commands::COMMANDS {
+    let alias = if meta.aliases.is_empty() {
+      String::new()
+    } else {
+      format!("({})", meta.aliases.join(" "))
+    };
+    let args = if meta.args.is_empty() {
+      String::new()
+    } else {
+      format!(" {} ", meta.args)
+    };
+    println!(
+      "{:<16} {}",
+      format!("{}{alias}{args}", meta.name),
+      meta.description
+    );
+  }
+  println!("其余输入作为消息发送给模型。");
 }
 
 /// 转录消息单行摘要：角色 + 首个文本块（`/history` 输出）。

@@ -161,6 +161,56 @@ fn build_mock_gateway(
   Ok((Arc::new(gateway), model))
 }
 
+/// 回合在途句柄：TUI 与 CLI 共用 prompt 发起逻辑（16 详细设计 §13.1）。
+///
+/// `done` 的类型为 `RiboResult<()>`（即 `Result<(), RiboError>`），
+/// **不是** `Result<(), RiboResult<()>>`——避免嵌套 Result。
+///
+/// `done` 通道用于测试或主循环**可选**地观察回合结果（成功 / 失败原因）；
+/// **Ctrl-C 退出流程直接 `await handle.task` 等待落盘，不消费 `done`**——
+/// 任务本身在 `prompt` 返回后才结束，任务结束即等于「一轮对话落盘完成」。
+pub struct TurnHandle {
+  /// prompt 任务句柄（任务结束 = 落盘完成）。
+  pub task: tokio::task::JoinHandle<()>,
+  /// 回合结果通道（容量 1；任务在 `prompt` 返回后先投递再结束）。
+  pub done: tokio::sync::mpsc::Receiver<RiboResult<()>>,
+}
+
+impl CliSession {
+  /// 发起一轮对话并返回在途句柄（结果通道为复位权威，对齐 Repl.turn_done_rx）。
+  ///
+  /// **Send 边界**：`tokio::spawn` 要求闭包 Future 为 `Send`；`harness`
+  /// 为 `Arc<Harness>`，`Harness::prompt` 的 await 链均为 `Send`，故闭包
+  /// 满足 `Send`。若未来 `prompt` 引入非 `Send` 局部（如 `Rc`/`RefCell`
+  /// 跨 await），须改用 `spawn_local` 或 `LocalSet`。
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # use ra_cli::config::LoadOutcome;
+  /// # async fn demo(outcome: LoadOutcome) -> Result<(), ra_core::error::RiboError> {
+  /// let session = ra_cli::config::assemble::assemble(&outcome)?;
+  /// let handle = session.spawn_turn("default", "hello");
+  /// // 等待落盘完成：任务结束即等于一轮对话完成
+  /// handle.task.await.expect("prompt 任务不 panic");
+  /// # Ok(())
+  /// # }
+  /// ```
+  pub fn spawn_turn(&self, key: &str, text: &str) -> TurnHandle {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    let harness = self.harness.clone(); // Arc<Harness>，Send
+    let key = key.to_string();
+    let text = text.to_string();
+    // prompt 返回后先把结果塞进 done（容量 1，缓冲即返回，不阻塞任务
+    // 结束），再让 task 结束——任务结束即「落盘完成」
+    let task = tokio::spawn(async move {
+      let result = harness.prompt(&key, &text).await.map(|_| ());
+      let _ = tx.send(result).await;
+    });
+    TurnHandle { task, done: rx }
+  }
+}
+
 /// 由 LoadOutcome 装配 REPL 会话（完整前链见 14 §6 装配映射表）。
 ///
 /// mock 模式使用空脚本；E2E 需要按回合供给脚本时走

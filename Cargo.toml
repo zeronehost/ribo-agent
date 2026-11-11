@@ -63,9 +63,22 @@ evalexpr = "13.1"
 toml = "1.2"
 clap = { version = "4", features = ["derive"] }
 
+# TUI（阶段 5b，ra-tui 专用）
+# crossterm 固定 0.28：tui-textarea 0.7 的 From<KeyEvent> 绑定 0.28
+# 版本三角锁定：tui-textarea 0.7 依赖 ratatui 0.29 + crossterm 0.28，
+# ra-tui 必须与之对齐（0.30 的 Widget trait 不兼容其 impl）
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+anyhow = "1"
+once_cell = "1"
+unicode-width = "0.2"
+portable-pty = "0.9"
+
 # 
 ra-core = { path = "./crates/core" }
 ra-provider = { path = "./crates/provider" }
 ra-tools = { path = "./crates/tools" }
 ra-agent = { path = "./crates/agent" }
 ra-harness = { path = "./crates/harness" }
+ra-cli = { path = "./crates/cli" }

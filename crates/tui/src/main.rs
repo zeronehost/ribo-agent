@@ -1,0 +1,114 @@
+//! ra-tui 入口：参数解析 → 配置/装配 → raw mode → 主循环 → 退出码
+//!（16 详细设计 §14）。
+//!
+//! 启动失败（配置 / 装配）在 raw mode 进入**之前**用 stderr 报错退出
+//!（15 §4.4）；渲染路径禁止 `println!`，tracing 走文件通道。
+//!
+//! **Tokio 上下文**：入口用 `#[tokio::main]` 让整个 main 体运行在
+//! multi-thread runtime 中。键盘 task 的 `spawn_blocking` 经
+//! `Handle::current()` 取 runtime，若在 runtime 之外启动会 panic
+//! 「there is no reactor running」；若改回手工构建 `Runtime`，必须把
+//! 构建与 `enter()` 提前到启动键盘 task **之前**。
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use clap::Parser;
+use ra_cli::config::LoadOutcome;
+use ra_cli::config::assemble::{CliSession, assemble};
+
+mod app;
+mod input;
+mod lifecycle;
+mod render_helpers;
+mod state;
+mod turn;
+mod view;
+
+use crate::app::App;
+use crate::lifecycle::RawModeGuard;
+
+/// ra-tui 启动参数。
+#[derive(Debug, Parser)]
+#[command(name = "ribo-tui", version, about = "Ribo Agent 终端 TUI")]
+pub struct TuiArgs {
+  /// 配置文件路径；文件不存在时以 mock 模式启动（同 ra-cli，14 §5）。
+  #[arg(short, long, value_name = "PATH", default_value = "ribo.toml")]
+  pub config: PathBuf,
+
+  /// 覆盖配置中的工作空间根目录（harness 层 `root`）。
+  #[arg(long, value_name = "PATH")]
+  pub root: Option<PathBuf>,
+}
+
+/// ra-tui 入口：整个函数体运行在 `#[tokio::main]` 的 runtime 上下文中。
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> ExitCode {
+  // ===== 阶段 1：参数与配置加载（raw mode 之前，失败 stderr 退出）=====
+  let args = TuiArgs::parse();
+  let outcome = LoadOutcome::load(Some(&args.config), args.root.as_deref());
+  let root = outcome.harness.root.clone();
+
+  // ===== 阶段 2：日志落文件（stdout 由 TUI 全屏占用，11 §11）=====
+  let log_guard = match ra_cli::logging::init_file_logging(&root) {
+    Ok(guard) => guard,
+    Err(err) => {
+      eprintln!("日志初始化失败：{err}");
+      return ExitCode::FAILURE;
+    }
+  };
+
+  // ===== 阶段 3：Ctrl-C 超时（[tui] 层，ra-tui 自读配置文件）=====
+  let config_text = std::fs::read_to_string(&args.config).ok();
+  let ctrl_c_timeout = lifecycle::parse_ctrl_c_timeout(config_text.as_deref());
+
+  // ===== 阶段 4：装配（失败在 guard 前 stderr 退出）=====
+  let session: CliSession = match assemble(&outcome) {
+    Ok(session) => session,
+    Err(err) => {
+      eprintln!("装配失败：{err}");
+      return ExitCode::FAILURE;
+    }
+  };
+
+  // ===== 阶段 5：raw mode + panic hook + 主循环 =====
+  let _log_guard = log_guard; // guard 持有至进程结束（非阻塞 writer）
+  let _raw = match RawModeGuard::enter() {
+    Ok(guard) => guard,
+    Err(err) => {
+      eprintln!("终端初始化失败：{err}");
+      return ExitCode::FAILURE;
+    }
+  };
+  lifecycle::install_panic_hook();
+
+  // spawn_blocking 需要 Tokio 上下文：此处已在 #[tokio::main] 的 runtime 内。
+  // 若改为手工 Runtime::block_on，必须先构建并 enter() 到本行之前。
+  let (key_rx, keyboard_task) = crate::app::spawn_keyboard();
+  let terminal = match ratatui::Terminal::new(
+    ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+  ) {
+    Ok(terminal) => terminal,
+    Err(err) => {
+      eprintln!("终端后端初始化失败：{err}");
+      return ExitCode::FAILURE;
+    }
+  };
+
+  let mut app = App::new(session, key_rx);
+  app.state.ctrl_c_timeout = ctrl_c_timeout;
+  // runtime 由 #[tokio::main] 提供，直接 await 主循环即可
+  let run_result = app.run(terminal).await;
+
+  // 键盘 task 在主循环退出后由 blocking_send 失败自然结束
+  let _ = keyboard_task.is_finished();
+
+  match run_result {
+    Ok(()) => ExitCode::SUCCESS,
+    Err(err) => {
+      // run 内部错误路径已由 panic hook / guard 兜底恢复终端
+      eprintln!("TUI 运行错误：{err:#}");
+      ExitCode::FAILURE
+    }
+  }
+}
