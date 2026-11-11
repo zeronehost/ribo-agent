@@ -130,7 +130,7 @@ impl BaseAgent {
     if !session.is_running() {
       return false;
     }
-    session.cancel.abort();
+    session.abort_cancel();
     tracing::info!(session_key = %session_key, "abort requested for active run");
     true
   }
@@ -338,7 +338,7 @@ mod tests {
 
     let session = sessions.get_or_create("s1").await.expect("预建会话");
     assert!(!agent.stop("s1").await);
-    assert!(!session.cancel.is_aborted());
+    assert!(!session.cancel_is_aborted());
   }
 
   // 场景：follow_up 会话不存在时创建并入队。

@@ -103,8 +103,7 @@ impl ContextProvider for HarnessContext {
     // ===== 阶段 2：压缩（注入会话子取消令牌，联动 stop）=====
     let outcome = match &self.compactor {
       Some(compactor) => {
-        let cancel =
-          Some(CancelToken::from_token(session.cancel.token().clone()));
+        let cancel = Some(CancelToken::from_token(session.cancel_token()));
         compactor
           .compact(&messages, &self.config.compaction, cancel)
           .await

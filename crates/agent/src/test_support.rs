@@ -294,7 +294,7 @@ impl ToolProvider for MockTools {
       ToolBehavior::CancelRoot => {
         // 执行期间触发会话取消根：abort 树级联到循环信号
         if let Some(session) = &self.session {
-          session.cancel.abort();
+          session.abort_cancel();
         }
         Ok(text_result("root aborted"))
       }

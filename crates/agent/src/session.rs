@@ -24,8 +24,9 @@ pub struct Session {
   /// 同会话运行串行锁：循环入口 `try_lock` 探测，与 `running` CAS
   /// 构成双检查（CAS 快速拒绝、锁兜底竞态窗口）。
   pub run_lock: tokio::sync::Mutex<()>,
-  /// 本会话取消根（`stop` 触发；abort 树根）。
-  pub cancel: AbortHandle,
+  /// 本会话取消根（`stop` 触发；运行收尾经 [`Session::refresh_cancel`]
+  /// 换发新根——`AbortHandle` 一旦 abort 永久保持触发态，无复位语义）。
+  cancel: Mutex<AbortHandle>,
   /// steering 队列：运行中插队消息（轮间注入）。
   pub steering_queue: Arc<Mutex<PendingMessageQueue>>,
   /// follow-up 队列：本应停止后续跑的消息。
@@ -65,13 +66,44 @@ impl Session {
       key: key.into(),
       messages: RwLock::new(Vec::new()),
       run_lock: tokio::sync::Mutex::new(()),
-      cancel: AbortHandle::new(),
+      cancel: Mutex::new(AbortHandle::new()),
       steering_queue: Arc::new(Mutex::new(PendingMessageQueue::default())),
       follow_up_queue: Arc::new(Mutex::new(PendingMessageQueue::default())),
       running: AtomicBool::new(false),
       created_at: now,
       last_active_at: AtomicI64::new(now),
     }
+  }
+
+  /// 触发会话取消：当前取消根 abort，级联到全部子令牌（`stop` 路径）。
+  pub fn abort_cancel(&self) {
+    self.cancel.lock().expect("cancel root lock").abort();
+  }
+
+  /// 克隆当前取消根令牌（`LoopConfig::for_session` / 上下文压缩装配用）。
+  pub fn cancel_token(&self) -> tokio_util::sync::CancellationToken {
+    self
+      .cancel
+      .lock()
+      .expect("cancel root lock")
+      .token()
+      .clone()
+  }
+
+  /// 取消根是否已触发（观测用）。
+  pub fn cancel_is_aborted(&self) -> bool {
+    self.cancel.lock().expect("cancel root lock").is_aborted()
+  }
+
+  /// 换发新取消根：上一次运行的 `stop` 会永久 abort 旧根
+  /// （`AbortHandle` 无复位语义），运行收尾时调用保证会话在
+  /// `/stop` 之后可继续对话（概设 v2.4 复位三分支的会话侧配套）。
+  ///
+  /// 并发安全：仅由「已持有 run_lock + running 标志」的运行收尾路径
+  /// 调用；外部 `stop` 在无活动运行时是 no-op（`is_running` 检查），
+  /// 不会与新根产生竞态。
+  pub fn refresh_cancel(&self) {
+    *self.cancel.lock().expect("cancel root lock") = AbortHandle::new();
   }
 
   /// 批量追加转录并刷新活跃时间（空切片直接返回）。

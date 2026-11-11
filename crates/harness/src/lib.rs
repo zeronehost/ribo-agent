@@ -63,6 +63,23 @@ impl Harness {
     }
   }
 
+  /// 订阅生命周期事件流。
+  ///
+  /// 透传 [`BaseAgent::subscribe`](ra_agent::agent::BaseAgent::subscribe)
+  /// （`Agent` trait 方法）：REPL 等宿主由此获得 `AgentEvent` 广播接收器，
+  /// 无须感知 `BaseAgent`。
+  ///
+  /// # 返回
+  ///
+  /// `broadcast::Receiver<AgentEvent>`；同一 Harness 可多次调用，
+  /// 各接收器独立（broadcast 多消费者语义）。
+  pub fn subscribe(
+    &self,
+  ) -> tokio::sync::broadcast::Receiver<ra_agent::events::AgentEvent> {
+    use ra_agent::traits::Agent;
+    self.agent.subscribe()
+  }
+
   /// 发送一条用户文本并驱动完整回合。
   ///
   /// # Returns

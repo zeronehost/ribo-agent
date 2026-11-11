@@ -117,6 +117,8 @@ pub async fn run_agent_loop(
       // 校验失败也走清理：复位运行状态再返回
       drop(run_guard);
       session.running.store(false, Ordering::Release);
+      // 本次调用已持有运行权：换发取消根（上一次运行的 stop 可能已 abort 旧根）
+      session.refresh_cancel();
       return Err(context_build_error(
         &session.key,
         "empty input requires a continuable transcript (non-empty, last not assistant)",
@@ -133,6 +135,8 @@ pub async fn run_agent_loop(
       Err(err) => {
         drop(run_guard);
         session.running.store(false, Ordering::Release);
+        // 本次调用已持有运行权：换发取消根（上一次运行的 stop 可能已 abort 旧根）
+        session.refresh_cancel();
         return Err(err);
       }
     };
@@ -164,6 +168,10 @@ pub async fn run_agent_loop(
   session.append_messages(&msgs);
   drop(run_guard);
   session.running.store(false, Ordering::Release);
+  // 换发取消根：本回合的 stop 已永久 abort 旧根（AbortHandle 无复位
+  // 语义），不复位会导致会话此后所有回合在 pre-stream 阶段被旧信号
+  // 立即取消（/stop 后无法继续对话）
+  session.refresh_cancel();
   session.touch();
 
   match outcome {
@@ -786,11 +794,13 @@ mod tests {
 
   use super::*;
   use crate::{
+    adapter::ToolManagerAdapter,
     emit::CollectorEmitter,
     error::{CONTEXT_BUILD_ERROR, MAX_ITERATIONS, SESSION_BUSY},
     test_support::*,
-    traits::{ContextProvider, user_text_message},
+    traits::{ContextProvider, PassthroughContextProvider, user_text_message},
   };
+  use ra_tools::manager::ToolManager;
 
   /// 一次循环测试的运行环境。
   struct TestRun {
@@ -1796,5 +1806,78 @@ mod tests {
     assert_eq!(report.outcome, LoopOutcome::Completed);
     assert_eq!(report.new_messages.len(), 1, "新增消息不含历史");
     assert_eq!(run.session.snapshot().len(), 2);
+  }
+
+  // ===== INT-VAL-01（10 §11）：真实 ToolManager 校验失败的回灌链路 =====
+
+  // 场景：mock 网关返回非法 echo 调用（缺 required "text" 且
+  // additionalProperties=false），工具边界为真实 ToolManagerAdapter
+  // + create_echo_tool（非 MockTools 桩）。
+  // 预期：ToolManager 阶段 4 schema 校验失败 → tool.invalid_arguments →
+  // fold_tool_error 折叠为 ToolResultMessage(is_error=true，错误文本在
+  // content Text 块) 回灌转录；循环不被中断，消费第二轮脚本正常收敛。
+  #[tokio::test]
+  async fn int_val_01_schema_validation_failure_returns_tool_result_error() {
+    let session = Arc::new(Session::new("s1"));
+    let collector = Arc::new(CollectorEmitter::new());
+    // ===== 脚本：第一轮要求 echo 非法参数 → 第二轮正常收敛 =====
+    let (gateway, provider) = mock_gateway_with_recorder(vec![
+      complete_step(
+        StopReason::ToolUse,
+        assistant_with_tool_calls(vec![tool_call(
+          "c1",
+          "echo",
+          serde_json::json!({ "foo": 1 }),
+        )]),
+      ),
+      complete_step(StopReason::Stop, text_assistant("recovered")),
+    ]);
+
+    // ===== 真实工具边界：ToolManager + echo 工具 =====
+    let manager = ToolManager::new();
+    manager
+      .register(ra_tools::builtin::create_echo_tool())
+      .expect("echo 工具注册成功");
+    let deps = LoopDeps {
+      gateway,
+      model: ModelId::parse("mock-model").expect("mock 模型 ID 合法"),
+      tools: Arc::new(ToolManagerAdapter::new(Arc::new(manager))),
+      context_provider: Arc::new(PassthroughContextProvider::new(Vec::new())),
+    };
+    let config = LoopConfig::for_session(&session);
+    let emitter: Arc<dyn AgentEmitter> = collector.clone();
+
+    let report = run_agent_loop(&deps, &session, input(), &config, emitter)
+      .await
+      .expect("校验失败应折叠为工具结果而非中断循环");
+
+    // ===== 断言：转录含 is_error 工具结果，错误文本在 content Text 块 =====
+    let tool_result = report
+      .new_messages
+      .iter()
+      .find_map(|m| match m {
+        Message::ToolResult(r) if r.is_error => Some(r),
+        _ => None,
+      })
+      .expect("转录应含 is_error 工具结果");
+    assert_eq!(tool_result.tool_name, "echo");
+    assert_eq!(tool_result.tool_call_id, "c1");
+    let error_text = tool_result
+      .content
+      .iter()
+      .find_map(|c| match c {
+        Content::Text(t) => Some(t.content.clone()),
+        _ => None,
+      })
+      .expect("错误文本应为 content 的 Text 块");
+    assert!(
+      error_text.contains("invalid_arguments") || error_text.contains("text"),
+      "错误文本应描述参数校验失败，实际：{error_text}"
+    );
+
+    // ===== 断言：循环未中断——消费第二轮脚本正常收敛 =====
+    assert_eq!(report.outcome, LoopOutcome::Completed);
+    assert_eq!(provider.record().len(), 2, "应发起两次 LLM 调用");
+    assert!(!session.is_running(), "收尾应复位运行标志");
   }
 }

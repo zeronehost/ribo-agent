@@ -55,7 +55,7 @@ impl LoopConfig {
       max_iterations: Self::DEFAULT_MAX_ITERATIONS,
       steering: session.steering_queue.clone(),
       follow_up: session.follow_up_queue.clone(),
-      signal: session.cancel.token().clone(),
+      signal: session.cancel_token(),
     }
   }
 
@@ -146,7 +146,7 @@ mod tests {
 
     // 信号联动：会话取消根触发后 config 信号同步取消
     assert!(!config.signal.is_cancelled());
-    session.cancel.abort();
+    session.abort_cancel();
     assert!(config.signal.is_cancelled());
   }
 
