@@ -1,13 +1,16 @@
 # ra-cli 配置模板（与 crates/cli/src/config/schema.rs 六层 schema 一一对应）
 #
 # 用法：
-#   复制本文件为 ribo.toml（--config 的默认文件名）并填入真实端点与密钥，
-#   或用 --config 指定任意路径；
+#   复制本文件为 ribo.toml（未指定 --config 时自动探测的默认文件名）
+#   并填入真实端点与密钥，或用 --config 指定任意路径；
 #   密钥一律走 "$ENV_NAME" 占位，不落盘。
+#
+# 配置文件选择：显式 --config 优先；未指定时仅当 ribo.toml 存在才加载，
+#   否则走全默认 Mock（ribo 与 ribo-tui 同规则）。
 #
 # 降级语义（启动横幅会打印 mode 与 warnings）：
 #   - 本模板保持占位状态（your-* / example.com） → 整体回退 Mock 模式；
-#   - 完全不提供配置文件                          → 整体回退 Mock 模式；
+#   - 未指定 --config 且 ribo.toml 不存在          → 整体回退 Mock 模式；
 #   - 某个 $ENV 密钥未设置                        → 局部降级：该 provider 跳过注册，
 #     路由链中引用它的候选一并剔除；若 query_model 因此悬空 → 整体回退 Mock；
 #   - 单个配置层解析失败（未知字段忽略除外）      → 该层保留默认 + warning。

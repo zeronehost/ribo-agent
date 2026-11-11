@@ -121,7 +121,8 @@ pub fn parse_line(line: &str) -> Result<Command, ParseError> {
   let (head, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
   let rest = rest.trim();
   match head {
-    "/help" => Ok(Command::Help),
+    // `/?` 为 COMMANDS 中声明的 `/help` 别名
+    "/help" | "/?" => Ok(Command::Help),
     "/new" => Ok(Command::New((!rest.is_empty()).then(|| rest.to_string()))),
     "/stop" => Ok(Command::Stop),
     "/cancel" => Ok(Command::Cancel),
@@ -181,5 +182,27 @@ mod tests {
       parse_line("/nope"),
       Err(ParseError::UnknownCommand("/nope".into()))
     );
+  }
+
+  /// 场景：元数据表声明的命令名与别名均可解析（CMD-02，防漂移）。
+  ///
+  /// 预期：遍历 `COMMANDS` 的 `name` 与 `aliases`，`parse_line` 均不返回
+  /// `UnknownCommand`；`/help` 的 `/?` 别名明确映射到 `Help`。
+  #[test]
+  fn all_declared_commands_and_aliases_are_parsable() {
+    for meta in COMMANDS {
+      assert!(
+        !matches!(parse_line(meta.name), Err(ParseError::UnknownCommand(_))),
+        "主名 {} 未在 parse_line 中实现",
+        meta.name
+      );
+      for alias in meta.aliases {
+        assert!(
+          !matches!(parse_line(alias), Err(ParseError::UnknownCommand(_))),
+          "别名 {alias} 未在 parse_line 中实现"
+        );
+      }
+    }
+    assert_eq!(parse_line("/?"), Ok(Command::Help));
   }
 }

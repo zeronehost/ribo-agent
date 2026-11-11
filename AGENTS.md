@@ -105,6 +105,7 @@ tracing::info!(provider = %provider, "provider init");
 - 新增公开 API 必须补充文档和示例。
 - 涉及外部服务的测试应标记为 `#[ignore]`。
 - **禁止在非测试代码中使用 `tempfile` crate**：仅允许出现在 `#[cfg(test)]` 模块与 `tests/` 集成测试中；`Cargo.toml` 只能在 `[dev-dependencies]` 声明（依赖层面的隔离即约束边界）。
+- 如果没有理解用户需求，必须立即询问用户。
 
 ## 完成定义
 

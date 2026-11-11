@@ -8,7 +8,7 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::Parser;
 
 use ra_cli::app::{Repl, StdinLineSource};
-use ra_cli::config::LoadOutcome;
+use ra_cli::config::{LoadOutcome, resolve_config_path};
 use ra_cli::logging::init_file_logging;
 use ra_cli::render::TerminalRenderer;
 
@@ -16,9 +16,9 @@ use ra_cli::render::TerminalRenderer;
 #[derive(Debug, Parser)]
 #[command(name = "ribo", version, about = "Ribo Agent 命令行交互层")]
 pub struct CliArgs {
-  /// 配置文件路径；文件不存在时以 mock 模式启动
-  #[arg(short, long, value_name = "PATH", default_value = "ribo.toml")]
-  pub config: PathBuf,
+  /// 配置文件路径；未指定时自动探测 ribo.toml，缺失则以 mock 模式启动
+  #[arg(short, long, value_name = "PATH")]
+  pub config: Option<PathBuf>,
 
   /// 覆盖配置中的工作空间根目录（harness 层 `root`）
   #[arg(long, value_name = "PATH")]
@@ -29,7 +29,9 @@ pub struct CliArgs {
 async fn main() -> ExitCode {
   // ===== 阶段 1：参数与配置加载 =====
   let args = CliArgs::parse();
-  let outcome = LoadOutcome::load(Some(&args.config), args.root.as_deref());
+  // 未指定 --config 时探测默认文件；探测不到则传 None 走全默认 mock
+  let config_path = resolve_config_path(args.config.as_deref());
+  let outcome = LoadOutcome::load(config_path.as_deref(), args.root.as_deref());
 
   // ===== 阶段 2：日志落文件（stdout 只留对话渲染）=====
   // guard 持有到进程结束：非阻塞写入线程随 guard drop 停止，

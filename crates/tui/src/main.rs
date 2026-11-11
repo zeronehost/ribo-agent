@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use ra_cli::config::LoadOutcome;
 use ra_cli::config::assemble::{CliSession, assemble};
+use ra_cli::config::{LoadOutcome, resolve_config_path};
 
 mod app;
 mod input;
@@ -32,9 +32,10 @@ use crate::lifecycle::RawModeGuard;
 #[derive(Debug, Parser)]
 #[command(name = "ribo-tui", version, about = "Ribo Agent 终端 TUI")]
 pub struct TuiArgs {
-  /// 配置文件路径；文件不存在时以 mock 模式启动（同 ra-cli，14 §5）。
-  #[arg(short, long, value_name = "PATH", default_value = "ribo.toml")]
-  pub config: PathBuf,
+  /// 配置文件路径；未指定时自动探测 ribo.toml，缺失则以 mock 模式启动
+  ///（与 ra-cli 共用 `resolve_config_path`，14 §5）。
+  #[arg(short, long, value_name = "PATH")]
+  pub config: Option<PathBuf>,
 
   /// 覆盖配置中的工作空间根目录（harness 层 `root`）。
   #[arg(long, value_name = "PATH")]
@@ -46,7 +47,9 @@ pub struct TuiArgs {
 async fn main() -> ExitCode {
   // ===== 阶段 1：参数与配置加载（raw mode 之前，失败 stderr 退出）=====
   let args = TuiArgs::parse();
-  let outcome = LoadOutcome::load(Some(&args.config), args.root.as_deref());
+  // 与 ra-cli 同规则：未指定 --config 时探测默认文件，探测不到走 mock
+  let config_path = resolve_config_path(args.config.as_deref());
+  let outcome = LoadOutcome::load(config_path.as_deref(), args.root.as_deref());
   let root = outcome.harness.root.clone();
 
   // ===== 阶段 2：日志落文件（stdout 由 TUI 全屏占用，11 §11）=====
@@ -58,8 +61,12 @@ async fn main() -> ExitCode {
     }
   };
 
-  // ===== 阶段 3：Ctrl-C 超时（[tui] 层，ra-tui 自读配置文件）=====
-  let config_text = std::fs::read_to_string(&args.config).ok();
+  // ===== 阶段 3：Ctrl-C 超时（[tui] 层，读实际生效的配置文件）=====
+  // 必须基于解析后的路径：未指定 --config 时 args.config 为 None，
+  // 但默认 ribo.toml 可能已被探测并加载。
+  let config_text = config_path
+    .as_deref()
+    .and_then(|path| std::fs::read_to_string(path).ok());
   let ctrl_c_timeout = lifecycle::parse_ctrl_c_timeout(config_text.as_deref());
 
   // ===== 阶段 4：装配（失败在 guard 前 stderr 退出）=====

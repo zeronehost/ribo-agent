@@ -4,7 +4,10 @@
 pub mod assemble;
 pub mod schema;
 
-use std::{collections::HashSet, path::Path};
+use std::{
+  collections::HashSet,
+  path::{Path, PathBuf},
+};
 
 use serde::de::DeserializeOwned;
 
@@ -12,6 +15,32 @@ pub use schema::{
   CompressionSchema, HarnessLayerSchema, ProviderEntry, ProviderSchema,
   RetrySchema, RoutingSchema, SessionSchema, ToolsSchema,
 };
+
+/// 默认配置文件名：`--config` 未指定时自动探测。
+pub const DEFAULT_CONFIG_FILE: &str = "ribo.toml";
+
+/// 解析本次启动实际生效的配置文件路径。
+///
+/// - **显式指定** `--config <PATH>`：原样采用。文件是否存在仍由
+///   [`LoadOutcome::load`] 判定，缺失时保持既有的 mock 降级语义；
+/// - **未指定**：仅当 [`DEFAULT_CONFIG_FILE`] 存在且为普通文件时采用，
+///   否则返回 `None`，由 `LoadOutcome::load` 走全默认 mock（原逻辑）。
+///
+/// `ribo` 与 `ribo-tui` 共用此函数，保证两个入口的探测规则一致。
+pub fn resolve_config_path(specified: Option<&Path>) -> Option<PathBuf> {
+  resolve_with_default(specified, Path::new(DEFAULT_CONFIG_FILE))
+}
+
+/// 可注入默认路径的纯逻辑：单测无需改动进程工作目录。
+fn resolve_with_default(
+  specified: Option<&Path>,
+  default: &Path,
+) -> Option<PathBuf> {
+  match specified {
+    Some(path) => Some(path.to_path_buf()),
+    None => default.is_file().then(|| default.to_path_buf()),
+  }
+}
 
 /// 配置模式（启动横幅显式展示，概设 D3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +256,45 @@ impl LoadOutcome {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// 场景：配置文件路径解析（CFG-04，未指定时探测默认文件）。
+  ///
+  /// 预期：显式 `--config` 始终优先；未指定时仅当默认路径存在且为
+  /// 普通文件时采用；默认缺失或为目录时返回 `None`（全默认 mock）。
+  #[test]
+  fn resolve_config_path_probes_default_only_when_unspecified() {
+    let dir = tempfile::tempdir().expect("temp");
+    let default_file = dir.path().join("ribo.toml");
+    let explicit = dir.path().join("custom.toml");
+
+    // 未指定 + 默认不存在 → None（原逻辑：全默认 mock）
+    assert_eq!(resolve_with_default(None, &default_file), None);
+
+    // 显式指定始终优先，即便默认文件与显式路径都不存在
+    assert_eq!(
+      resolve_with_default(Some(&explicit), &default_file),
+      Some(explicit.clone())
+    );
+
+    // 默认文件存在 → 采用默认；且内容确实被 LoadOutcome 加载
+    std::fs::write(&default_file, "[harness]\nroot = \"probe-root\"\n")
+      .expect("write");
+    let resolved = resolve_with_default(None, &default_file);
+    assert_eq!(resolved, Some(default_file.clone()));
+    let outcome = LoadOutcome::load(resolved.as_deref(), None);
+    assert_eq!(outcome.harness.root, Path::new("probe-root"));
+
+    // 默认文件已存在时，显式指定仍然优先
+    assert_eq!(
+      resolve_with_default(Some(&explicit), &default_file),
+      Some(explicit)
+    );
+
+    // 默认路径是目录 → 不采用（is_file 语义）
+    let dir_as_default = dir.path().join("a-dir");
+    std::fs::create_dir(&dir_as_default).expect("mkdir");
+    assert_eq!(resolve_with_default(None, &dir_as_default), None);
+  }
 
   /// 场景：默认值 + 文件逐层覆盖 + 单层损坏保留默认 + 模式标记（CFG-01）。
   #[test]
