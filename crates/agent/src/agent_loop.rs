@@ -636,6 +636,14 @@ async fn execute_tool_batch(
       Err(err) if err.code() == ra_tools::error::CANCELLED => {
         terminated = true;
       }
+      // 熔断折叠（18_ §14 DoD 2 / v0.8 #18）：tool.rate_limited =
+      // 工具面已被 ToolManager 熔断拒绝（连续失败达阈值）——原始错误
+      // 反复回灌只会诱导 LLM 无限重试。改为：回灌「工具不可用」语义
+      // 的友好提示（不含原始错误栈，见 fold_tool_error），并终结整个
+      // 循环——重试次数上界 = 熔断打开的那一轮。
+      Err(err) if err.code() == ra_tools::error::RATE_LIMITED => {
+        terminated = true;
+      }
       // terminate 消费（07 §7.3 决策 11）：任一结果声明终局 →
       // 终结整个循环（"exit 工具"语义）
       Ok(result) if result.terminate => {
@@ -652,6 +660,10 @@ async fn execute_tool_batch(
 }
 
 /// 发射 `ToolExecutionEnd`：错误折叠为含错误文本的结果载荷。
+///
+/// 熔断拒绝（`tool.rate_limited`）的载荷为「工具不可用」友好提示——
+/// 事件是 UI 渲染给最终用户的主要来源，不得携带原始错误栈
+/// （18_ §14 DoD 2 / v0.8 #18）。
 async fn emit_tool_end(
   emitter: &Arc<dyn AgentEmitter>,
   item: &FinalizedToolCall,
@@ -661,7 +673,7 @@ async fn emit_tool_end(
     Err(err) => (
       Arc::new(ToolExecutionResult {
         content: vec![ToolOutput::Text(TextContent {
-          content: err.message().to_string(),
+          content: user_facing_tool_error_text(err),
           signature: None,
         })],
         ..ToolExecutionResult::default()
@@ -760,6 +772,10 @@ fn fold_tool_result(item: &FinalizedToolCall) -> ToolResultMessage {
 }
 
 /// 错误折叠：错误文本进 `content`，`is_error` 置位。
+///
+/// 熔断拒绝（`tool.rate_limited`）替换为「工具不可用」友好提示：
+/// 原始错误（"circuit open..."）反复回灌会诱导 LLM 无限重试（18_ §14
+/// DoD 2 / v0.8 #18）；提示文案不携带原始错误栈与内部细节。
 fn fold_tool_error(
   tool_call_id: &str,
   tool_name: &str,
@@ -771,12 +787,27 @@ fn fold_tool_error(
     is_error: true,
     timestamp: now_ms(),
     content: vec![Content::Text(TextContent {
-      content: err.message().to_string(),
+      content: user_facing_tool_error_text(err),
       signature: None,
     })],
     details: None,
     usage: None,
     added_tool_names: Vec::new(),
+  }
+}
+
+/// 用户侧可见的工具错误文案（事件与回灌消息共用）。
+///
+/// `tool.rate_limited`（熔断拒绝）映射为「工具不可用」语义提示并
+/// 终结循环（由 `execute_tool_batch` 的折叠分支完成终结）；其余错误
+/// 透传原始 message（D8：模型需要错误细节来自我修正）。原始错误全文
+/// 仍经 `tracing` 记录，不丢失可观测性。
+fn user_facing_tool_error_text(err: &RiboError) -> String {
+  if err.code() == ra_tools::error::RATE_LIMITED {
+    "该工具当前不可用：连续失败已触发保护熔断，请稍后再试，或改用其它方式完成请求。"
+      .to_string()
+  } else {
+    err.message().to_string()
   }
 }
 
@@ -1879,5 +1910,170 @@ mod tests {
     assert_eq!(report.outcome, LoopOutcome::Completed);
     assert_eq!(provider.record().len(), 2, "应发起两次 LLM 调用");
     assert!(!session.is_running(), "收尾应复位运行标志");
+  }
+
+  /// 恒失败工具（真实 ToolManager 熔断测试用）：始终返回
+  /// `tool.exec_failed`，错误文本为可识别的「原始错误栈」标记。
+  struct AlwaysFailTool {
+    schema: ra_core::message::ToolSchema,
+  }
+
+  impl AlwaysFailTool {
+    fn new() -> Self {
+      Self {
+        schema: ra_core::message::ToolSchema {
+          name: "boom".to_string(),
+          description: "always fails".to_string(),
+          input_schema: ra_core::message::Schema(serde_json::json!({
+            "type": "object", "properties": {}
+          })),
+          constrained_sampling: None,
+        },
+      }
+    }
+  }
+
+  #[async_trait::async_trait]
+  impl ra_tools::traits::AgentTool for AlwaysFailTool {
+    fn schema(&self) -> &ra_core::message::ToolSchema {
+      &self.schema
+    }
+
+    fn label(&self) -> &str {
+      "Always Fail"
+    }
+
+    async fn execute(
+      &self,
+      _tool_call_id: &str,
+      _args: serde_json::Value,
+      _ctx: &ToolContext,
+    ) -> RiboResult<ToolExecutionResult> {
+      Err(RiboError::new(
+        "tool",
+        ra_tools::error::EXEC_FAILED,
+        "boom-original-stack",
+      ))
+    }
+  }
+
+  // 场景（18_ §14 DoD 2 / v0.8 #18）：连续失败触发工具面熔断后——
+  // ① 熔断闭合：第 6 次调用被 ToolManager 拒绝（tool.rate_limited）；
+  // ② 用户侧消息为「工具不可用」语义提示，不含原始错误栈
+  //    （"boom-original-stack" / "circuit open"）；
+  // ③ 重试次数有上界：循环在熔断轮终止，不再发起第 7 次 LLM 调用。
+  #[tokio::test]
+  async fn circuit_open_feeds_back_unavailable_notice_and_stops() {
+    // 真实 ToolManager（默认 failure_threshold = 5）+ 恒失败工具
+    let manager = ToolManager::new();
+    manager
+      .register(std::sync::Arc::new(AlwaysFailTool::new()))
+      .expect("boom 工具注册成功");
+    let tools = Arc::new(ToolManagerAdapter::new(std::sync::Arc::new(manager)));
+
+    // 7 步 LLM 脚本：模型每一轮都请求同一个失败工具
+    let step = || {
+      complete_step(
+        StopReason::ToolUse,
+        assistant_with_tool_calls(vec![tool_call(
+          "c1",
+          "boom",
+          serde_json::json!({}),
+        )]),
+      )
+    };
+    let session = Arc::new(Session::new("s1"));
+    let collector = Arc::new(CollectorEmitter::new());
+    let (gateway, provider) = mock_gateway_with_recorder(vec![
+      step(),
+      step(),
+      step(),
+      step(),
+      step(),
+      step(),
+      step(),
+    ]);
+    let deps = LoopDeps {
+      gateway,
+      model: ModelId::parse("mock-model").expect("mock 模型 ID 合法"),
+      tools,
+      context_provider: Arc::new(PassthroughContextProvider::new(Vec::new())),
+    };
+    let config = LoopConfig::for_session(&session);
+    let emitter: Arc<dyn AgentEmitter> = collector.clone();
+
+    let report = run_agent_loop(&deps, &session, input(), &config, emitter)
+      .await
+      .expect("熔断终止应正常返回，而非错误");
+
+    // ③ 重试次数有上界：恰好 6 次 LLM 调用（5 次真实失败 + 1 次熔断拒绝轮），
+    //    循环在熔断轮终结、未消费第 7 步
+    assert_eq!(
+      provider.record().len(),
+      6,
+      "熔断轮应终结循环，不再发起下一次 LLM 调用"
+    );
+    assert!(matches!(
+      report.outcome,
+      crate::types::LoopOutcome::Completed
+    ));
+
+    // ② 回灌消息：最后一条工具结果为「工具不可用」语义提示
+    let last_tool_result = report
+      .new_messages
+      .iter()
+      .rev()
+      .find_map(|m| match m {
+        Message::ToolResult(r) => Some(r),
+        _ => None,
+      })
+      .expect("至少一条工具结果消息");
+    let fed_back = match &last_tool_result.content[0] {
+      Content::Text(t) => t.content.clone(),
+      other => panic!("应为文本内容，实际 {other:?}"),
+    };
+    assert!(fed_back.contains("不可用"), "got: {fed_back}");
+    assert!(
+      !fed_back.contains("boom-original-stack"),
+      "不得回灌原始错误栈: {fed_back}"
+    );
+    assert!(
+      !fed_back.contains("circuit open"),
+      "不得回灌内部熔断细节: {fed_back}"
+    );
+
+    // ② ToolExecutionEnd 事件（UI 渲染来源）同样脱敏
+    let events = collector.snapshot();
+    let end_texts: Vec<String> = events
+      .iter()
+      .filter_map(|e| match e {
+        AgentEvent::ToolExecutionEnd {
+          result, is_error, ..
+        } if *is_error => {
+          let mut text = String::new();
+          for out in &result.content {
+            if let ToolOutput::Text(t) = out {
+              text.push_str(&t.content);
+            }
+          }
+          Some(text)
+        }
+        _ => None,
+      })
+      .collect();
+    // 仅熔断轮（最后一个错误事件）脱敏：前 5 轮真实失败按 D8 透传
+    // 原始错误（供模型自我修正），属预期行为
+    let last = end_texts.last().expect("应有错误结束事件");
+    assert!(last.contains("不可用"), "got: {last}");
+    assert!(
+      !last.contains("boom-original-stack") && !last.contains("circuit open"),
+      "熔断轮事件不得携带原始错误栈: {last}"
+    );
+    // 前 5 轮真实失败：错误原样透传（D8），且确实发生了 5 次
+    assert_eq!(
+      end_texts.len(),
+      6,
+      "5 次真实失败 + 1 次熔断拒绝，共 6 个错误结束事件"
+    );
   }
 }

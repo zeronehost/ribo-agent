@@ -79,6 +79,27 @@ impl ToolRegistry {
     }
   }
 
+  /// 按工具名前缀批量注销，返回移除数量。
+  ///
+  /// 先收集命中前缀的键快照再逐个移除：避免在 DashMap 迭代过程中
+  /// 直接删除引发分片死锁。任何顺序都不保证，移除数量以返回值为准。
+  pub fn unregister_by_prefix(&self, prefix: &str) -> usize {
+    let keys: Vec<String> = self
+      .tools
+      .iter()
+      .filter(|entry| entry.key().starts_with(prefix))
+      .map(|entry| entry.key().clone())
+      .collect();
+    let mut removed = 0;
+    for key in keys {
+      if self.tools.remove(&key).is_some() {
+        removed += 1;
+        tracing::info!(tool = %key, prefix = %prefix, "tool unregistered by prefix");
+      }
+    }
+    removed
+  }
+
   /// 按名称取工具实例快照（`Arc` 克隆，注册表生命周期独立）。
   pub fn get(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
     self.tools.get(name).map(|entry| Arc::clone(entry.value()))

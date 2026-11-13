@@ -1,8 +1,8 @@
 //! 工具管理器：注册表 + Schema 校验缓存 + 整体熔断的编排层。
 
 use std::{
-  collections::HashMap,
-  sync::{Arc, RwLock},
+  collections::{HashMap, HashSet},
+  sync::{Arc, PoisonError, RwLock},
   time::Duration,
 };
 
@@ -14,7 +14,7 @@ use ra_core::{
 
 use crate::{
   context::ToolContext,
-  error::{CANCELLED, cancelled, not_found, rate_limited},
+  error::{CANCELLED, already_registered, cancelled, not_found, rate_limited},
   registry::ToolRegistry,
   schema::{self, CompiledValidator},
   traits::AgentTool,
@@ -22,19 +22,34 @@ use crate::{
 };
 
 /// 工具管理器配置。
+#[derive(Clone)]
 pub struct ToolManagerConfig {
   /// 熔断阈值：整个工具面连续失败达到该值即打开熔断。
   pub failure_threshold: u64,
   /// 熔断打开后的冷却时长，期满进入半开放行单个探测。
   pub cooldown: Duration,
+  /// 不计入熔断记账的错误码白名单（阶段 6 新增，18_ §1.3）。
+  ///
+  /// 命中任一 code 的执行失败**不调用** `record_failure()`，避免该类
+  /// 错误触发整个工具面熔断；匹配规则为错误码字符串**完全相等**，
+  /// 不支持前缀通配（防止未来新增错误码意外继承「不计数」语义）。
+  ///
+  /// 典型用途：`ra-plugins` 在装配期追加 `plugin.plugin_timeout` /
+  /// `plugin.plugin_forbidden`——插件超时属系统级、越权属配置/权限类
+  /// 错误，连续出现不应拖累内置工具的可用性。
+  pub non_counting_codes: Vec<&'static str>,
 }
 
 impl Default for ToolManagerConfig {
   /// 默认：连续失败 5 次熔断，冷却 30 秒。
+  ///
+  /// 白名单默认包含现有两个不计数错误码（取消 / 入参非法），
+  /// 保证「新增白名单字段」不回退既有行为。
   fn default() -> Self {
     Self {
       failure_threshold: 5,
       cooldown: Duration::from_secs(30),
+      non_counting_codes: vec!["tool.cancelled", "tool.invalid_arguments"],
     }
   }
 }
@@ -57,6 +72,8 @@ pub struct ToolManager {
   circuit: Arc<CircuitBreaker>,
   /// 工具名 → 编译期校验器缓存（读多写少，注册/注销时写）。
   validators: RwLock<HashMap<String, CompiledValidator>>,
+  /// 不计入熔断记账的错误码白名单（来自 [`ToolManagerConfig`]）。
+  non_counting_codes: Vec<&'static str>,
 }
 
 impl Default for ToolManager {
@@ -85,6 +102,7 @@ impl ToolManager {
         config.cooldown,
       )),
       validators: RwLock::new(HashMap::new()),
+      non_counting_codes: config.non_counting_codes,
     }
   }
 
@@ -124,6 +142,80 @@ impl ToolManager {
       .insert(name, validator);
 
     Ok(())
+  }
+
+  /// 原子批量注册：全量预检（Schema 编译 + 重名检查）后一次性写入。
+  ///
+  /// 与逐个调用 [`ToolManager::register`] 的区别在于**原子性**：批次内
+  /// 任意工具预检失败（Schema 非法、批内重名、与已注册工具冲突）时，
+  /// **不写入任何工具**（零写入），适合插件等「全成或全不成」的注册
+  /// 场景（阶段 6，18_ §1.4）。
+  ///
+  /// # Errors
+  ///
+  /// - 批次内任一工具入参 Schema 非法 → `tool.invalid_arguments`；
+  /// - 批内重名或与已注册工具冲突 → `tool.already_registered`。
+  ///
+  /// # Panics
+  ///
+  /// 预检通过后的写入阶段理论上不会失败（预检已排除所有可预期冲突）；
+  /// 若因并发竞争导致单个工具写入失败，返回该错误且已完成写入的工具
+  /// 保持注册状态。
+  pub fn register_batch(
+    &self,
+    tools: Vec<Arc<dyn AgentTool>>,
+  ) -> RiboResult<()> {
+    // ===== 阶段 1：全量预检（零写入） =====
+    // 批内重名用 HashSet 检测；与已有工具的冲突经注册表查询确认；
+    // Schema 编译在预检期完成，通过后随写入阶段直接入缓存。
+    let mut seen: HashSet<String> = HashSet::with_capacity(tools.len());
+    let mut prepared: Vec<(String, Arc<dyn AgentTool>, CompiledValidator)> =
+      Vec::with_capacity(tools.len());
+    for tool in &tools {
+      let name = tool.schema().name.clone();
+      if !seen.insert(name.clone()) || self.registry.get(&name).is_some() {
+        tracing::warn!(tool = %name, "batch registration refused: duplicate tool");
+        return Err(already_registered(name));
+      }
+      let validator = schema::compile_validator(&tool.schema().input_schema)?;
+      prepared.push((name, tool.clone(), validator));
+    }
+
+    // ===== 阶段 2：写入（注册表 + 校验器缓存） =====
+    // 写锁中毒时改用 into_inner 取回守卫继续写入：HashMap 本身未被破坏，
+    // 中毒仅代表其他线程在持锁期间 panic，放弃整批写入反而扩大故障面。
+    let mut cache = self
+      .validators
+      .write()
+      .unwrap_or_else(PoisonError::into_inner);
+    for (name, tool, validator) in prepared {
+      self.registry.registry(tool)?;
+      cache.insert(name, validator);
+    }
+    Ok(())
+  }
+
+  /// 按工具名前缀批量注销，并同步清理其校验器缓存，返回移除数量。
+  ///
+  /// 典型用途：按插件 ID 前缀（`{plugin_id}__`）一次性移除该插件的
+  /// 全部工具（阶段 6，18_ §1.4）。
+  ///
+  /// # Panics
+  ///
+  /// 校验器缓存写锁中毒时 panic（持锁期间发生 panic 才会中毒，
+  /// 此时管理器内部状态已无法保证一致）。
+  pub fn unregister_by_prefix(&self, prefix: &str) -> usize {
+    let removed = self.registry.unregister_by_prefix(prefix);
+    // 仅在确实移除了工具时才动缓存，避免无谓的写锁竞争
+    if removed > 0 {
+      self
+        .validators
+        .write()
+        .expect("validator lock poisoned")
+        .retain(|name, _| !name.starts_with(prefix));
+    }
+    tracing::info!(prefix = %prefix, removed = removed, "tools unregistered by prefix");
+    removed
   }
 
   /// 注销工具并清除其校验器缓存。
@@ -264,6 +356,19 @@ impl ToolManager {
         Err(e)
       }
       Some(Err(e)) => {
+        // ===== 白名单分支（阶段 6，18_ §1.3） =====
+        // 命中 non_counting_codes 的失败不计入熔断记账：半开探测需归还
+        // 探测资格（与取消路径一致），避免探测资格永久占用。
+        if self.non_counting_codes.contains(&e.code()) {
+          if probe {
+            self.circuit.abort_probe();
+          }
+          tracing::warn!(
+            tool = %name, call_id = %call.id, code = %e.code(),
+            "tool execution failed (non-counting code)"
+          );
+          return Err(e);
+        }
         self.circuit.record_failure();
         tracing::error!(tool = %name, call_id = %call.id, code = %e.code(), "tool execution failed");
         Err(e) // 错误原样透传（D8：上层转为 is_error 结果回灌）
@@ -306,6 +411,8 @@ mod tests {
     Succeed,
     /// execute 返回业务失败（`tool.exec_failed`）。
     Fail,
+    /// execute 返回指定错误码的自定义域失败（用于白名单语义测试）。
+    FailWithCode(&'static str),
   }
 
   /// 可控测试工具：入参声明必填字符串字段 `x`，execute 按注入的
@@ -396,6 +503,16 @@ mod tests {
           self.schema.name.as_str(),
           "injected business failure",
         )),
+        // 自定义域错误码：domain = "plugin"，模拟插件域错误（如
+        // plugin.plugin_timeout），验证 non_counting_codes 白名单语义
+        Behavior::FailWithCode(code) => Err(
+          ra_core::error::RiboError::new(
+            "plugin",
+            code,
+            format!("injected failure with code {code}"),
+          )
+          .with_context("tool_name", self.schema.name.as_str()),
+        ),
       }
     }
   }
@@ -416,6 +533,8 @@ mod tests {
     ToolManagerConfig {
       failure_threshold: threshold,
       cooldown: Duration::from_millis(20),
+      // 测试默认关注「失败是否记账」，保留默认白名单（取消 / 入参错）
+      ..ToolManagerConfig::default()
     }
   }
 
@@ -733,5 +852,193 @@ mod tests {
       .await
       .unwrap_err();
     assert_eq!(err.code(), NOT_FOUND);
+  }
+
+  // ===== 阶段 6 · Step 0 验收（18_ §1.4 / §1.6 / §13.1） =====
+
+  /// 场景：`register_batch` 原子性——批次内第 3 个工具与已注册工具
+  /// 冲突时整批拒绝，**0 个工具写入**。
+  #[test]
+  fn register_batch_is_atomic_on_conflict() {
+    let manager = ToolManager::new();
+    manager
+      .register(TestTool::controlled("existing", Behavior::Succeed))
+      .expect("register existing tool");
+
+    let batch = vec![
+      TestTool::controlled("fresh_1", Behavior::Succeed),
+      TestTool::controlled("fresh_2", Behavior::Succeed),
+      TestTool::controlled("existing", Behavior::Succeed), // 第 3 个冲突
+    ];
+    let err = manager.register_batch(batch).unwrap_err();
+    assert_eq!(err.code(), ALREADY_REGISTERED);
+
+    // 零写入：fresh_1 / fresh_2 均未注册
+    assert!(manager.get("fresh_1").is_none());
+    assert!(manager.get("fresh_2").is_none());
+    assert_eq!(manager.list().len(), 1);
+  }
+
+  /// 场景：`register_batch` 批内重名整批拒绝。
+  #[test]
+  fn register_batch_rejects_internal_duplicates() {
+    let manager = ToolManager::new();
+    let batch = vec![
+      TestTool::controlled("dup", Behavior::Succeed),
+      TestTool::controlled("dup", Behavior::Succeed),
+    ];
+    let err = manager.register_batch(batch).unwrap_err();
+    assert_eq!(err.code(), ALREADY_REGISTERED);
+    assert!(manager.get("dup").is_none());
+  }
+
+  /// 场景：`register_batch` 成功路径——全部写入且可执行。
+  #[tokio::test]
+  async fn register_batch_success_registers_all() {
+    let manager = ToolManager::new();
+    let batch = vec![
+      TestTool::controlled("t1", Behavior::Succeed),
+      TestTool::controlled("t2", Behavior::Succeed),
+      TestTool::controlled("t3", Behavior::Succeed),
+    ];
+    manager.register_batch(batch).expect("batch registration");
+
+    for name in ["t1", "t2", "t3"] {
+      let result = manager
+        .execute(&call(name, json!({ "x": "v" })), &ToolContext::detached())
+        .await
+        .expect("batch-registered tool should execute");
+      assert_eq!(first_text(&result), "ok");
+    }
+  }
+
+  /// 场景：方案 A 白名单——白名单内错误码（插件超时）连续超过阈值
+  /// **不打开熔断**，内置工具不受影响（18_ §1.6）。
+  #[tokio::test]
+  async fn whitelisted_plugin_timeout_does_not_trip_breaker() {
+    let mut cfg = config(5);
+    cfg.non_counting_codes.push("plugin.plugin_timeout");
+    let manager = ToolManager::with_config(cfg);
+    manager
+      .register(TestTool::controlled(
+        "slow",
+        Behavior::FailWithCode("plugin.plugin_timeout"),
+      ))
+      .expect("register slow tool");
+    manager
+      .register(TestTool::controlled("calm", Behavior::Succeed))
+      .expect("register calm tool");
+
+    // 连续 6 次超时（超过阈值 5）：若被记账，熔断必然打开
+    for _ in 0..6 {
+      let err = manager
+        .execute(&call("slow", json!({ "x": "v" })), &ToolContext::detached())
+        .await
+        .unwrap_err();
+      assert_eq!(err.code(), "plugin.plugin_timeout");
+    }
+
+    // 熔断仍闭合：内置工具正常调用
+    let result = manager
+      .execute(&call("calm", json!({ "x": "v" })), &ToolContext::detached())
+      .await
+      .expect("circuit must stay closed: whitelisted codes are not counted");
+    assert_eq!(first_text(&result), "ok");
+  }
+
+  /// 场景：白名单内错误码（插件越权）连续出现同样不打开熔断（18_ §1.3）。
+  #[tokio::test]
+  async fn whitelisted_plugin_forbidden_does_not_trip_breaker() {
+    let mut cfg = config(5);
+    cfg.non_counting_codes.push("plugin.plugin_forbidden");
+    let manager = ToolManager::with_config(cfg);
+    manager
+      .register(TestTool::controlled(
+        "noacl",
+        Behavior::FailWithCode("plugin.plugin_forbidden"),
+      ))
+      .expect("register noacl tool");
+    manager
+      .register(TestTool::controlled("calm", Behavior::Succeed))
+      .expect("register calm tool");
+
+    for _ in 0..6 {
+      manager
+        .execute(
+          &call("noacl", json!({ "x": "v" })),
+          &ToolContext::detached(),
+        )
+        .await
+        .unwrap_err();
+    }
+
+    let result = manager
+      .execute(&call("calm", json!({ "x": "v" })), &ToolContext::detached())
+      .await
+      .expect("circuit must stay closed for forbidden codes");
+    assert_eq!(first_text(&result), "ok");
+  }
+
+  /// 场景：白名单外的插件域错误码仍正常计入熔断（白名单不扩权）。
+  #[tokio::test]
+  async fn non_whitelisted_code_still_trips_breaker() {
+    let mut cfg = config(2);
+    cfg.non_counting_codes.push("plugin.plugin_timeout"); // 只加超时
+    let manager = ToolManager::with_config(cfg);
+    manager
+      .register(TestTool::controlled(
+        "broken",
+        Behavior::FailWithCode("plugin.plugin_internal"),
+      ))
+      .expect("register broken tool");
+    manager
+      .register(TestTool::controlled("calm", Behavior::Succeed))
+      .expect("register calm tool");
+
+    for _ in 0..2 {
+      manager
+        .execute(
+          &call("broken", json!({ "x": "v" })),
+          &ToolContext::detached(),
+        )
+        .await
+        .unwrap_err();
+    }
+
+    // 未入白名单的 plugin.plugin_internal 被记账：熔断打开
+    let err = manager
+      .execute(&call("calm", json!({ "x": "v" })), &ToolContext::detached())
+      .await
+      .unwrap_err();
+    assert_eq!(err.code(), RATE_LIMITED);
+  }
+
+  /// 场景：`unregister_by_prefix` 只移除命中前缀的工具并返回数量。
+  #[test]
+  fn unregister_by_prefix_removes_only_matching_tools() {
+    let manager = ToolManager::new();
+    for name in ["a__echo", "a__calc", "b__echo"] {
+      manager
+        .register(TestTool::controlled(name, Behavior::Succeed))
+        .expect("register tool");
+    }
+
+    let removed = manager.unregister_by_prefix("a__");
+    assert_eq!(removed, 2);
+    assert!(manager.get("a__echo").is_none());
+    assert!(manager.get("a__calc").is_none());
+    assert!(manager.get("b__echo").is_some(), "non-matching tools stay");
+
+    // 前缀不命中：返回 0
+    assert_eq!(manager.unregister_by_prefix("zzz__"), 0);
+  }
+
+  /// 场景：`ToolManagerConfig::default()` 的白名单包含既有两个不计数
+  /// 错误码（保证新增字段不回退现有行为，18_ §1.3）。
+  #[test]
+  fn default_config_whitelist_contains_existing_non_counting_codes() {
+    let cfg = ToolManagerConfig::default();
+    assert!(cfg.non_counting_codes.contains(&"tool.cancelled"));
+    assert!(cfg.non_counting_codes.contains(&"tool.invalid_arguments"));
   }
 }

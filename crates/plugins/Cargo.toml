@@ -1,0 +1,40 @@
+[package]
+name = "ra-plugins"
+description = "Ribo Agent 插件能力 crate：Plugin 声明层、插件注册表、AgentTool 适配器与 ACL"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+# 关闭 examples 自动发现：examples/plugin-demo 是独立子 crate（§13.2），
+# 有自己的 Cargo.toml 与 workspace，不得被当作本包的示例目标编译
+autoexamples = false
+
+[features]
+# 默认启用 wasm：Step B 的宿主与 §13.1 单测随 `cargo test --workspace` 运行；
+# 轻量构建（不含 wasmtime）可用 --no-default-features
+default = ["wasm"]
+wasm = ["dep:wasmtime"]
+
+[dependencies]
+ra-agent.workspace = true
+ra-core.workspace = true
+ra-tools.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+dashmap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+url.workspace = true
+wasmtime = { workspace = true, optional = true }
+
+[dev-dependencies]
+wat.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "ra-plug-pdk-macro"
+description = "Ribo Agent 插件 PDK 过程宏：#[ribo_tool] 工具声明与 #[ribo_plugin] ABI 导出生成"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true

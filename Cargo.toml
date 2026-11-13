@@ -75,10 +75,30 @@ once_cell = "1"
 unicode-width = "0.2"
 portable-pty = "0.9"
 
+url = "2"
+
+# 阶段 6 Step B（18_ §0.3 依赖锁定，2026-11-13）：
+# wasmtime 仅开放 cranelift（JIT 编译后端）+ runtime（实例运行），
+# 关闭默认 feature（anyhow/wat/cache/pooling-allocator 等）控制编译与体积成本（R9）。
+# 最新稳定为 50.x（51.0.0 仍为 rc 且要求 rust 1.97，暂不采用）。
+# 升级 wasmtime 时必须重跑 §13.1 的 trap 分类回归测试（错误消息文本可能变化）。
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime"] }
+blake3 = "1"
+# 测试用 WAT 解析（仅 dev-dependencies 使用）
+wat = "1"
+
 # 
+# 阶段 6 Step B：Rust PDK 宏（ra-plug-pdk-macro 专用）
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
 ra-core = { path = "./crates/core" }
 ra-provider = { path = "./crates/provider" }
 ra-tools = { path = "./crates/tools" }
 ra-agent = { path = "./crates/agent" }
 ra-harness = { path = "./crates/harness" }
 ra-cli = { path = "./crates/cli" }
+ra-plugins = { path = "./crates/plugins" }
+ra-plug-pdk = { path = "./crates/pdk" }
+ra-plug-pdk-macro = { path = "./crates/pdk/macro" }
