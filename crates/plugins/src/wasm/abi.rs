@@ -58,16 +58,26 @@ struct RawToolManifest {
   memory_limit_bytes: Option<usize>,
 }
 
+/// `timeout_hint_ms` 下界（毫秒）：低于此值按此值生效——自述 0 会被
+/// `epoch_ticks_for` 向上取整成 1 tick（10ms）立即杀死工具
+///（ai_0018 §4.4 / B2.5）。
+const MIN_TIMEOUT_HINT_MS: u64 = 100;
+/// `timeout_hint_ms` 上界（毫秒）：guest 自述超时不可信（§8.1 信任链）。
+const MAX_TIMEOUT_HINT_MS: u64 = 60_000;
+
 impl From<RawToolManifest> for ToolManifest {
   fn from(r: RawToolManifest) -> Self {
     ToolManifest {
       name: r.name,
       description: r.description,
       parameters: r.parameters,
-      // 60s 钳制：guest 自述超时不可信（§8.1 信任链），防止自述 10 小时
-      timeout_hint: r
-        .timeout_hint_ms
-        .map(|ms| Duration::from_millis(ms.min(60_000))),
+      // 双向钳制（§8.1 信任链 + ai_0018 §4.4）：guest 自述超时不可信
+      // ——上界防自述 10 小时；下界防自述 0 被 1 tick 立即杀死
+      timeout_hint: r.timeout_hint_ms.map(|ms| {
+        Duration::from_millis(
+          ms.clamp(MIN_TIMEOUT_HINT_MS, MAX_TIMEOUT_HINT_MS),
+        )
+      }),
       idempotent: r.idempotent,
       memory_limit_bytes: r.memory_limit_bytes,
     }
@@ -132,6 +142,13 @@ pub(crate) fn call_list_tools(
   let mut store = wasmtime::Store::new(engine, state);
   store.set_epoch_deadline(epoch_ticks_for(Duration::from_secs(2)));
   store.limiter(|s| &mut s.limits);
+  // consume_fuel 开启的 Engine 下，未设置 fuel 的 Store 会在首条指令
+  // 立刻 OutOfFuel；加载期必须与执行期用同一进程预算（v0.8.8 fuel 收口）
+  if shared.config.enable_fuel {
+    store
+      .set_fuel(shared.config.fuel_limit)
+      .map_err(|e| plugin_internal("list_tools set fuel", e))?;
+  }
 
   // ===== 阶段 2：实例化（start 段 trap 按前缀分类，不得一律 Internal） =====
   let instance = linker.instantiate(&mut store, module).map_err(|e| {

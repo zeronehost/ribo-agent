@@ -19,7 +19,10 @@ use crate::error::{
   PLUGIN_EXEC_FAILED, PLUGIN_FORBIDDEN, PLUGIN_INTERNAL, PLUGIN_TIMEOUT,
 };
 use crate::wasm::host::PluginShared;
-use crate::wasm::hostfns::{LogRateLimiter, build_http_client, build_linker};
+use crate::wasm::hostfns::{
+  DnsGuardResolver, LogRateLimiter, build_http_client_with_resolver,
+  build_linker, ensure_addrs_allowed,
+};
 use crate::wasm::runtime::{PluginRuntime, run_tool};
 use crate::wasm::storage::Storage;
 
@@ -27,9 +30,10 @@ use crate::wasm::storage::Storage;
 
 /// 构造插件级共享状态（client / storage / limiter / config）。
 fn make_shared(acl: &PluginAcl) -> Arc<PluginShared> {
+  let runtime = PluginRuntime::global().expect("plugin runtime");
   let cfg = PluginRuntimeConfig::default();
   Arc::new(PluginShared {
-    client: build_http_client().expect("http client"),
+    client: Arc::clone(&runtime.http_client),
     storage: Arc::new(Storage::new(&cfg, acl)),
     log_limiter: Arc::new(LogRateLimiter::new(&cfg)),
     config: Arc::new(cfg),
@@ -161,6 +165,7 @@ fn full_acl() -> PluginAcl {
     url_policy: Some(Arc::new(crate::acl::UrlPolicy::new(["example.com"]))),
     memory_limit_bytes: None,
     storage_quota_bytes: None,
+    timeout_ceiling_ms: None,
   }
 }
 
@@ -493,6 +498,414 @@ async fn oversized_tool_name_maps_to_guest_error() {
   assert_eq!(err.code(), PLUGIN_EXEC_FAILED, "got: {}", err.code());
   assert!(
     err.message().contains("tool name too large"),
+    "got: {}",
+    err.message()
+  );
+}
+
+// ===== B1 验收补齐（2026-11-16，18_ §13.1 核对表缺口）=====
+
+// B1.4 说明：`instantiate` / start 段 trap 分类由既有
+// `memory_hog_guest_hits_store_limits` 覆盖——`(memory 64)` 在模块顶层
+// 声明即实例化期分配，`StoreLimits` 在 `linker.instantiate` 阶段拦截，
+// 经 §5.2 分类映射 `plugin.plugin_timeout`（白名单不计熔断，配套
+// registry.rs `plugin_timeout_and_forbidden_do_not_open_circuit`）。
+
+/// 计数 guest：`alloc` 累加 leaked、`dealloc` 扣减、导出 `leaked()`
+/// 读取——用于验证宿主侧 RAII 守卫（B1.3）确实调用了 guest dealloc。
+fn leak_counter_guest() -> Vec<u8> {
+  wat::parse_str(
+    r#"(module
+      (global $leaked (mut i32) (i32.const 0))
+      (memory (export "memory") 1)
+      (func (export "alloc") (param $n i32) (result i32)
+        (global.set $leaked (i32.add (global.get $leaked) (local.get $n)))
+        (i32.const 16))
+      (func (export "dealloc") (param $p i32) (param $n i32)
+        (global.set $leaked (i32.sub (global.get $leaked) (local.get $n))))
+      (func (export "leaked") (result i32) (global.get $leaked)))"#,
+  )
+  .expect("valid leak counter wat")
+}
+
+/// 场景（B1.3，§13.1「中途 trap 不泄漏」防回归）：`GuestBufs` RAII
+/// 守卫的 `release_all` 对每个已登记缓冲区调用 guest `dealloc`——
+/// 计数 guest 的 leaked 全局归零；释放前 leaked = 8 + 16 = 24（守卫
+/// 确实必要的反证）。
+#[tokio::test]
+async fn guest_bufs_release_calls_guest_dealloc() {
+  use crate::wasm::runtime::{GuestBufs, HostState};
+
+  let wasm = leak_counter_guest();
+  let runtime = PluginRuntime::global().expect("plugin runtime");
+  let module = runtime
+    .module_cache
+    .get_or_compile(&runtime.engine, &wasm)
+    .expect("compile leak counter guest");
+  let linker = build_linker(&runtime.engine).expect("build linker");
+  let acl = full_acl();
+  let shared = make_shared(&acl);
+  let mut store = wasmtime::Store::new(
+    &runtime.engine,
+    HostState::new(
+      acl,
+      CancellationToken::new(),
+      "test".to_string(),
+      "t".to_string(),
+      &shared,
+    ),
+  );
+  // epoch_interruption 开启时新 Store 默认 deadline=0（立即到期），
+  // 须显式放宽——本测试不依赖 epoch 预算，给到永不触发。
+  store.set_epoch_deadline(u64::MAX);
+  let instance = linker
+    .instantiate(&mut store, &module)
+    .expect("instantiate leak counter guest");
+  let alloc = instance
+    .get_func(&mut store, "alloc")
+    .expect("alloc export");
+  let dealloc = instance
+    .get_func(&mut store, "dealloc")
+    .expect("dealloc export");
+  let leaked = instance
+    .get_func(&mut store, "leaked")
+    .expect("leaked export");
+
+  let mut out = [wasmtime::Val::I32(0)];
+  alloc
+    .call(&mut store, &[wasmtime::Val::I32(8)], &mut out)
+    .expect("alloc 1");
+  alloc
+    .call(&mut store, &[wasmtime::Val::I32(16)], &mut out)
+    .expect("alloc 2");
+
+  leaked.call(&mut store, &[], &mut out).expect("leaked read");
+  let wasmtime::Val::I32(before) = out[0] else {
+    panic!("leaked must be i32");
+  };
+  assert_eq!(before, 24, "two tracked allocs without release");
+
+  let mut bufs = GuestBufs::new();
+  bufs.track(16, 8);
+  bufs.track(32, 16);
+  bufs.release_all(&mut store, &dealloc);
+
+  leaked
+    .call(&mut store, &[], &mut out)
+    .expect("leaked read after release");
+  let wasmtime::Val::I32(after) = out[0] else {
+    panic!("leaked must be i32");
+  };
+  assert_eq!(
+    after, 0,
+    "RAII release must call guest dealloc for every tracked buffer"
+  );
+}
+
+/// B1.2 场景（§13.1 DoS 表「超大 value」）：`storage_put` 的 value
+/// 长度越 `MAX_VALUE_LEN`（256KB）→ 读取点拦截（`value exceeds limit`），
+/// 不触达 storage 层。
+fn oversized_value_guest() -> Vec<u8> {
+  wat::parse_str(
+    r#"(module
+      (import "ribo" "storage_put" (func $put (param i32 i32 i32 i32) (result i32)))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (drop (call $put (i32.const 0) (i32.const 1) (i32.const 0) (i32.const 262145)))
+        (i32.const 0) (i32.const 0))
+      (memory (export "memory") 1)
+      (func (export "alloc") (param i32) (result i32) (i32.const 16))
+      (func (export "dealloc") (param i32 i32)))"#,
+  )
+  .expect("valid oversized value wat")
+}
+
+/// 断言（v0.8.4 可验证化）：错误码正确 + 错误信息含超限文案。
+#[tokio::test]
+async fn oversized_value_is_rejected_at_read_point() {
+  let wasm = oversized_value_guest();
+  let acl = full_acl();
+  let err = run_guest(&wasm, &acl, "t", json!({}), Duration::from_secs(2))
+    .await
+    .expect_err("oversized value must be rejected");
+  assert_eq!(err.code(), PLUGIN_EXEC_FAILED, "got: {err}");
+  assert!(
+    err.message().contains("value exceeds limit"),
+    "got: {}",
+    err.message()
+  );
+}
+
+/// B1.2 场景（§13.1 DoS 表「边界值通过」）：key 恰好 256B、value 恰好
+/// 256KB 全部成功——守住「≤ 上限通过、> 上限拒绝」临界点，防止把
+/// `>=` 写成 `>`。value 区（64..64+256KB）位于 guest 线性内存
+/// （memory 5 = 320KB）内。
+fn boundary_key_value_guest() -> Vec<u8> {
+  wat::parse_str(
+    r#"(module
+      (import "ribo" "storage_put" (func $put (param i32 i32 i32 i32) (result i32)))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (drop (call $put (i32.const 0) (i32.const 256) (i32.const 64) (i32.const 262144)))
+        (i32.store8 (i32.const 16) (i32.const 49))
+        (i32.const 16) (i32.const 1))
+      (memory (export "memory") 5)
+      (func (export "alloc") (param i32) (result i32) (i32.const 16))
+      (func (export "dealloc") (param i32 i32)))"#,
+  )
+  .expect("valid boundary wat")
+}
+
+/// 预期：put 成功（边界值不被拒绝），execute 返回单字节 JSON 数字 1。
+#[tokio::test]
+async fn boundary_key_and_value_pass() {
+  let wasm = boundary_key_value_guest();
+  let acl = full_acl();
+  let result = run_guest(&wasm, &acl, "t", json!({}), Duration::from_secs(2))
+    .await
+    .expect("boundary sizes must pass");
+  assert_eq!(result, json!(1));
+}
+
+/// B1.7 场景（§13.1「log 限流」）：guest 洪水发送 300 条日志（进程
+/// burst 默认 200）——限流静默丢弃超量条目（§6.1），guest 侧执行
+/// 不失败（与 `LogRateLimiter` 窗口滚动单测互补）。
+fn log_flood_guest() -> Vec<u8> {
+  wat::parse_str(
+    r#"(module
+      (import "ribo" "log" (func $log (param i32 i32) (result i32)))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (local $i i32)
+        (loop $l
+          (drop (call $log (i32.const 0) (i32.const 5)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br_if $l (i32.lt_s (local.get $i) (i32.const 300))))
+        (i32.store8 (i32.const 16) (i32.const 49))
+        (i32.const 16) (i32.const 1))
+      (memory (export "memory") 1)
+      (func (export "alloc") (param i32) (result i32) (i32.const 16))
+      (func (export "dealloc") (param i32 i32)))"#,
+  )
+  .expect("valid log flood wat")
+}
+
+/// 预期：洪水日志全部被 host 接收（超量静默丢弃），执行成功收敛。
+#[tokio::test]
+async fn log_flood_is_throttled_silently() {
+  let wasm = log_flood_guest();
+  let acl = full_acl();
+  let result = run_guest(&wasm, &acl, "t", json!({}), Duration::from_secs(2))
+    .await
+    .expect("log flood must not fail guest execution");
+  assert_eq!(result, json!(1));
+}
+
+/// B1.6 场景（§13.1「tools() 仅调一次」/ P2-12）：`WasmPlugin::tools`
+/// 直接读缓存——多次调用结果稳定一致；guest 的 `list_tools` 由加载期
+/// （§4.1 阶段 3）单次执行的代码路径保证，缓存于 WasmPlugin。
+#[tokio::test]
+async fn plugin_tools_manifest_is_cached_and_stable() {
+  // manifest JSON 恰 28 字节：{"plugin_id":"t","tools":[]}
+  let wasm = wat::parse_str(
+    r#"(module
+      (memory (export "memory") 1)
+      (data (i32.const 16) "{\"plugin_id\":\"t\",\"tools\":[]}")
+      (func (export "alloc") (param i32) (result i32) (i32.const 512))
+      (func (export "dealloc") (param i32 i32))
+      (func (export "list_tools") (result i32 i32) (i32.const 16) (i32.const 28))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (i32.const 0) (i32.const 0)))"#,
+  )
+  .expect("valid manifest wat");
+  let host = crate::wasm::host::WasmPluginHost::new().expect("host");
+  let plugin = host.load(&wasm, None, &full_acl()).expect("load");
+
+  let names = || {
+    plugin
+      .tools()
+      .iter()
+      .map(|m| m.name.clone())
+      .collect::<Vec<_>>()
+  };
+  let first = names();
+  for _ in 0..3 {
+    assert_eq!(names(), first, "manifest cache must be stable");
+  }
+}
+
+// ===== B3.1 SSRF 第 3 层（DNS 解析结果 IP 复检）=====
+
+/// 静态解析表 resolver（测试专用）：域名 → SocketAddr 硬映射，
+/// 复现「白名单域名解析到私网 IP」的 DNS rebinding，无需真实 DNS。
+struct StaticResolver {
+  map: std::collections::HashMap<String, Vec<std::net::SocketAddr>>,
+}
+
+impl StaticResolver {
+  fn new(entries: &[(&str, &str)]) -> Self {
+    Self {
+      map: entries
+        .iter()
+        .map(|(host, addr)| {
+          (
+            host.to_string(),
+            vec![addr.parse().expect("valid socket addr")],
+          )
+        })
+        .collect(),
+    }
+  }
+}
+
+impl reqwest::dns::Resolve for StaticResolver {
+  fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+    let addrs = self.map.get(name.as_str()).cloned().unwrap_or_default();
+    Box::pin(
+      async move { Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs) },
+    )
+  }
+}
+
+/// 场景（B3.1 单元级）：解析结果命中保留段（RFC1918 / 元数据端点）
+/// 被拒（错误文案含 `blocked address` 与具体 IP）；保留段外放行。
+#[test]
+fn dns_guard_rejects_private_resolutions() {
+  let addrs: Vec<std::net::SocketAddr> = vec![
+    "192.168.1.5:80".parse().expect("addr"),
+    "169.254.169.254:80".parse().expect("addr"),
+  ];
+  let err = ensure_addrs_allowed(addrs.into_iter())
+    .expect_err("private resolution must be blocked");
+  assert!(err.to_string().contains("blocked address"), "got: {err}");
+
+  let public: Vec<std::net::SocketAddr> =
+    vec!["93.184.216.34:80".parse().expect("addr")];
+  assert!(
+    ensure_addrs_allowed(public.into_iter()).is_ok(),
+    "non-reserved addresses must pass the guard"
+  );
+}
+
+/// B3.1 场景（guest 级全链路）：白名单域名 `rebind.example.com` 通过
+/// UrlPolicy 第 1/2 层（域名无字面 IP 可查）→ 解析到 RFC1918 私网 IP
+/// → resolver 第 3 层拒绝。断言错误码为 `plugin.plugin_exec_failed`
+/// （transport 路径），**不是** `plugin.plugin_forbidden`——区别于
+/// 第 1/2 层的 ACL / 策略拒绝，证明拦截发生在解析层。
+fn http_rebind_guest() -> Vec<u8> {
+  // 请求 JSON 恰 52 字节：{"url":"http://rebind.example.com/x","method":"GET"}
+  wat::parse_str(
+    r#"(module
+      (import "ribo" "http_proxy" (func $http (param i32 i32) (result i32)))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (drop (call $http (i32.const 64) (i32.const 52)))
+        (i32.const 0) (i32.const 0))
+      (memory (export "memory") 1)
+      (data (i32.const 64) "{\"url\":\"http://rebind.example.com/x\",\"method\":\"GET\"}")
+      (func (export "alloc") (param i32) (result i32) (i32.const 16))
+      (func (export "dealloc") (param i32 i32)))"#,
+  )
+  .expect("valid http rebind wat")
+}
+
+#[tokio::test]
+async fn dns_rebinding_to_private_ip_is_blocked() {
+  let acl = PluginAcl {
+    log: true,
+    http: true,
+    url_policy: Some(Arc::new(crate::acl::UrlPolicy::new([
+      "rebind.example.com",
+    ]))),
+    ..PluginAcl::default()
+  };
+  let cfg = PluginRuntimeConfig::default();
+  let shared = Arc::new(PluginShared {
+    client: Arc::new(
+      build_http_client_with_resolver(Arc::new(DnsGuardResolver::new(
+        Arc::new(StaticResolver::new(&[(
+          "rebind.example.com",
+          "192.168.1.5:80",
+        )])),
+      )))
+      .expect("client with guard resolver"),
+    ),
+    storage: Arc::new(Storage::new(&cfg, &acl)),
+    log_limiter: Arc::new(LogRateLimiter::new(&cfg)),
+    config: Arc::new(cfg),
+  });
+  let err = run_guest_with_shared(
+    &http_rebind_guest(),
+    &shared,
+    &acl,
+    "t",
+    json!({}),
+    Duration::from_secs(2),
+  )
+  .await
+  .expect_err("rebinding to private IP must be blocked");
+  assert_eq!(err.code(), PLUGIN_EXEC_FAILED, "got: {err}");
+  assert_ne!(
+    err.code(),
+    PLUGIN_FORBIDDEN,
+    "resolver-layer rejection must not be confused with ACL denial"
+  );
+}
+
+// ===== B3.2 权威清单（Step C 信任链闭合）=====
+
+/// 场景（B3.2）：权威清单与 guest 自述一致 → `load_with_authority`
+/// 通过；不一致（plugin_id / 工具集合）→ 拒绝加载。guest manifest
+/// 为 `{"plugin_id":"t","tools":[]}`（28 字节，复用 §4.1 fixture 形态）。
+#[tokio::test]
+async fn authority_manifest_gates_loading() {
+  use crate::authority::AuthorityManifest;
+
+  let wasm = wat::parse_str(
+    r#"(module
+      (memory (export "memory") 1)
+      (data (i32.const 16) "{\"plugin_id\":\"t\",\"tools\":[]}")
+      (func (export "alloc") (param i32) (result i32) (i32.const 512))
+      (func (export "dealloc") (param i32 i32))
+      (func (export "list_tools") (result i32 i32) (i32.const 16) (i32.const 28))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (i32.const 0) (i32.const 0)))"#,
+  )
+  .expect("valid manifest wat");
+  let host = crate::wasm::host::WasmPluginHost::new().expect("host");
+
+  // 一致 → 通过
+  let auth = AuthorityManifest::from_json(br#"{"plugin_id":"t","tools":[]}"#)
+    .expect("authority manifest");
+  let plugin = host
+    .load_with_authority(&wasm, None, &full_acl(), Some(&auth))
+    .expect("matching authority must pass");
+  assert_eq!(plugin.id(), "t");
+
+  // plugin_id 不一致 → 拒绝
+  let bad_id =
+    AuthorityManifest::from_json(br#"{"plugin_id":"other","tools":[]}"#)
+      .expect("authority manifest");
+  // Arc<dyn Plugin> 无 Debug，无法用 expect_err（需打印 Ok 值）
+  let err =
+    match host.load_with_authority(&wasm, None, &full_acl(), Some(&bad_id)) {
+      Err(err) => err,
+      Ok(_) => panic!("plugin_id mismatch must be rejected"),
+    };
+  assert!(
+    err.message().contains("authority manifest mismatch"),
+    "got: {}",
+    err.message()
+  );
+
+  // guest 多报工具（权威清单不含）→ 拒绝
+  let extra = AuthorityManifest::from_json(
+    br#"{"plugin_id":"t","tools":[{"name":"phantom","description":"x","parameters":{}}]}"#,
+  )
+  .expect("authority manifest");
+  let err =
+    match host.load_with_authority(&wasm, None, &full_acl(), Some(&extra)) {
+      Err(err) => err,
+      Ok(_) => panic!("authority extra tool must be rejected"),
+    };
+  assert!(
+    err.message().contains("guest does not provide it"),
     "got: {}",
     err.message()
   );

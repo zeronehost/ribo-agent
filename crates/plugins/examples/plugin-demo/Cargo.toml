@@ -23,4 +23,9 @@ serde_json = "1"
 ra-plugins = { path = "../../" }
 ra-tools = { path = "../../../tools" }
 ra-core = { path = "../../../core" }
+ra-agent = { path = "../../../agent" }
+ra-cli = { path = "../../../cli" }
+ra-provider = { path = "../../../provider" }
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-util = "0.7"

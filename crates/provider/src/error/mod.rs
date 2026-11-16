@@ -396,7 +396,13 @@ mod tests {
   /// 场景：`from_reqwest` 将连接失败映射为 TRANSPORT。
   #[tokio::test]
   async fn from_reqwest_maps_connect_error_to_transport() {
-    let err = reqwest::Client::new()
+    // no_proxy：带 HTTP 代理的环境会把 127.0.0.1 的连接失败顶替为代理
+    // 502（server_error），导致 connect-error 断言落空（B2.4 代理陷阱）
+    let client = reqwest::Client::builder()
+      .no_proxy()
+      .build()
+      .expect("测试 client 构造成功");
+    let err = client
       .get("http://127.0.0.1:1/")
       .send()
       .await

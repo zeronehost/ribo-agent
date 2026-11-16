@@ -12,6 +12,7 @@
 //! 按前缀分类。ACL 拒绝**必须直接构造** `WasmError::msg("forbidden:{cap}")`
 //! （规范能力名），绝不走 [`ribo_to_error`]。
 
+use std::sync::Arc;
 use std::sync::{
   OnceLock,
   atomic::{AtomicU64, Ordering},
@@ -249,16 +250,100 @@ pub(crate) fn host_http_get(
   })
 }
 
-/// 构建受限 HTTP 客户端：禁用重定向（SSRF 第 2 层；逐跳重校验归 Step C）。
+/// 构建受限 HTTP 客户端：禁用重定向（SSRF 第 2 层）+ DNS 解析结果
+/// IP 复检（SSRF 第 3 层，B3.1）。
 ///
 /// # Errors
 ///
 /// 客户端构建失败 → `plugin.plugin_internal`（不引入第二套对外错误类型）。
 pub fn build_http_client() -> RiboResult<reqwest::Client> {
+  // 生产路径：系统解析外包 DNS 守卫（SSRF 第 3 层）
+  build_http_client_with_resolver(Arc::new(DnsGuardResolver::new(Arc::new(
+    SystemResolver,
+  ))))
+}
+
+/// 显式注入解析器的构造：生产路径走 [`SystemResolver`]；测试用静态
+/// 解析表复现「白名单域名解析到私网 IP」的 DNS rebinding 场景。
+///
+/// # Errors
+///
+/// 同 [`build_http_client`]。
+pub(crate) fn build_http_client_with_resolver(
+  resolver: Arc<dyn reqwest::dns::Resolve>,
+) -> RiboResult<reqwest::Client> {
   reqwest::Client::builder()
     .redirect(reqwest::redirect::Policy::none())
+    // 强制直连（不走系统代理）：SSRF 第 3 层依赖本地解析并复检 IP——
+    // 走代理时解析发生在代理侧，DNS 守卫与保留段拦截全部被旁路。
+    // 插件通道的出站策略完全由宿主白名单承担，不继承进程级代理。
+    .no_proxy()
+    .dns_resolver(resolver)
     .build()
     .map_err(|e| plugin_internal("http client build", e))
+}
+
+/// 系统默认解析（getaddrinfo），与 reqwest 无自定义 resolver 时的行为
+/// 等价——包一层以便 [`DnsGuardResolver`] 统一持有 `Arc<dyn Resolve>`。
+struct SystemResolver;
+
+impl reqwest::dns::Resolve for SystemResolver {
+  fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+    let host = name.as_str().to_string();
+    Box::pin(async move {
+      use std::net::ToSocketAddrs;
+      // port 0 占位：reqwest 以连接目标真实端口替换地址端口，仅取 IP
+      let addrs: Vec<std::net::SocketAddr> =
+        (host.as_str(), 0).to_socket_addrs()?.collect();
+      Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+    })
+  }
+}
+
+/// SSRF 第 3 层（B3.1，18_ §12）：DNS 解析结果 IP 复检守卫。
+///
+/// [`UrlPolicy`] 检查的是 URL 字符串的 host，防不了「白名单域名解析到
+/// 私网 IP」的 DNS rebinding——本守卫在解析结果上复用
+/// [`crate::acl::is_blocked_ip`]，命中保留段即拒绝连接（错误进入
+/// reqwest 的 transport 路径 → `plugin.plugin_exec_failed`）。
+pub(crate) struct DnsGuardResolver {
+  inner: Arc<dyn reqwest::dns::Resolve>,
+}
+
+impl DnsGuardResolver {
+  /// 以显式内层解析器构造守卫（生产 = 系统解析；测试 = 静态解析表）。
+  pub(crate) fn new(inner: Arc<dyn reqwest::dns::Resolve>) -> Self {
+    Self { inner }
+  }
+}
+
+/// 解析结果 IP 复检（纯函数，便于单测）：命中保留段即拒绝，错误文案
+/// 含 `blocked address` 与具体 IP（供诊断与断言）。
+pub(crate) fn ensure_addrs_allowed(
+  addrs: impl Iterator<Item = std::net::SocketAddr>,
+) -> std::io::Result<Vec<std::net::SocketAddr>> {
+  let mut allowed = Vec::new();
+  for addr in addrs {
+    if crate::acl::is_blocked_ip(addr.ip()) {
+      return Err(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        format!("dns resolved to blocked address: {}", addr.ip()),
+      ));
+    }
+    allowed.push(addr);
+  }
+  Ok(allowed)
+}
+
+impl reqwest::dns::Resolve for DnsGuardResolver {
+  fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+    let inner = Arc::clone(&self.inner);
+    Box::pin(async move {
+      let addrs = inner.resolve(name).await?;
+      let allowed = ensure_addrs_allowed(addrs)?;
+      Ok(Box::new(allowed.into_iter()) as reqwest::dns::Addrs)
+    })
+  }
 }
 
 // ===== guest 内存读写辅助（§6.4） =====

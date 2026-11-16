@@ -166,6 +166,92 @@ impl Default for HarnessLayerSchema {
   }
 }
 
+/// plugins 层：WASM 插件装配声明（阶段 6 Step B 接入，18_ §4.1）。
+///
+/// 层间零交叉纪律：本层只描述「加载什么文件、授予什么能力」，与
+/// [`ra_plugins::acl::PluginAcl`] 的运行时转换在装配层（assemble）完成；
+/// 能力语义与 18_ §2.1 一致——ACL 由宿主注入，不信任 guest 自述。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PluginsSchema {
+  /// 是否启用插件装配（默认 false：不扫描、不加载，现有配置与 TUI
+  /// 测试零行为变化；也未触碰 `PluginRuntime` 的 wasmtime 初始化）。
+  pub enabled: bool,
+  /// `.wasm` 扫描目录（相对 harness.root 解析，可多个）。目录内全部
+  /// `*.wasm` 按文件名排序加载，能力取最小权限（ACL 全关、无注入
+  /// config）；需要授予能力时改用 `entries` 显式清单。
+  pub roots: Vec<PathBuf>,
+  /// 显式插件清单（相对 harness.root 解析），可逐插件声明 ACL 与 config。
+  pub entries: Vec<PluginEntrySchema>,
+  /// 来源校验策略（Step C 签名校验）：生产须 `require_signature = true`
+  /// 并提供非空公钥白名单；默认关闭，保持既有配置零行为变化。
+  pub verify: PluginVerifySchema,
+}
+
+impl Default for PluginsSchema {
+  /// 默认 = 关闭。
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      roots: Vec::new(),
+      entries: Vec::new(),
+      verify: PluginVerifySchema::default(),
+    }
+  }
+}
+
+/// `[plugins.verify]` 来源校验配置。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PluginVerifySchema {
+  /// 是否强制每条插件声明提供有效 Ed25519 签名与权威清单。
+  pub require_signature: bool,
+  /// 授信公钥清单 JSON（相对 harness.root）：
+  /// `{"keys":[{"id":"...","public_key":"<64 hex>"}]}`。
+  /// `require_signature = true` 时缺失即启动致命。
+  pub trusted_keys: Option<PathBuf>,
+}
+
+/// `[[plugins.entries]]` 显式清单单条目。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginEntrySchema {
+  /// wasm 模块文件路径（相对 harness.root 解析；绝对路径与含 `..`
+  /// 逃逸组件的取值在装配期直接拒绝——与 `tools.fs_root` 同一沙箱纪律）。
+  pub path: PathBuf,
+  /// 注入插件的 config（经 args 信封在每次 `execute` 生效，18_ §9）。
+  pub config: Option<serde_json::Value>,
+  /// 权威清单文件（Step C B3.2，可选）：相对 harness.root 的
+  /// manifest.json（与 guest ABI 同构）。提供时宿主以其为信任源，
+  /// guest `list_tools()` 自述与之不符即拒绝加载；缺省维持 Step B
+  /// 语义（采信自述，开发 / CI 模式）。
+  pub manifest: Option<PathBuf>,
+  /// 侧载签名块（provenance.json，相对 harness.root）：含签名者 ID、
+  /// Ed25519 签名与 wasm 摘要；仅在 `manifest` 存在时有意义。生产策略下
+  /// 缺签名块即启动致命。
+  pub provenance: Option<PathBuf>,
+  /// 本插件被授予的能力声明（映射为 `PluginAcl`；默认全关）。
+  #[serde(default)]
+  pub acl: PluginAclSchema,
+}
+
+/// 插件能力声明（schema 层镜像 `ra_plugins::acl::PluginAcl` 的可配置子集）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PluginAclSchema {
+  /// 允许调用 `log` host function。
+  pub log: bool,
+  /// 允许调用 `storage_get` / `storage_put` host function。
+  pub storage: bool,
+  /// 允许调用 `http_proxy` host function（须同时提供非空 `http_hosts`）。
+  pub http: bool,
+  /// http 出站域名白名单（大小写不敏感；仅 `http = true` 时生效）。
+  pub http_hosts: Vec<String>,
+  /// 线性内存覆写（字节；只能收紧进程默认 32MB，放大被 min 掉）。
+  pub memory_limit_bytes: Option<usize>,
+  /// 单插件 storage 总配额覆写（字节；只能收紧进程默认 1MB）。
+  pub storage_quota_bytes: Option<usize>,
+  /// 单工具执行超时上限覆写（毫秒；只能收紧，与进程 60s ceiling 取 min）。
+  pub timeout_ceiling_ms: Option<u64>,
+}
+
 /// 适配器类型白名单。
 pub const ADAPTER_TYPES: [&str; 3] =
   ["openai-chat", "openai-responses", "anthropic"];

@@ -84,6 +84,10 @@ url = "2"
 # 升级 wasmtime 时必须重跑 §13.1 的 trap 分类回归测试（错误消息文本可能变化）。
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime"] }
 blake3 = "1"
+# Ed25519 来源签名验证（已在 lockfile 中为 reqwest/rustls 的传递依赖）
+ring = "0.17"
+# ModuleCache LRU 容量淘汰（已在 lockfile 中，作为传递依赖存在）
+lru = "0.12"
 # 测试用 WAT 解析（仅 dev-dependencies 使用）
 wat = "1"
 

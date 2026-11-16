@@ -1,7 +1,12 @@
 //! schema → 运行时对象装配：Gateway / LoopDeps / Harness / CliSession
 //!（14 详细设计 §6）。
 
-use std::{sync::Arc, time::Duration};
+use std::{
+  collections::HashSet,
+  path::{Path, PathBuf},
+  sync::Arc,
+  time::Duration,
+};
 
 use ra_agent::{
   adapter::ToolManagerAdapter, agent::BaseAgent, types::LoopDeps,
@@ -12,6 +17,12 @@ use ra_harness::{
   JsonlSessionStore, PersistentSessionProvider, SkillsLoader,
   SystemPromptBuilder,
 };
+use ra_plugins::acl::{PluginAcl, UrlPolicy};
+use ra_plugins::provenance::{
+  SignedAuthority, TrustedKeys, VerificationPolicy,
+};
+use ra_plugins::registry::{PluginRegistry, plugin_aware_tool_manager_config};
+use ra_plugins::wasm::host::WasmPluginHost;
 use ra_provider::{
   adapters::{
     anthropic::AnthropicProvider, mock::MockStep,
@@ -25,7 +36,7 @@ use ra_provider::{
 };
 use ra_tools::manager::ToolManager;
 
-use super::{ConfigMode, LoadOutcome};
+use super::{ConfigMode, LoadOutcome, PluginAclSchema};
 
 /// CLI 内置系统提示模板（v1 不提供配置入口）。
 const DEFAULT_CLI_TEMPLATE: &str = "\
@@ -35,6 +46,11 @@ prefer minimal, verifiable changes and report what you did.";
 
 /// mock 模式的模型名（与 `ProviderSchema::default()` 对齐）。
 const MOCK_MODEL: &str = "mock-model";
+
+/// 装配期配置域：装配层自造错误的 `RiboError::domain`（错误码以
+/// `config.*` 集中管理；插件自身的 `plugin.plugin_*` 错误由
+/// ra-plugins 的错误域产生，不经此处）。
+const CONFIG_DOMAIN: &str = "config";
 
 /// REPL 唯一运行时句柄（命名避开 `ra_agent::session::Session`）。
 /// `harness` 为 `Arc<Harness>`：`prompt(&self)` 需跨 spawn 任务共享
@@ -52,6 +68,12 @@ pub struct CliSession {
   pub skills: Vec<String>,
   /// 装配期技能诊断（已格式化为单行，`/skills` 输出）。
   pub skill_diagnostics: Vec<String>,
+  /// 装配期插件注册表（`plugins.enabled = false` 时为 `None`，且进程
+  /// 未触碰 wasmtime 初始化）。插件本体由 `PluginToolAdapter` 经
+  /// `ToolManager` 持有，此处保留引用以支撑后续热重载与状态查询。
+  pub plugin_registry: Option<Arc<PluginRegistry>>,
+  /// 装配期加载成功的插件 ID（启动横幅 / 装配摘要展示）。
+  pub loaded_plugins: Vec<String>,
 }
 
 /// 解析示例用模型 ID。
@@ -159,6 +181,416 @@ fn build_mock_gateway(
   let mut gateway = Gateway::new(GatewayConfig::default());
   gateway.register(Arc::new(mock))?;
   Ok((Arc::new(gateway), model))
+}
+
+/// 把 schema 层 ACL 声明转换为运行时 [`PluginAcl`]（装配层唯一转换点）。
+///
+/// `http = true` 且白名单非空时构造 [`UrlPolicy`]；空白名单保持
+/// `None`——`check_url` 对空策略拒绝一切 host，显式不构造可让
+/// 「忘了配 hosts」在配置审查时一眼可见（最小权限语义不变）。
+fn build_plugin_acl(acl: &PluginAclSchema) -> PluginAcl {
+  PluginAcl {
+    log: acl.log,
+    storage: acl.storage,
+    http: acl.http,
+    url_policy: (acl.http && !acl.http_hosts.is_empty())
+      .then(|| Arc::new(UrlPolicy::new(acl.http_hosts.clone()))),
+    memory_limit_bytes: acl.memory_limit_bytes,
+    storage_quota_bytes: acl.storage_quota_bytes,
+    timeout_ceiling_ms: acl.timeout_ceiling_ms,
+  }
+}
+
+/// 内部装配单元：已解析为完整路径的插件声明（roots 扫描项与
+/// entries 清单项的统一形态）。
+struct PluginSpec {
+  /// wasm 文件完整路径（harness.root 已拼接）。
+  full: PathBuf,
+  config: Option<serde_json::Value>,
+  acl: PluginAclSchema,
+  /// 权威清单 + 侧载签名（Step C B3.2 / 来源校验；roots 扫描项为 None）。
+  authority: Option<SignedAuthority>,
+  /// 来源校验策略（同一进程内由 [plugins.verify] 统一构造）。
+  verify_policy: VerificationPolicy,
+}
+
+/// 路径是否逃逸沙箱基准（词法判定）：绝对路径或含 `..` 逃逸组件。
+///
+/// 与 `tools.fs_root` / `plugins.entries` 同一沙箱纪律——配置层给出的
+/// 相对路径不得脱离 harness.root。注意本判定只看**词法**形态：符号链接
+/// 与目录联接的逃逸由规范化后的归属校验兜底（见 [`collect_plugin_specs`]）。
+fn escapes_root(path: &Path) -> bool {
+  path.is_absolute()
+    || path
+      .components()
+      .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// 校验插件 wasm 路径：canonicalize + harness.root 沙箱归属判定。
+///
+/// 词法判定（`escapes_root`）只挡得住配置中的绝对路径 / `..`；符号链接
+/// 与目录联接须在规范化后复核归属，否则**扫描项与清单项**都能指向沙箱
+/// 之外的文件。返回规范化路径供去重使用。
+///
+/// # Errors
+/// - wasm 文件不存在或不可读 → `config.plugin_file_missing`；
+/// - 规范化后路径不在 harness.root 之下 → `config.plugin_load_failed`。
+fn validate_plugin_path(
+  full: &Path,
+  sandbox: Option<&Path>,
+) -> RiboResult<PathBuf> {
+  let canonical = std::fs::canonicalize(full).map_err(|e| {
+    ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_file_missing",
+      format!("plugin wasm {} missing: {e}", full.display()),
+    )
+  })?;
+  if let Some(root) = sandbox
+    && !canonical.starts_with(root)
+  {
+    return Err(ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_load_failed",
+      format!("plugin path escapes harness.root: {}", canonical.display()),
+    ));
+  }
+  Ok(canonical)
+}
+
+/// 构造来源校验策略：读取宿主侧载的 Ed25519 公钥白名单。
+///
+/// 路径纪律与 wasm / manifest 一致——相对 harness.root、词法无逃逸、
+/// canonicalize 后仍归属沙箱。生产模式缺配置或文件不可读即启动致命，
+/// 不以「空列表」静默降级（空列表会让所有签名校验失败，掩盖配置错误）。
+fn build_verify_policy(
+  outcome: &LoadOutcome,
+) -> RiboResult<VerificationPolicy> {
+  let verify = &outcome.plugins.verify;
+  if !verify.require_signature {
+    return Ok(VerificationPolicy::development());
+  }
+  let Some(keys_path) = verify.trusted_keys.as_ref() else {
+    return Err(ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_trusted_keys_missing",
+      "plugins.verify.trusted_keys is required when require_signature is true",
+    ));
+  };
+  if escapes_root(keys_path) {
+    return Err(ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_load_failed",
+      format!(
+        "trusted keys path must be relative under harness.root: {}",
+        keys_path.display()
+      ),
+    ));
+  }
+  let full = outcome.harness.root.join(keys_path);
+  let canonical = std::fs::canonicalize(&full).map_err(|e| {
+    ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_trusted_keys_unreadable",
+      format!("trusted keys {} unreadable: {e}", full.display()),
+    )
+  })?;
+  if let Some(root) = std::fs::canonicalize(&outcome.harness.root).ok()
+    && !canonical.starts_with(&root)
+  {
+    return Err(ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_load_failed",
+      format!(
+        "trusted keys path escapes harness.root: {}",
+        canonical.display()
+      ),
+    ));
+  }
+  let bytes = std::fs::read(&full).map_err(|e| {
+    ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_trusted_keys_unreadable",
+      format!("trusted keys {} unreadable: {e}", full.display()),
+    )
+  })?;
+  let keys = TrustedKeys::from_json(&bytes).map_err(|e| {
+    ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_trusted_keys_invalid",
+      format!("trusted keys {} invalid: {}", full.display(), e.message()),
+    )
+  })?;
+  if keys.is_empty() {
+    return Err(ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_trusted_keys_invalid",
+      format!("trusted keys {} contains no keys", full.display()),
+    ));
+  }
+  Ok(VerificationPolicy::production(keys))
+}
+
+/// 从 plugins 层配置收集全部插件声明（目录扫描 + 显式清单）。
+///
+/// 目录扫描项取最小权限（ACL 全关、无注入 config）；需要授予能力 /
+/// 注入 config 的插件应走 `[[plugins.entries]]` 清单。同一文件被
+/// roots 与 entries 同时引用时按规范化路径只保留一份（canonicalize
+/// 兼做存在性检查，缺失即启动致命）。
+///
+/// 沙箱纪律（与 `tools.fs_root` 同源）：插件 wasm 恒位于 harness.root
+/// 之下，两道防线——
+///
+/// 1. **词法**：roots 与 entries 的路径必须是 root 下的相对子路径
+///    （绝对路径或 `..` 逃逸组件直接拒绝）。`Path::join` 遇绝对路径会
+///    替换基址，故 roots 的校验是扫描目录不越界的必要条件；
+/// 2. **归属**：规范化（canonicalize）后的路径必须仍在规范化后的
+///    harness.root 之下——堵住词法合法但经符号链接 / 目录联接指向沙箱
+///    外的路径。扫描项在加入 `specs` 前即由 [`validate_plugin_path`]
+///    校验，清单项在去重阶段由同一校验器复核。
+///
+/// # Errors
+/// - 扫描目录不可读 → `config.plugin_dir_unreadable`；
+/// - roots / 清单路径为绝对路径或含 `..` 逃逸组件 → `config.plugin_load_failed`；
+/// - 规范化后路径逃逸 harness.root → `config.plugin_load_failed`；
+/// - wasm 文件缺失 → `config.plugin_file_missing`。
+fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
+  let cfg = &outcome.plugins;
+  // 规范化后的 harness.root 即沙箱边界；root 不存在时 canonicalize 失败
+  // （None），此时 root 下的文件同样不存在——逐条 canonicalize 会以
+  // `plugin_file_missing` 终结，故边界缺失按「无边界」处理即可。
+  let sandbox = std::fs::canonicalize(&outcome.harness.root).ok();
+
+  // ===== 来源校验策略（Step C）：信任清单是进程级唯一信任锚 =====
+  // 生产模式（require_signature = true）必须配置非空公钥清单；公钥文件与
+  // wasm / manifest 同属 harness.root 沙箱，路径逃逸一律启动致命。
+  let verify_policy = build_verify_policy(outcome)?;
+  let mut specs: Vec<PluginSpec> = Vec::new();
+
+  // ===== roots 路径安全校验：扫描目录恒位于 harness.root 之下 =====
+  // `Path::join` 遇绝对路径会直接替换基址（含 `..` 时同理解析到沙箱
+  // 外），故 roots 必须是 harness.root 下的相对子路径——先于任何文件
+  // 系统访问完成校验，越界的扫描目录连读都不会被读。
+  for root in &cfg.roots {
+    if escapes_root(root) {
+      return Err(ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "plugin_load_failed",
+        format!("plugin path escapes harness.root: {}", root.display()),
+      ));
+    }
+  }
+
+  // ===== 目录扫描：roots 下全部 *.wasm（按完整路径排序保证确定性）=====
+  for root in &cfg.roots {
+    let dir = outcome.harness.root.join(root);
+    let mut scanned: Vec<PathBuf> = Vec::new();
+    let entries = std::fs::read_dir(&dir).map_err(|e| {
+      ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "plugin_dir_unreadable",
+        format!("plugin root {} unreadable: {e}", dir.display()),
+      )
+    })?;
+    for entry in entries {
+      let path = entry
+        .map_err(|e| {
+          ra_core::error::RiboError::new(
+            CONFIG_DOMAIN,
+            "plugin_dir_unreadable",
+            format!("plugin root {} entry unreadable: {e}", dir.display()),
+          )
+        })?
+        .path();
+      if path.extension().is_some_and(|ext| ext == "wasm") {
+        scanned.push(path);
+      }
+    }
+    scanned.sort();
+    for path in scanned {
+      // 扫描项同样做 canonicalize 沙箱归属校验（与显式清单一致）：
+      // 词法合法的符号链接 / 目录联接，规范化后越界即启动致命。
+      validate_plugin_path(&path, sandbox.as_deref())?;
+      specs.push(PluginSpec {
+        full: path,
+        config: None,
+        acl: PluginAclSchema::default(),
+        authority: None,
+        verify_policy: verify_policy.clone(),
+      });
+    }
+  }
+
+  // ===== 显式清单：路径安全校验（与 tools.fs_root 同一沙箱纪律）=====
+  for entry in &cfg.entries {
+    if escapes_root(&entry.path) {
+      return Err(ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "plugin_load_failed",
+        format!(
+          "plugin path must be relative under harness.root: {}",
+          entry.path.display()
+        ),
+      ));
+    }
+    // 权威清单侧载（Step C B3.2）：相对 root 解析，缺失 / 解析失败 =
+    // 启动致命（信任链不完整不如明确失败）
+    let manifest_bytes = match entry.manifest.as_ref() {
+      Some(mpath) => {
+        if mpath.is_absolute()
+          || mpath
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+          return Err(ra_core::error::RiboError::new(
+            CONFIG_DOMAIN,
+            "plugin_load_failed",
+            format!(
+              "authority manifest path must be relative under harness.root: {}",
+              mpath.display()
+            ),
+          ));
+        }
+        let mfull = outcome.harness.root.join(mpath);
+        let bytes = std::fs::read(&mfull).map_err(|e| {
+          ra_core::error::RiboError::new(
+            CONFIG_DOMAIN,
+            "plugin_manifest_unreadable",
+            format!("authority manifest {} unreadable: {e}", mfull.display()),
+          )
+        })?;
+        Some(bytes)
+      }
+      None => None,
+    };
+    // 侧载签名块（Step C 来源校验）：相对 root、沙箱归属校验同 manifest。
+    let provenance_bytes = match entry.provenance.as_ref() {
+      Some(ppath) => {
+        if ppath.is_absolute()
+          || ppath
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+          return Err(ra_core::error::RiboError::new(
+            CONFIG_DOMAIN,
+            "plugin_load_failed",
+            format!(
+              "provenance path must be relative under harness.root: {}",
+              ppath.display()
+            ),
+          ));
+        }
+        let pfull = outcome.harness.root.join(ppath);
+        let canonical = std::fs::canonicalize(&pfull).map_err(|e| {
+          ra_core::error::RiboError::new(
+            CONFIG_DOMAIN,
+            "plugin_provenance_unreadable",
+            format!("provenance {} unreadable: {e}", pfull.display()),
+          )
+        })?;
+        if let Some(root) = std::fs::canonicalize(&outcome.harness.root).ok()
+          && !canonical.starts_with(&root)
+        {
+          return Err(ra_core::error::RiboError::new(
+            CONFIG_DOMAIN,
+            "plugin_load_failed",
+            format!(
+              "provenance path escapes harness.root: {}",
+              canonical.display()
+            ),
+          ));
+        }
+        Some(std::fs::read(&pfull).map_err(|e| {
+          ra_core::error::RiboError::new(
+            CONFIG_DOMAIN,
+            "plugin_provenance_unreadable",
+            format!("provenance {} unreadable: {e}", pfull.display()),
+          )
+        })?)
+      }
+      None => None,
+    };
+    let authority = match manifest_bytes {
+      Some(bytes) => Some(
+        SignedAuthority::from_json(&bytes, provenance_bytes.as_deref())
+          .map_err(|e| {
+            ra_core::error::RiboError::new(
+              CONFIG_DOMAIN,
+              "plugin_manifest_invalid",
+              format!("authority manifest invalid: {}", e.message()),
+            )
+          })?,
+      ),
+      None => None,
+    };
+    specs.push(PluginSpec {
+      full: outcome.harness.root.join(&entry.path),
+      config: entry.config.clone(),
+      acl: entry.acl.clone(),
+      authority,
+      verify_policy: verify_policy.clone(),
+    });
+  }
+
+  // ===== 按规范化路径去重（归属校验统一由 validate_plugin_path 承担）=====
+  // 扫描项已在 push 前校验；清单项在此统一复核（避免改变 manifest /
+  // provenance 的错误优先级）。校验器同时产出规范化路径，供 roots /
+  // entries 指向同一文件时去重。
+  let mut seen: HashSet<PathBuf> = HashSet::new();
+  let mut deduped: Vec<PluginSpec> = Vec::new();
+  for spec in specs {
+    let canonical = validate_plugin_path(&spec.full, sandbox.as_deref())?;
+    if seen.insert(canonical) {
+      deduped.push(spec);
+    }
+  }
+  Ok(deduped)
+}
+
+/// 加载并注册全部插件（B0.3 / B0.4；失败语义 = **启动致命**）。
+///
+/// `PluginRuntime::global()` 为 `OnceLock` 单例，首次初始化失败即
+/// 毒化整个进程——半装配状态只会把问题推迟到首次工具调用，故任何
+/// 插件加载 / 注册失败都直接上抛，由启动流程终结。
+///
+/// # Errors
+/// - wasm 文件读取失败（`config.plugin_load_failed`）；
+/// - [`WasmPluginHost::load`] 失败（编译 / manifest / 命名，`plugin.plugin_*`）；
+/// - [`PluginRegistry::register`] 失败（重复 ID / schema 非法 / 批量注入）。
+fn load_and_register_plugins(
+  outcome: &LoadOutcome,
+  registry: &PluginRegistry,
+) -> RiboResult<Vec<String>> {
+  let specs = collect_plugin_specs(outcome)?;
+  let host = WasmPluginHost::new()?;
+  let mut loaded = Vec::with_capacity(specs.len());
+  for spec in specs {
+    let started = std::time::Instant::now();
+    let wasm = std::fs::read(&spec.full).map_err(|e| {
+      ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "plugin_load_failed",
+        format!("read plugin wasm {} failed: {e}", spec.full.display()),
+      )
+    })?;
+    let acl = build_plugin_acl(&spec.acl);
+    let plugin = host.load_verified(
+      &wasm,
+      spec.config.clone(),
+      &acl,
+      spec.authority.as_ref(),
+      &spec.verify_policy,
+    )?;
+    tracing::info!(
+      plugin = %plugin.id(),
+      duration_ms = started.elapsed().as_millis() as u64,
+      "plugin loaded"
+    );
+    registry.register(Arc::clone(&plugin))?;
+    tracing::info!(plugin = %plugin.id(), "plugin registered");
+    loaded.push(plugin.id().to_string());
+  }
+  Ok(loaded)
 }
 
 /// 回合在途句柄：TUI 与 CLI 共用 prompt 发起逻辑（16 详细设计 §13.1）。
@@ -291,10 +723,13 @@ pub fn assemble_with_steps(
     ctx_cfg,
   );
 
-  // ===== 阶段 4：内置工具 =====
+  // ===== 阶段 4：内置工具 + WASM 插件 =====
   // 沙箱根：tools.fs_root 相对 root 解析（加载期已校验不含逃逸组件），
-  // 未设置即 root 本身——沙箱恒位于工作空间之下
-  let manager = ToolManager::new();
+  // 未设置即 root 本身——沙箱恒位于工作空间之下。
+  // 工具面熔断配置统一走插件感知白名单（18_ §1.3 决策 1）：插件未
+  // 启用时白名单多余但无害（内置工具不会产生 plugin.plugin_* 错误码）。
+  let manager =
+    Arc::new(ToolManager::with_config(plugin_aware_tool_manager_config()));
   if outcome.tools.builtin_enabled {
     let fs_root = match outcome.tools.fs_root.as_ref() {
       Some(sub) => outcome.harness.root.join(sub),
@@ -302,7 +737,16 @@ pub fn assemble_with_steps(
     };
     ra_tools::builtin::register_builtin(&manager, &fs_root)?;
   }
-  let tools = Arc::new(ToolManagerAdapter::new(Arc::new(manager)));
+  let (plugin_registry, loaded_plugins) = if outcome.plugins.enabled {
+    let registry = PluginRegistry::new(Arc::clone(&manager));
+    let loaded = load_and_register_plugins(outcome, &registry)?;
+    tracing::info!(plugins = ?loaded, "plugins assembled");
+    (Some(Arc::new(registry)), loaded)
+  } else {
+    tracing::debug!("plugins disabled, skipping wasm plugin loading");
+    (None, Vec::new())
+  };
+  let tools = Arc::new(ToolManagerAdapter::new(Arc::clone(&manager)));
 
   // ===== 阶段 5：BaseAgent + Harness + CliSession =====
   let deps = LoopDeps {
@@ -323,5 +767,7 @@ pub fn assemble_with_steps(
     default_key: outcome.session.default_key.clone(),
     skills: skill_names,
     skill_diagnostics,
+    plugin_registry,
+    loaded_plugins,
   })
 }

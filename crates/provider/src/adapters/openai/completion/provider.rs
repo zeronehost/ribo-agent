@@ -355,7 +355,25 @@ mod tests {
   #[tokio::test]
   async fn maps_transport_error() {
     let addr = "127.0.0.1:1".parse::<SocketAddr>().expect("地址");
-    let adapter = adapter(addr, Some("key"));
+    // no_proxy：带 HTTP 代理的环境会把连接失败顶替为 502，connect 断言
+    // 落空（B2.4 代理陷阱）——本测试直接构造 no_proxy 适配器
+    let client = reqwest::Client::builder()
+      .no_proxy()
+      .build()
+      .expect("测试 client 构造成功");
+    let pid = ProviderId::parse("p1").expect("测试提供方 ID 合法");
+    let model = Model::new(
+      pid.clone(),
+      model_id("m1"),
+      "Model One",
+      format!("http://{addr}"),
+    );
+    let adapter = OpenAiCompatibleAdapter::new(
+      pid,
+      vec![model],
+      client,
+      Some("key".to_string()),
+    );
     let model = adapter.models()[0].clone();
     let context = Context::default();
     let options = StreamOptions::default();

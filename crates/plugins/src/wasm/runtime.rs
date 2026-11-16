@@ -16,10 +16,11 @@
 //! `Store: !Send`——`Store::new` + `linker.instantiate` + 执行全部在
 //! `spawn_blocking` 闭包内完成，闭包边界即 `Send` 边界（§0.4 纪律 2）。
 
-use std::sync::Arc;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use dashmap::DashMap;
+use lru::LruCache;
 use tokio_util::sync::CancellationToken;
 
 use crate::acl::PluginAcl;
@@ -59,39 +60,91 @@ fn build_engine(
 ///
 /// 内容哈希（而非路径）保证「同一份 wasm 从不同路径加载也能命中」；
 /// blake3 为进程间稳定哈希，未来磁盘缓存不需改键（§0.3 决策 5）。
-/// Step B 不做容量上限；Step C 加 LRU（§4.1 新问题 5）。
-#[derive(Default)]
+/// 容量由 [`PluginRuntimeConfig::module_cache_capacity`] 注入，超限按
+/// **LRU** 淘汰最久未使用的条目（§4.1 新问题 5 的收口）：
+/// 恶意插件反复换字节加载会填充缓存，无上界即无界内存增长。
 pub struct ModuleCache {
-  entries: DashMap<[u8; 32], Arc<wasmtime::Module>>,
+  entries: Mutex<LruCache<[u8; 32], Arc<wasmtime::Module>>>,
 }
 
+/// 缓存临界区的 guard 别名（把 poison 处理收口在 [`ModuleCache::lock_entries`]）。
+type EntriesGuard<'a> =
+  MutexGuard<'a, LruCache<[u8; 32], Arc<wasmtime::Module>>>;
+
 impl ModuleCache {
-  fn new() -> Self {
-    Self::default()
+  pub(crate) fn new(capacity: usize) -> Self {
+    // NonZeroUsize 不接受 0；进程配置保证 > 0，此处防御性兜底为 1。
+    let cap = NonZeroUsize::new(capacity.max(1)).expect("non-zero capacity");
+    Self {
+      entries: Mutex::new(LruCache::new(cap)),
+    }
+  }
+
+  /// 取缓存锁：poison 时返回错误而非 panic。
+  ///
+  /// mutex poison 意味着持锁线程曾在临界区内 panic，缓存内部结构可能已
+  /// 损坏——不强行 `into_inner()` 恢复，而是把 poison 交给上层按错误路径
+  /// 处理（graceful shutdown），避免 panic 在 spawn_blocking / 宿主 线程
+  /// 中升级为进程级故障。
+  fn lock_entries(&self) -> wasmtime::Result<EntriesGuard<'_>> {
+    self.entries.lock().map_err(|e| {
+      // 关键错误分支：缓存内部结构可能已损坏，记录后交上层走错误路径
+      tracing::error!("module cache mutex poisoned");
+      wasmtime::Error::msg(format!("module cache mutex poisoned: {e}"))
+    })
   }
 
   /// 取缓存 Module；未命中则编译并写入缓存（多 host 对同一 wasm 只编译一次）。
+  ///
+  /// 编译在锁外进行（构建模块可能耗时，持锁会串行化所有插件加载）；
+  /// 写回前二次检查，避免并发编译时同一 hash 被重复插入 / 覆盖。
+  ///
+  /// # Errors
+  ///
+  /// - 缓存锁 poisoned → `wasmtime::Error`（上层映射为 `plugin_internal`）；
+  /// - wasm 编译失败 → `wasmtime::Error`。
   pub(crate) fn get_or_compile(
     &self,
     engine: &wasmtime::Engine,
     wasm_bytes: &[u8],
   ) -> wasmtime::Result<Arc<wasmtime::Module>> {
-    let hash = blake3::hash(wasm_bytes);
-    if let Some(m) = self.entries.get(hash.as_bytes()) {
-      return Ok(Arc::clone(&m));
+    let hash = *blake3::hash(wasm_bytes).as_bytes();
+    if let Some(m) = self.lock_entries()?.get(&hash) {
+      return Ok(Arc::clone(m));
     }
-    // 编译在锁外进行：失败不污染缓存，成功后写入
     let module = Arc::new(wasmtime::Module::new(engine, wasm_bytes)?);
-    self.entries.insert(*hash.as_bytes(), Arc::clone(&module));
+    let mut entries = self.lock_entries()?;
+    if let Some(existing) = entries.get(&hash) {
+      return Ok(Arc::clone(existing));
+    }
+    entries.put(hash, Arc::clone(&module));
     Ok(module)
+  }
+
+  /// 缓存条目数（仅测试用）。poison 时取回 guard 只读长度——断言用途，
+  /// 不执行插件代码，也不 panic。
+  #[cfg(test)]
+  pub(crate) fn len(&self) -> usize {
+    self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
   }
 }
 
 impl core::fmt::Debug for ModuleCache {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    f.debug_struct("ModuleCache")
-      .field("len", &self.entries.len())
-      .finish()
+    // Debug 绝不可 panic：若 panic 展开期间触发 Debug（如 unwrap_err
+    // 打印错误值），二次 panic 会直接 abort 进程。poison 时只报告标记，
+    // 不读取可能不一致的缓存内容。
+    match self.entries.lock() {
+      Ok(entries) => f
+        .debug_struct("ModuleCache")
+        .field("len", &entries.len())
+        .field("cap", &entries.cap().get())
+        .finish(),
+      Err(_) => f
+        .debug_struct("ModuleCache")
+        .field("poisoned", &true)
+        .finish(),
+    }
   }
 }
 
@@ -113,6 +166,9 @@ pub struct PluginRuntime {
   pub module_cache: ModuleCache,
   /// 进程级运行参数（内存 / storage / 限流 / fuel），全 host 共享。
   pub cfg: PluginRuntimeConfig,
+  /// 进程级共享 HTTP client（连接池 / DNS 守卫构造一次，所有插件复用）。
+  /// 每插件各建一个 client 会让连接池按插件数碎片化，且重复构建守卫。
+  pub http_client: Arc<reqwest::Client>,
 }
 
 impl core::fmt::Debug for PluginRuntime {
@@ -150,10 +206,12 @@ impl PluginRuntime {
   /// stop / shutdown（v0.7 撤销 `shutdown_for_test`：停 ticker 后
   /// 单例无法重启会导致后续同进程测试假死）。
   fn start() -> ra_core::error::RiboResult<Self> {
-    // ===== 初始化阶段：进程参数仅此处构造一次 =====
-    let cfg = PluginRuntimeConfig::default();
+    // ===== 初始化阶段：进程参数仅此处构造一次（OnceLock 后不可变） =====
+    let cfg = PluginRuntimeConfig::from_env();
     let engine = build_engine(&cfg)
       .map_err(|e| plugin_internal("engine init failed", e))?;
+    // HTTP client 同样是进程级基础设施：一次构造，所有插件共享同一连接池
+    let http_client = Arc::new(crate::wasm::hostfns::build_http_client()?);
 
     // ===== 后台 ticker：唯一 epoch 推进者 =====
     let e = engine.clone();
@@ -169,8 +227,9 @@ impl PluginRuntime {
 
     Ok(Self {
       engine,
-      module_cache: ModuleCache::new(),
+      module_cache: ModuleCache::new(cfg.module_cache_capacity),
       cfg,
+      http_client,
     })
   }
 }
@@ -189,8 +248,8 @@ pub struct HostState {
   pub plugin_id: String,
   /// 当前工具短名（log / 错误 context 用）。
   pub tool_name: String,
-  /// HTTP 客户端（Clone 廉价，连接池跨调用复用，来自 PluginShared）。
-  pub client: reqwest::Client,
+  /// HTTP 客户端（进程级单例的 Arc，连接池跨插件 / 跨调用复用）。
+  pub client: Arc<reqwest::Client>,
   /// 插件级 storage（跨 Stateless Store 存活）。
   pub storage: Arc<Storage>,
   /// 插件级日志限流器。
@@ -222,7 +281,7 @@ impl HostState {
       signal,
       plugin_id,
       tool_name,
-      client: shared.client.clone(),
+      client: Arc::clone(&shared.client),
       storage: Arc::clone(&shared.storage),
       log_limiter: Arc::clone(&shared.log_limiter),
       limits,
@@ -238,7 +297,7 @@ impl HostState {
       signal: self.signal.clone(),
       plugin_id: self.plugin_id.clone(),
       tool_name: self.tool_name.clone(),
-      client: self.client.clone(),
+      client: Arc::clone(&self.client),
       storage: Arc::clone(&self.storage),
       log_limiter: Arc::clone(&self.log_limiter),
     }
@@ -260,8 +319,8 @@ pub struct HostStateSnapshot {
   pub plugin_id: String,
   /// 当前工具短名。
   pub tool_name: String,
-  /// HTTP 客户端（共享同一连接池）。
-  pub client: reqwest::Client,
+  /// HTTP 客户端（共享进程级连接池）。
+  pub client: Arc<reqwest::Client>,
   /// 插件级 storage。
   pub storage: Arc<Storage>,
   /// 插件级日志限流器。
@@ -324,6 +383,36 @@ fn is_epoch_exhausted_message(msg: &str) -> bool {
   msg.contains("wasm trap: interrupt")
     || msg.contains("epoch_exhausted")
     || msg.contains("epoch deadline exceeded")
+}
+
+/// 第零层分类：wasmtime 结构化 [`Trap`](wasmtime::Trap)（v0.8.8 P0-1）。
+///
+/// wasmtime 50 的 `wasmtime::Error`（anyhow 兼容）可在错误链中
+/// `downcast_ref::<Trap>()`；遍历整条链而非只看 top-level，兼容
+/// `Func::call` 用 context 包裹 trap 的形态。结构化判定优先于字符串：
+///
+/// - `Trap::Interrupt`（epoch）/ `Trap::OutOfFuel`（fuel）→ Timeout
+///   （资源限制，计入熔断、不计 guest 责任）；
+/// - 其余预定义 trap（`unreachable` / 除零 / OOB 等）→ GuestError
+///   （guest 自身业务失败，可回灌 LLM）。
+///
+/// host function 经 `WasmError::msg("forbidden:...")` 产生的错误**不是**
+/// Trap，仍由下一层结构化前缀字符串匹配处理。锁定的 wasmtime 50 不存在
+/// `Trap::i32_exit_status`（WASI 层的 `I32Exit` 与本宿主无关），故直接
+/// 以 Trap 枚举变体判定，不做已废弃 API 的字符串模拟。
+fn classify_trap(e: &wasmtime::Error) -> Option<WasmRuntimeError> {
+  for cause in e.chain() {
+    if let Some(trap) = cause.downcast_ref::<wasmtime::Trap>() {
+      let reason = trap.to_string();
+      return Some(match trap {
+        wasmtime::Trap::Interrupt | wasmtime::Trap::OutOfFuel => {
+          WasmRuntimeError::Timeout(reason)
+        }
+        _ => WasmRuntimeError::GuestError(reason),
+      });
+    }
+  }
+  None
 }
 
 /// 第一层分类：结构化前缀精确匹配（§5.2 三段式）。
@@ -392,6 +481,9 @@ fn classify_resource(msg: &str) -> Option<WasmRuntimeError> {
 /// 的链式错误——结构化前缀在 **root cause** 中。故对 `to_string()`
 /// 与 `root_cause()` 两层都做匹配。
 pub(crate) fn classify_wasmtime_error(e: wasmtime::Error) -> WasmRuntimeError {
+  if let Some(classified) = classify_trap(&e) {
+    return classified;
+  }
   let root = e.root_cause().to_string();
   classify_both(e.to_string(), &root)
     .unwrap_or(WasmRuntimeError::Internal(root))
@@ -407,6 +499,9 @@ pub(crate) fn classify_wasmtime_error(e: wasmtime::Error) -> WasmRuntimeError {
 pub(crate) fn classify_guest_call_error(
   e: wasmtime::Error,
 ) -> WasmRuntimeError {
+  if let Some(classified) = classify_trap(&e) {
+    return classified;
+  }
   let root = e.root_cause().to_string();
   classify_both(e.to_string(), &root)
     .unwrap_or(WasmRuntimeError::GuestError(root))
@@ -488,6 +583,12 @@ pub async fn run_tool(
       let mut store = wasmtime::Store::new(&engine, state);
       store.set_epoch_deadline(ticks); // 每 Store 独立 deadline，互不影响
       store.limiter(|s| &mut s.limits); // 配置化内存上限，超限 -> Timeout
+      // fuel 与 epoch 并行的第二道确定性中断（进程开关，OnceLock 后固定）
+      if shared.config.enable_fuel {
+        store
+          .set_fuel(shared.config.fuel_limit)
+          .map_err(|e| WasmRuntimeError::Internal(format!("set fuel: {e}")))?;
+      }
       // start 段（如有）因 epoch / 内存超限 trap 时同样按前缀分类，
       // 不得一律判 Internal（会误计入熔断，§5.2 新问题 1）
       let instance = linker
@@ -570,22 +671,22 @@ fn guest_alloc(
 /// `unreachable`），`args_ptr` / `name_ptr` 会泄漏在 guest 线性内存里。
 /// 本守卫在错误路径上对已登记指针逐一调 guest `dealloc`（v0.8.4 P2-5
 /// 必修项；§13.1「中途 trap 不泄漏」防回归测试依赖它）。
-struct GuestBufs {
+pub(crate) struct GuestBufs {
   ptrs: Vec<(i32, i32)>,
 }
 
 impl GuestBufs {
-  fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self { ptrs: Vec::new() }
   }
 
-  fn track(&mut self, ptr: i32, len: i32) {
+  pub(crate) fn track(&mut self, ptr: i32, len: i32) {
     self.ptrs.push((ptr, len));
   }
 
   /// 错误路径清理：释放全部已登记缓冲区（忽略单个 dealloc 的失败——
   /// 首要错误已在调用方持有；trap 后 Store 仍可用，dealloc 可执行）。
-  fn release_all(
+  pub(crate) fn release_all(
     &self,
     store: &mut wasmtime::Store<HostState>,
     dealloc: &wasmtime::Func,
@@ -967,6 +1068,105 @@ mod tests {
     );
   }
 
+  /// 场景：结构化 Trap 优先于字符串兜底——guest `unreachable` 产生的
+  /// error 链含 `Trap::UnreachableCodeReached`，应直接归 GuestError，
+  /// 不依赖 `"wasm trap:"` 文本解析。
+  #[test]
+  fn structured_trap_classification_precedes_strings() {
+    let cfg = PluginRuntimeConfig::default();
+    let engine = build_engine(&cfg).expect("engine");
+    let wasm = wat::parse_str(r#"(module (func (export "boom") unreachable))"#)
+      .expect("valid wat");
+    let module = wasmtime::Module::new(&engine, wasm).expect("module");
+    let mut store = wasmtime::Store::new(&engine, ());
+    // 本测试自建 Engine，但进程 ticker 仍会推进全局 epoch：默认 deadline
+    // 为 0 会先于目标 trap 触发 Interrupt，需显式关闭（同 GuestBufs 测试）
+    store.set_epoch_deadline(u64::MAX);
+    let instance =
+      wasmtime::Instance::new(&mut store, &module, &[]).expect("instance");
+    let boom = instance
+      .get_typed_func::<(), ()>(&mut store, "boom")
+      .expect("boom export");
+    let err = boom
+      .call(&mut store, ())
+      .expect_err("unreachable must trap");
+
+    let structured = classify_trap(&err).expect("structured trap in chain");
+    assert!(
+      matches!(structured, WasmRuntimeError::GuestError(ref r) if r.contains("unreachable")),
+      "got {structured:?}"
+    );
+    assert!(matches!(
+      classify_guest_call_error(err),
+      WasmRuntimeError::GuestError(_)
+    ));
+    // 纯字符串错误（无 Trap 载荷）仍走兜底，行为不变
+    assert!(matches!(
+      classify_guest_call_error(wasmtime::Error::msg("wasm trap: unreachable")),
+      WasmRuntimeError::GuestError(_)
+    ));
+  }
+
+  /// 场景：fuel 耗尽是结构化 `Trap::OutOfFuel`，归 Timeout（资源限制），
+  /// 与 epoch `Trap::Interrupt` 同语义；不因消息文本而误判。
+  #[test]
+  fn fuel_exhaustion_classifies_as_timeout() {
+    let cfg = PluginRuntimeConfig {
+      enable_fuel: true,
+      ..PluginRuntimeConfig::default()
+    };
+    let engine = build_engine(&cfg).expect("fuel engine");
+    let wasm = wat::parse_str(r#"(module (func (export "spin") (loop br 0)))"#)
+      .expect("valid wat");
+    let module = wasmtime::Module::new(&engine, wasm).expect("module");
+    let mut store = wasmtime::Store::new(&engine, ());
+    store.set_epoch_deadline(u64::MAX); // 隔离 ticker 干扰，只验 fuel trap
+    store.set_fuel(64).expect("set fuel");
+    let instance =
+      wasmtime::Instance::new(&mut store, &module, &[]).expect("instance");
+    let spin = instance
+      .get_typed_func::<(), ()>(&mut store, "spin")
+      .expect("spin export");
+    let err = spin.call(&mut store, ()).expect_err("fuel must run out");
+
+    let classified = classify_trap(&err).expect("structured fuel trap");
+    assert!(
+      matches!(classified, WasmRuntimeError::Timeout(ref r) if r.contains("fuel")),
+      "got {classified:?}"
+    );
+    assert!(matches!(
+      classify_wasmtime_error(err),
+      WasmRuntimeError::Timeout(_)
+    ));
+  }
+
+  /// 场景：ModuleCache 容量上限 + LRU 淘汰——容量 2 下访问 m1 后
+  /// m2 成为最久未使用，写入 m3 淘汰 m2；再次请求 m2 触发重编译。
+  #[test]
+  fn module_cache_evicts_least_recently_used() {
+    let engine = build_engine(&PluginRuntimeConfig::default()).expect("engine");
+    let cache = ModuleCache::new(2);
+    let compile = |pages: u8| {
+      let wasm = wat::parse_str(format!(
+        r#"(module (memory (export "memory") {pages}))"#
+      ))
+      .expect("valid wat");
+      cache.get_or_compile(&engine, &wasm).expect("compile")
+    };
+    let m1 = compile(1);
+    let m2 = compile(2);
+    // touch m1 → m2 成为 LRU
+    let m1_again = compile(1);
+    assert!(Arc::ptr_eq(&m1, &m1_again));
+    let _m3 = compile(3);
+    assert_eq!(cache.len(), 2, "must never exceed configured capacity");
+    let m2_again = compile(2);
+    assert!(
+      !Arc::ptr_eq(&m2, &m2_again),
+      "LRU entry must have been evicted and recompiled"
+    );
+  }
+
   /// 场景：ModuleCache 内容哈希命中——同一字节命中同一 `Arc<Module>`，
   /// 内容变化（不同模块）则各自编译（§13.1 P1-2）。
   #[test]
@@ -997,6 +1197,47 @@ mod tests {
     assert!(
       !Arc::ptr_eq(&m1, &m2),
       "different bytes must not share Module"
+    );
+  }
+
+  /// 场景：持锁线程 panic 致 module cache 的 Mutex 进入 poison 状态后
+  /// 调用 `get_or_compile`。
+  ///
+  /// 预期：**返回 Err 而非 panic**。panic 在 spawn_blocking / 宿主线程
+  /// 中会升级为进程级故障（甚至 double panic → abort），阻断优雅关闭；
+  /// 错误传播则可由上层 `plugin_internal("module compile", e)` 正常处理。
+  /// 同时 `Debug` / `len` 不得 panic（panic 展开期间调用 Debug 会 abort）。
+  #[test]
+  fn poisoned_module_cache_propagates_error_without_panicking() {
+    let engine = build_engine(&PluginRuntimeConfig::default()).expect("engine");
+    let cache = ModuleCache::new(2);
+    // 制造 poison：在 scoped 线程中持锁 panic，catch_unwind 只在线程内
+    // 吸收 panic，Mutex 的 poison 标记仍会被设置
+    std::thread::scope(|scope| {
+      scope.spawn(|| {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+          let _guard = cache.entries.lock().expect("lock");
+          panic!("simulate panic inside critical section");
+        }));
+      });
+    });
+    assert!(
+      cache.entries.is_poisoned(),
+      "setup must poison the cache mutex"
+    );
+
+    // 这些诊断入口在 poison 状态下也不得 panic
+    let _ = format!("{cache:?}");
+    let _ = cache.len();
+
+    let wasm =
+      wat::parse_str(r#"(module (memory (export "memory") 1))"#).expect("wat");
+    let err = cache
+      .get_or_compile(&engine, &wasm)
+      .expect_err("poison must propagate as Err, not panic");
+    assert!(
+      err.to_string().contains("poison"),
+      "error should describe the poisoned mutex, got: {err}"
     );
   }
 }

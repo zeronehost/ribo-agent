@@ -43,6 +43,10 @@ pub const PLUGIN_INTERNAL: &str = "plugin.plugin_internal";
 /// 区分：后者是 LLM 传入的工具参数错，本码是 **guest 传给 host 的
 /// ptr/len/key** 违约（经 `guest_error:` 前缀收敛为 [`PLUGIN_EXEC_FAILED`]）。
 pub const PLUGIN_INVALID_ARGUMENTS: &str = "plugin.plugin_invalid_arguments";
+/// 错误码：来源校验失败——签名无效 / 摘要不符 / 签名者不在信任列表。
+///
+/// 加载期致命错误（编译之前拦截），不进入执行期熔断记账。
+pub const PLUGIN_SIGNATURE_INVALID: &str = "plugin.plugin_signature_invalid";
 
 /// 构造插件业务错误（Severity: Error）。
 ///
@@ -127,6 +131,20 @@ pub fn plugin_invalid_arguments(reason: &str) -> RiboError {
     DOMAIN,
     PLUGIN_INVALID_ARGUMENTS,
     format!("invalid argument: {reason}"),
+  )
+  .with_severity(Severity::Error)
+  .with_context("reason", reason)
+}
+
+/// 构造来源校验失败错误（Severity: Error，加载期致命）。
+///
+/// `reason` 指明具体失败项（签名无效 / wasm 摘要不符 / 签名者未授信），
+/// 完整差异明细由调用方写入日志；错误文本本身不含密钥或签名载荷。
+pub fn plugin_signature_invalid(reason: &str) -> RiboError {
+  RiboError::new(
+    DOMAIN,
+    PLUGIN_SIGNATURE_INVALID,
+    format!("plugin provenance verification failed: {reason}"),
   )
   .with_severity(Severity::Error)
   .with_context("reason", reason)
@@ -271,6 +289,16 @@ mod tests {
     let err = plugin_invalid_arguments("ptr<0");
     assert_eq!(err.code(), PLUGIN_INVALID_ARGUMENTS);
     assert_eq!(err.severity(), &Severity::Error);
+
+    let err = plugin_signature_invalid("wasm digest mismatch");
+    assert_eq!(err.code(), PLUGIN_SIGNATURE_INVALID);
+    assert_eq!(err.severity(), &Severity::Error);
+    assert_eq!(
+      err
+        .context()
+        .and_then(|c| c.get("reason").map(String::as_str)),
+      Some("wasm digest mismatch")
+    );
 
     let err = plugin_duplicate_id("a");
     assert_eq!(err.code(), PLUGIN_DUPLICATE_ID);

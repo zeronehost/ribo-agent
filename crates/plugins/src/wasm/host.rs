@@ -26,6 +26,9 @@ use ra_tools::context::ToolContext;
 
 use crate::acl::PluginAcl;
 use crate::error::PLUGIN_INVALID_ARGUMENTS;
+use crate::provenance::{
+  SignedAuthority, VerificationPolicy, verify_provenance,
+};
 use crate::traits::{Plugin, ToolManifest};
 use crate::wasm::abi;
 use crate::wasm::hostfns::{LogRateLimiter, build_linker};
@@ -38,8 +41,9 @@ use crate::wasm::storage::Storage;
 /// Stateless Store 模型会让它们每次调用重置——违背「插件级、进程内」
 /// 语义。三者均 `Send + Sync`（§0.4 纪律 2）。
 pub struct PluginShared {
-  /// HTTP 客户端（Clone 廉价——内部 Arc，连接池跨调用复用）。
-  pub client: reqwest::Client,
+  /// HTTP 客户端：直接共享 [`PluginRuntime::http_client`] 的 Arc，连接池
+  /// 进程级唯一（不再每插件各建一份）。
+  pub client: Arc<reqwest::Client>,
   /// 单插件 storage 实例（§6.2）。
   pub storage: Arc<Storage>,
   /// 单插件日志限流器（§6.1）。
@@ -100,6 +104,67 @@ impl WasmPluginHost {
     config: Option<serde_json::Value>,
     acl: &PluginAcl,
   ) -> RiboResult<Arc<dyn Plugin>> {
+    // 无权威清单：维持 Step B 语义（采信 guest 自述，开发 / CI 模式）
+    self.load_with_authority(wasm_bytes, config, acl, None)
+  }
+
+  /// 带权威清单的加载（Step C B3.2，18_ §12「权威 schema 来源」）。
+  ///
+  /// `authority = Some(m)` 时宿主以侧载清单为信任源：plugin_id 与
+  /// 工具清单逐项比对，与 guest `list_tools()` 自述不符即拒绝加载
+  /// （信任链闭合，生产模式必用）；`None` 维持 Step B 语义。
+  ///
+  /// # Errors
+  ///
+  /// 同 [`Self::load`]，另加：权威清单与 guest 自述不符 →
+  /// `plugin.plugin_exec_failed`（错误信息含差异明细）。
+  pub fn load_with_authority(
+    &self,
+    wasm_bytes: &[u8],
+    config: Option<serde_json::Value>,
+    acl: &PluginAcl,
+    authority: Option<&crate::authority::AuthorityManifest>,
+  ) -> RiboResult<Arc<dyn Plugin>> {
+    self.load_inner(wasm_bytes, config, acl, authority)
+  }
+
+  /// 带来源校验的加载（Step C 签名校验，18_ §12「来源校验」）。
+  ///
+  /// 与 [`load_with_authority`] 的差别：在**编译之前**验证 Ed25519 签名，
+  /// 载荷绑定 wasm 摘要 + 原始 manifest 摘要 + plugin_id。生产策略下
+  /// 缺签名 / 摘要不符 / 签名者未授信均拒绝加载（启动致命）。
+  ///
+  /// # Errors
+  ///
+  /// 来源校验失败 → `plugin.plugin_signature_invalid`；其余同
+  /// [`load_with_authority`]。
+  pub fn load_verified(
+    &self,
+    wasm_bytes: &[u8],
+    config: Option<serde_json::Value>,
+    acl: &PluginAcl,
+    authority: Option<&SignedAuthority>,
+    policy: &VerificationPolicy,
+  ) -> RiboResult<Arc<dyn Plugin>> {
+    // ===== 阶段 0：来源校验（必须早于编译，防不可信字节进入 JIT） =====
+    if let Some(auth) = authority {
+      verify_provenance(wasm_bytes, auth, policy)?;
+    } else if policy.require_signature {
+      return Err(crate::error::plugin_signature_invalid(
+        "signed authority manifest required by verification policy",
+      ));
+    }
+    self.load_inner(wasm_bytes, config, acl, authority.map(|a| &a.manifest))
+  }
+
+  /// 加载主体（B3.2 权威清单校验 + 编译 + 注册 manifest）。
+  fn load_inner(
+    &self,
+    wasm_bytes: &[u8],
+    config: Option<serde_json::Value>,
+    acl: &PluginAcl,
+    authority: Option<&crate::authority::AuthorityManifest>,
+  ) -> RiboResult<Arc<dyn Plugin>> {
     // ===== 阶段 1：编译（缓存键 = 内容哈希；多 host 只编译一次） =====
     let module = self
       .runtime
@@ -109,7 +174,7 @@ impl WasmPluginHost {
 
     // ===== 阶段 2：插件级共享状态（加载期一次，跨 execute 存活） =====
     let shared = Arc::new(PluginShared {
-      client: crate::wasm::hostfns::build_http_client()?,
+      client: Arc::clone(&self.runtime.http_client),
       storage: Arc::new(Storage::new(&self.runtime.cfg, acl)),
       log_limiter: Arc::new(LogRateLimiter::new(&self.runtime.cfg)),
       config: Arc::new(self.runtime.cfg.clone()),
@@ -124,6 +189,15 @@ impl WasmPluginHost {
       acl,
     )?;
     let manifest = abi::parse_manifest(&raw)?;
+
+    // ===== 阶段 3.5：权威清单校验（Step C B3.2 信任链闭合）=====
+    if let Some(auth) = authority {
+      crate::authority::check_authority(
+        &manifest.plugin_id,
+        &manifest.tools,
+        auth,
+      )?;
+    }
 
     // ===== 阶段 4：plugin_id 校验（前缀合法性前置） =====
     crate::adapter::validate_plugin_id(&manifest.plugin_id)?;
@@ -240,6 +314,16 @@ impl Plugin for WasmPlugin {
         None => v,
       });
     }
+
+    // ===== 阶段 3.5：执行超时的宿主侧 ceiling（ai_0018 §4.4 / B2.5）=====
+    // min(工具 hint / 默认 2s, ACL 覆写, 进程 ceiling)——只收紧不放大，
+    // 与内存覆写的两阶段 min 同纪律；PluginAcl 此前无超时能力的不对称
+    // 由此补齐。
+    let mut timeout = timeout;
+    if let Some(ceiling) = acl.timeout_ceiling_ms {
+      timeout = timeout.min(Duration::from_millis(ceiling));
+    }
+    timeout = timeout.min(self.shared.config.tool_timeout_ceiling);
 
     // ===== 阶段 4：执行（spawn_blocking + Stateless Store） =====
     run_tool(

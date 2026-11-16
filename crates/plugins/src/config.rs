@@ -19,10 +19,20 @@ pub struct PluginRuntimeConfig {
   pub log_burst: u64,
   /// log 限流：每秒采样放行速率。
   pub log_rate_per_sec: u64,
+  /// 单工具执行超时的宿主侧上限（ai_0018 §4.4 / B2.5）：工具自述
+  /// `timeout_hint` 与插件 ACL ceiling 合并后再与本值取 min（只收紧）。
+  pub tool_timeout_ceiling: std::time::Duration,
   /// 是否启用 fuel（指令数中断）。Step B 恒 `false`；Step C 启用需改
   /// 配置并**重启进程**——`Engine` 配置在 `new()` 时固化，`PluginRuntime`
   /// 为 `OnceLock` 单例不可重置（18_ §5.2 #5）。
   pub enable_fuel: bool,
+  /// 每次 tool 执行注入的 fuel 预算（指令数权重）。仅 `enable_fuel`
+  /// 为真时生效；耗尽触发 `Trap::OutOfFuel`，由结构化分类器归 Timeout
+  /// （与 epoch 中断同语义）。
+  pub fuel_limit: u64,
+  /// ModuleCache 容量上限（按 wasm 内容哈希计）。超限按 LRU 淘汰最久
+  /// 未使用的 Module，防止恶意插件反复换字节导致无界内存增长。
+  pub module_cache_capacity: usize,
 }
 
 impl Default for PluginRuntimeConfig {
@@ -33,8 +43,46 @@ impl Default for PluginRuntimeConfig {
       storage_quota_bytes: 1 << 20, // 1MB 单插件 storage
       log_burst: 200,               // 窗口内最多 200 条
       log_rate_per_sec: 50,         // 50 条/秒
-      enable_fuel: false,           // Step B 不启用 fuel
+      tool_timeout_ceiling: std::time::Duration::from_secs(60),
+      enable_fuel: false, // Step B 不启用 fuel
+      fuel_limit: 1_000_000_000,
+      module_cache_capacity: 64,
     }
+  }
+}
+
+impl PluginRuntimeConfig {
+  /// 进程启动配置：默认值 + 环境变量覆写（仅在 [`PluginRuntime::start`]
+  /// 读取一次，`OnceLock` 后不再变化）。
+  ///
+  /// 支持的环境变量（仅进程启动期生效，运行期修改无效）：
+  ///
+  /// - `RIBO_PLUGINS_ENABLE_FUEL`：`1` / `true` 启用 fuel；
+  /// - `RIBO_PLUGINS_FUEL_LIMIT`：正整数 fuel 预算；
+  /// - `RIBO_PLUGINS_MODULE_CACHE_CAPACITY`：正整数缓存容量。
+  ///
+  /// 非法数值一律忽略并保留默认值——进程级基础设施不因环境变量拼写
+  /// 错误而启动失败（启动致命仅保留给插件 wasm / ACL / 权威清单错误）。
+  ///
+  /// [`PluginRuntime::start`]: crate::wasm::runtime::PluginRuntime::start
+  pub fn from_env() -> Self {
+    let mut cfg = Self::default();
+    if let Ok(v) = std::env::var("RIBO_PLUGINS_ENABLE_FUEL") {
+      cfg.enable_fuel = matches!(v.as_str(), "1" | "true" | "TRUE" | "True");
+    }
+    if let Ok(v) = std::env::var("RIBO_PLUGINS_FUEL_LIMIT")
+      && let Ok(n) = v.parse::<u64>()
+      && n > 0
+    {
+      cfg.fuel_limit = n;
+    }
+    if let Ok(v) = std::env::var("RIBO_PLUGINS_MODULE_CACHE_CAPACITY")
+      && let Ok(n) = v.parse::<usize>()
+      && n > 0
+    {
+      cfg.module_cache_capacity = n;
+    }
+    cfg
   }
 }
 
@@ -50,6 +98,9 @@ mod tests {
     assert_eq!(cfg.storage_quota_bytes, 1 << 20);
     assert_eq!(cfg.log_burst, 200);
     assert_eq!(cfg.log_rate_per_sec, 50);
+    assert_eq!(cfg.tool_timeout_ceiling, std::time::Duration::from_secs(60));
     assert!(!cfg.enable_fuel);
+    assert_eq!(cfg.fuel_limit, 1_000_000_000);
+    assert_eq!(cfg.module_cache_capacity, 64);
   }
 }

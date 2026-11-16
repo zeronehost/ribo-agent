@@ -12,7 +12,8 @@ use std::{
 use serde::de::DeserializeOwned;
 
 pub use schema::{
-  CompressionSchema, HarnessLayerSchema, ProviderEntry, ProviderSchema,
+  CompressionSchema, HarnessLayerSchema, PluginAclSchema, PluginEntrySchema,
+  PluginVerifySchema, PluginsSchema, ProviderEntry, ProviderSchema,
   RetrySchema, RoutingSchema, SessionSchema, ToolsSchema,
 };
 
@@ -59,34 +60,12 @@ pub struct LoadOutcome {
   pub compression: CompressionSchema,
   pub session: SessionSchema,
   pub tools: ToolsSchema,
+  pub plugins: PluginsSchema,
   pub harness: HarnessLayerSchema,
   /// 运行模式。
   pub mode: ConfigMode,
   /// 局部降级与回退原因（启动横幅逐条展示）。
   pub warnings: Vec<String>,
-}
-
-/// mock 结果快捷构造。
-fn mock_outcome(
-  provider: ProviderSchema,
-  retry: RetrySchema,
-  compression: CompressionSchema,
-  session: SessionSchema,
-  tools: ToolsSchema,
-  harness: HarnessLayerSchema,
-  mut warnings: Vec<String>,
-) -> LoadOutcome {
-  warnings.push("running in mock mode".to_string());
-  LoadOutcome {
-    provider,
-    retry,
-    compression,
-    session,
-    tools,
-    harness,
-    mode: ConfigMode::Mock,
-    warnings,
-  }
 }
 
 /// 单层反序列化：损坏 → warning + 保留默认（局部降级）。
@@ -119,7 +98,7 @@ impl LoadOutcome {
     // ===== 逐层反序列化（单层损坏保留默认）=====
     // provider 层特殊：query_model/[[providers]]/[routing] 均为根级键，
     // 直接从根表整体反序列化（其余五层走 [layer] 子表）
-    let mut provider: ProviderSchema = match &table {
+    let provider: ProviderSchema = match &table {
       Some(t) => match t.clone().try_into() {
         Ok(p) => p,
         Err(err) => {
@@ -136,6 +115,8 @@ impl LoadOutcome {
       load_layer(table.as_ref(), "session", &mut warnings);
     let mut tools: ToolsSchema =
       load_layer(table.as_ref(), "tools", &mut warnings);
+    let plugins: PluginsSchema =
+      load_layer(table.as_ref(), "plugins", &mut warnings);
     let mut harness: HarnessLayerSchema =
       load_layer(table.as_ref(), "harness", &mut warnings);
     if let Some(dir) = cli_root {
@@ -159,97 +140,98 @@ impl LoadOutcome {
       }
     }
 
-    // ===== 无 provider：mock =====
-    if provider.providers.is_empty() {
-      warnings.push("no providers configured".to_string());
-      return mock_outcome(
-        provider,
-        retry,
-        compression,
-        session,
-        tools,
-        harness,
-        warnings,
-      );
-    }
-
-    // ===== 逐条校验：占位 → 整体回退 mock =====
-    for p in &provider.providers {
-      let mut entry_warnings = Vec::new();
-      if !schema::validate_provider_entry(p, &mut entry_warnings) {
-        // 先判占位再合并（extend 会移动 entry_warnings）
-        let is_placeholder =
-          entry_warnings.iter().any(|w| w.contains("placeholder"));
-        warnings.extend(entry_warnings);
-        // 占位命中即整体不可信（harness_fallback 实测语义）
-        if is_placeholder {
-          return mock_outcome(
-            provider,
-            retry,
-            compression,
-            session,
-            tools,
-            harness,
-            warnings,
-          );
-        }
-      }
-    }
-    // retain_mut 提供可变引用：expand_api_key 需要原地改写 api_key（$ENV 展开）
-    provider.providers.retain_mut(|p| {
-      let mut w = Vec::new();
-      let ok = schema::validate_provider_entry(p, &mut w)
-        && schema::expand_api_key(p, &mut w);
-      warnings.extend(w);
-      ok
-    });
-
-    // ===== query_model 悬空（唯一暴露者被跳过）→ 整体 mock =====
-    if provider.providers.is_empty()
-      || !provider
-        .providers
-        .iter()
-        .any(|p| p.model == provider.query_model)
-    {
-      warnings.push("query_model no longer exposed after skip".to_string());
-      return mock_outcome(
-        provider,
-        retry,
-        compression,
-        session,
-        tools,
-        harness,
-        warnings,
-      );
-    }
-
-    // ===== 路由剔除引用被跳过 provider 的链 =====
-    let registered: HashSet<&str> = provider
-      .providers
-      .iter()
-      .map(|p| p.provider_id.as_str())
-      .collect();
-    provider.routing.cross_provider.retain(|from, chain| {
-      let ok = registered.contains(from.as_str())
-        && chain.iter().all(|c| registered.contains(c.as_str()));
-      if !ok {
-        warnings.push(format!(
-          "routing from {from} references skipped provider, pruned"
-        ));
-      }
-      ok
-    });
-
-    LoadOutcome {
+    // ===== 聚合 outcome（先按 Real 构造；各 mock 分支就地降级）=====
+    let mut outcome = LoadOutcome {
       provider,
       retry,
       compression,
       session,
       tools,
+      plugins,
       harness,
       mode: ConfigMode::Real,
       warnings,
+    };
+
+    // ===== 无 provider：mock =====
+    if outcome.provider.providers.is_empty() {
+      outcome.warnings.push("no providers configured".to_string());
+      outcome.warnings.push("running in mock mode".to_string());
+      outcome.mode = ConfigMode::Mock;
+      return outcome;
     }
+
+    // ===== 逐条校验：占位 → 整体回退 mock =====
+    for p in &outcome.provider.providers {
+      let mut entry_warnings = Vec::new();
+      if !schema::validate_provider_entry(p, &mut entry_warnings) {
+        // 先判占位再合并（extend 会移动 entry_warnings）
+        let is_placeholder =
+          entry_warnings.iter().any(|w| w.contains("placeholder"));
+        outcome.warnings.extend(entry_warnings);
+        // 占位命中即整体不可信（harness_fallback 实测语义）
+        if is_placeholder {
+          outcome.warnings.push("running in mock mode".to_string());
+          outcome.mode = ConfigMode::Mock;
+          return outcome;
+        }
+      }
+    }
+    // retain_mut 提供可变引用：expand_api_key 需要原地改写 api_key（$ENV
+    // 展开）。warning 先收集到局部再并入 outcome——闭包持有 providers
+    // 的可变借用，直接写 outcome.warnings 会撞 E0502。
+    let mut prune_warnings = Vec::new();
+    outcome.provider.providers.retain_mut(|p| {
+      let mut w = Vec::new();
+      let ok = schema::validate_provider_entry(p, &mut w)
+        && schema::expand_api_key(p, &mut w);
+      prune_warnings.extend(w);
+      ok
+    });
+    outcome.warnings.extend(prune_warnings);
+
+    // ===== query_model 悬空（唯一暴露者被跳过）→ 整体 mock =====
+    if outcome.provider.providers.is_empty()
+      || !outcome
+        .provider
+        .providers
+        .iter()
+        .any(|p| p.model == outcome.provider.query_model)
+    {
+      outcome
+        .warnings
+        .push("query_model no longer exposed after skip".to_string());
+      outcome.warnings.push("running in mock mode".to_string());
+      outcome.mode = ConfigMode::Mock;
+      return outcome;
+    }
+
+    // ===== 路由剔除引用被跳过 provider 的链 =====
+    let registered: HashSet<&str> = outcome
+      .provider
+      .providers
+      .iter()
+      .map(|p| p.provider_id.as_str())
+      .collect();
+    // warning 先收集到局部再并入 outcome——闭包持有 routing 的可变
+    // 借用，直接写 outcome.warnings 会撞 E0502。
+    let mut prune_warnings = Vec::new();
+    outcome
+      .provider
+      .routing
+      .cross_provider
+      .retain(|from, chain| {
+        let ok = registered.contains(from.as_str())
+          && chain.iter().all(|c| registered.contains(c.as_str()));
+        if !ok {
+          prune_warnings.push(format!(
+            "routing from {from} references skipped provider, pruned"
+          ));
+        }
+        ok
+      });
+    outcome.warnings.extend(prune_warnings);
+    outcome
   }
 }
 

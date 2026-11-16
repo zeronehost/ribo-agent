@@ -9,7 +9,9 @@
 //! 3. **适配层**：[`adapter::PluginToolAdapter`]（`Plugin` → `Arc<dyn AgentTool>`，
 //!    工具名自动加 `{plugin_id}__` 前缀）；
 //! 4. **能力层**：[`acl::UrlPolicy`] / [`acl::PluginAcl`]（出站 URL 裁决
-//!    与插件能力声明，`http-proxy` 等宿主能力的 ACL 基础）。
+//!    与插件能力声明，`http-proxy` 等宿主能力的 ACL 基础）；
+//! 5. **权威层**：[`authority::AuthorityManifest`]（宿主侧载的信任源，
+//!    guest 自述降级为交叉校验——Step C B3.2 信任链闭合）。
 //!
 //! 错误码统一以 `plugin.plugin_*` 为前缀（见 [`error`]）。
 //!
@@ -58,8 +60,10 @@
 
 pub mod acl;
 pub mod adapter;
+pub mod authority;
 pub mod config;
 pub mod error;
+pub mod provenance;
 pub mod registry;
 pub mod traits;
 #[cfg(feature = "wasm")]

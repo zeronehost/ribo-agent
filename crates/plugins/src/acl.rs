@@ -63,6 +63,10 @@ pub enum UrlPolicyError {
 #[derive(Debug, Clone, Default)]
 pub struct UrlPolicy {
   allowed_hosts: HashSet<String>,
+  /// 是否显式放行 loopback（127/8、`::1`）。仅限 CI 本地 mock server
+  /// 场景（B1.1，18_ §14「受控 URL」的 CI 层实现）；默认 `false`，
+  /// 且**只豁免 loopback**——RFC1918 / 链路本地 / 元数据端点无条件拒绝。
+  allow_loopback: bool,
 }
 
 impl UrlPolicy {
@@ -76,7 +80,22 @@ impl UrlPolicy {
       .collect();
     Self {
       allowed_hosts: hosts,
+      allow_loopback: false,
     }
+  }
+
+  /// 显式放行 loopback 的构造器（仅限 CI 本地 mock server 场景，B1.1）。
+  ///
+  /// 与 [`Self::new`] 的唯一差异：字面 IP 保留段拦截对 **loopback 段**
+  /// （127/8、`::1`）豁免——CI 里本地 mock server 绑定 127.0.0.1，
+  /// 白名单显式声明它是宿主可审计的显式配置。RFC1918 / 链路本地 /
+  /// 元数据端点（169.254.169.254）无论何种构造都无条件拒绝。
+  pub fn allowing_loopback<I: Into<String>>(
+    allowed_hosts: impl IntoIterator<Item = I>,
+  ) -> Self {
+    let mut this = Self::new(allowed_hosts);
+    this.allow_loopback = true;
+    this
   }
 
   /// 校验出站 URL：scheme → 字面 IP 段 → 域名白名单，逐层裁决。
@@ -94,15 +113,17 @@ impl UrlPolicy {
     }
 
     // ===== 阶段 2：字面 IP 保留段拦截（先于白名单，不可被白名单放行） =====
+    // 例外：构造器显式 opt-in 的 loopback（仅限 CI 本地 mock，B1.1）；
+    // RFC1918 / 链路本地 / 元数据端点没有豁免通道。
     let host_key = match url.host() {
       Some(Host::Ipv4(ip)) => {
-        if is_blocked_ipv4(ip) {
+        if is_blocked_ipv4(ip) && !(self.allow_loopback && ip.is_loopback()) {
           return Err(UrlPolicyError::PrivateAddress(ip.to_string()));
         }
         ip.to_string()
       }
       Some(Host::Ipv6(ip)) => {
-        if is_blocked_ipv6(ip) {
+        if is_blocked_ipv6(ip) && !(self.allow_loopback && ip.is_loopback()) {
           return Err(UrlPolicyError::PrivateAddress(ip.to_string()));
         }
         ip.to_string()
@@ -117,6 +138,16 @@ impl UrlPolicy {
     } else {
       Err(UrlPolicyError::HostNotAllowed(host_key))
     }
+  }
+}
+
+/// 保留段统一判定入口（IPv4 + IPv6）：供 DNS 解析结果防线（SSRF
+/// 第 3 层，B3.1）复用——URL 层（[`UrlPolicy`]）与 IP 层共用同一份
+/// 保留段清单，避免两套判定漂移。
+pub(crate) fn is_blocked_ip(ip: core::net::IpAddr) -> bool {
+  match ip {
+    core::net::IpAddr::V4(v4) => is_blocked_ipv4(v4),
+    core::net::IpAddr::V6(v6) => is_blocked_ipv6(v6),
   }
 }
 
@@ -161,6 +192,10 @@ pub struct PluginAcl {
   pub memory_limit_bytes: Option<usize>,
   /// 单插件 storage 总配额覆写（`Option<usize>`，仅收紧）。
   pub storage_quota_bytes: Option<usize>,
+  /// 单工具执行超时上限覆写（毫秒；仅收紧，与进程
+  /// [`crate::config::PluginRuntimeConfig::tool_timeout_ceiling`] 取
+  /// min）——与内存 / storage 配额覆写对称（ai_0018 §4.4 / B2.5）。
+  pub timeout_ceiling_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -232,6 +267,40 @@ mod tests {
     // 公网 IPv6 在白名单内可放行
     let ok = "http://[2606:4700::1111]/x".parse().unwrap();
     assert!(policy.check_url(&ok).is_ok());
+  }
+
+  /// 场景（B1.1）：`allowing_loopback` 仅豁免 loopback——127.0.0.1
+  /// 在白名单内放行；RFC1918 / 链路本地 / 元数据端点仍拒绝；默认
+  /// `new` 构造不放行 loopback。
+  #[test]
+  fn allowing_loopback_exempts_only_loopback() {
+    let policy = crate::acl::UrlPolicy::allowing_loopback(["127.0.0.1"]);
+    let loopback: reqwest::Url =
+      "http://127.0.0.1:18080/hello".parse().unwrap();
+    assert!(policy.check_url(&loopback).is_ok());
+
+    for blocked in [
+      "http://192.168.1.1/x",
+      "http://169.254.169.254/meta",
+      "http://10.0.0.5/x",
+    ] {
+      let url: reqwest::Url = blocked.parse().unwrap();
+      assert!(
+        matches!(
+          policy.check_url(&url),
+          Err(UrlPolicyError::PrivateAddress(_))
+        ),
+        "{blocked} must stay blocked"
+      );
+    }
+
+    let strict = crate::acl::UrlPolicy::new(["127.0.0.1"]);
+    let loopback: reqwest::Url =
+      "http://127.0.0.1:18080/hello".parse().unwrap();
+    assert!(matches!(
+      strict.check_url(&loopback),
+      Err(UrlPolicyError::PrivateAddress(_))
+    ));
   }
 
   /// 场景：`PluginAcl` 默认最小权限（全部能力关闭、无配额覆写）。

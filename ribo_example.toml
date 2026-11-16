@@ -78,3 +78,35 @@ root = "."                     # 默认 "."（进程 cwd），会话 ./sessions/
 skills_roots = ["skills"]      # 默认 ["skills"]，技能扫描根（可多个，按序加载，
                                # 相对 root 解析）
 include_environment = true     # 默认 true，系统提示注入 <environment> 段
+
+# ── plugins 层（阶段 6 WASM 插件装配，默认关闭）───────────────
+# enabled = true 时启动期加载插件：扫描 roots 目录下全部 *.wasm
+#（最小权限：无注入 config、ACL 全关）+ 逐条加载 entries 显式清单
+#（可声明 ACL 与注入 config）。任一插件加载 / 注册失败 → 启动致命
+# 错误（与 PluginRuntime 的 OnceLock 失败语义一致，禁止半装配）。
+# [plugins]
+# enabled = false
+# roots = []                     # 相对 harness.root 的 .wasm 扫描目录
+#
+# [plugins.verify]               # Step C 来源校验（默认 require_signature = false）
+# require_signature = true       # 生产须开启：每条插件声明都要有有效 Ed25519 签名
+# trusted_keys = "keys.json"     # 相对 harness.root 的公钥白名单（缺失即启动致命）
+#                                #   {"keys":[{"id":"release","public_key":"<64 hex>"}]}
+#
+# [[plugins.entries]]            # 显式清单：可逐插件声明 ACL 与 config
+# path = "plugins/demo.wasm"     # 相对 harness.root；绝对路径 / ".." 逃逸 → 启动致命
+# manifest = "manifest.json"     # 权威清单（B3.2；guest 自述降级为交叉校验）
+# provenance = "provenance.json" # 侧载签名块（require_signature = true 时必需）
+#                                #   {"signer_id":"release","signature":"<128 hex>","wasm_digest":"<64 hex>"}
+#
+# [plugins.entries.acl]          # 能力由宿主注入，不信任 guest 自述（默认全关）
+# log = true
+# storage = true
+# http = true
+# http_hosts = ["api.example.com"]  # http 出站白名单（空 = 实际不可出站）
+# memory_limit_bytes = 16777216     # 可选：线性内存覆写（只能收紧 32MB）
+# storage_quota_bytes = 262144      # 可选：storage 配额覆写（只能收紧 1MB）
+# timeout_ceiling_ms = 5000         # 可选：单工具超时上限覆写（只能收紧 60s）
+#
+# [plugins.entries.config]       # 注入插件的 config（args 信封，18_ §9）
+# greeting_prefix = "你好"
