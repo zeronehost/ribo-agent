@@ -1,5 +1,7 @@
 # 主质量门禁 CI（B2.2，AGENTS.md §质量门禁）：PR 必过四门禁。
-# Rust 工具链经仓库根 rust-toolchain.toml 锁定（B2.1）。
+# Rust 工具链在本文件显式固定为 1.99.1（本仓库无 rust-toolchain.toml）。
+# plugin-demo 已为 workspace 成员，cargo test --workspace 会执行其 e2e
+# （内部 cargo build --target wasm32），故必须安装 wasm32 target。
 name: ci
 
 on:
@@ -20,6 +22,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.1"
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry
         uses: actions/cache@v4

@@ -11,7 +11,7 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-futures.workspace = true
+# futures.workspace = true
 ra-core.workspace = true
 reqwest.workspace = true
 serde.workspace = true

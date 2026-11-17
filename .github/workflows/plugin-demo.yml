@@ -1,7 +1,8 @@
 # 阶段 6 插件端到端演示 CI（18_ §13.2，决策 10）：
 # 仅在插件链路相关文件变更时运行 + 每晚 cron 防破窗。
-# plugin-demo 为独立子 crate（非 workspace member），故用显式
-# --manifest-path 触发，不进 cargo test --workspace 主路径。
+# plugin-demo 现为根 workspace 成员（`examples/*`），e2e 内部调用
+# `cargo build --target wasm32` 构建 PDK guest；这条独立 workflow 作为
+# 插件链路的专项快速反馈，与 ci.yml 的 `cargo test --workspace` 互为补充。
 name: plugin-demo
 
 on:
@@ -9,8 +10,10 @@ on:
     paths:
       - "crates/plugins/**"
       - "crates/pdk/**"
+      - "crates/pdk-macro/**"
       - "crates/tools/src/**"
       - "crates/core/src/message/tool.rs"
+      - "examples/plugin-demo/**"
   schedule:
     - cron: "0 2 * * *" # 每晚跑一次，防止长期不动的破窗
 
@@ -24,8 +27,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry
@@ -34,10 +38,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            crates/plugins/examples/plugin-demo/target
-          key: plugin-demo-${{ runner.os }}-${{ hashFiles('crates/plugins/examples/plugin-demo/Cargo.toml', 'crates/pdk/**/Cargo.toml') }}
+            target
+          key: plugin-demo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
       # e2e 测试内部会先构建 wasm32 guest 再走宿主全链路
       # （加载 → 注册 → 执行 → 超时 / 越权断言），见 tests/e2e.rs
       - name: Run plugin-demo e2e tests
-        run: cargo test --manifest-path crates/plugins/examples/plugin-demo/Cargo.toml
+        run: cargo test -p plugin-demo --test e2e

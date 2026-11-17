@@ -15,11 +15,11 @@
 //! # Examples
 //!
 //! ```ignore
-//! // 独立构建 guest（产物：target/wasm32-unknown-unknown/debug/plugin_demo.wasm）
-//! cargo build --manifest-path crates/plugins/examples/plugin-demo/Cargo.toml \
+//! // 构建 guest（产物：workspace 根 target/wasm32-unknown-unknown/debug/plugin_demo.wasm）
+//! cargo build --manifest-path examples/plugin-demo/Cargo.toml \
 //!   --target wasm32-unknown-unknown
 //! // 端到端集成测试（tests/e2e.rs 自动完成上述构建）
-//! cargo test --manifest-path crates/plugins/examples/plugin-demo/Cargo.toml
+//! cargo test --manifest-path examples/plugin-demo/Cargo.toml
 //! ```
 
 #[cfg(target_arch = "wasm32")]

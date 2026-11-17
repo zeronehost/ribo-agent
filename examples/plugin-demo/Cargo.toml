@@ -1,0 +1,33 @@
+[package]
+name = "plugin-demo"
+description = "Ribo Agent 插件端到端演示（18_ §13.2）：PDK guest 构建 + 宿主全链路集成测试"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib：cargo build --target wasm32-unknown-unknown 产出 .wasm 二进制
+# （rlib 不会生成 wasm 文件），rustc 对 wasm cdylib 默认导出 memory
+crate-type = ["cdylib"]
+
+[dependencies]
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ra-plug-pdk.workspace = true
+
+[dev-dependencies]
+ra-plugins.workspace = true
+ra-tools.workspace = true
+ra-core.workspace = true
+ra-agent.workspace = true
+ra-cli.workspace = true
+ra-provider.workspace = true
+tempfile.workspace = true
+
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-util.workspace = true

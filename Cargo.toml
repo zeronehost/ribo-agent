@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/*",
+  "examples/*",
   "internals/git-hook"
 ]
 resolver = "3"
@@ -40,7 +41,7 @@ license = "MulanPSL-2.0"
 # dashmap = "6.2"
 
 async-trait = "0.1"
-futures = "0.3"
+# futures = "0.3"
 reqwest = { version = "0.13", features = ["json"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
@@ -105,4 +106,4 @@ ra-harness = { path = "./crates/harness" }
 ra-cli = { path = "./crates/cli" }
 ra-plugins = { path = "./crates/plugins" }
 ra-plug-pdk = { path = "./crates/pdk" }
-ra-plug-pdk-macro = { path = "./crates/pdk/macro" }
+ra-plug-pdk-macro = { path = "./crates/pdk-macro" }

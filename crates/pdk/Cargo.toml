@@ -11,5 +11,5 @@ license.workspace = true
 
 [dependencies]
 ra-plug-pdk-macro = { workspace = true }
-serde = { workspace = true }
+# serde = { workspace = true }
 serde_json = { workspace = true }

@@ -6,27 +6,16 @@
 //! 4. 验证 config 信封、storage 跨 execute 持久、epoch 超时与
 //!    熔断白名单（§1.3 决策 1）。
 //!
-//! 运行方式（独立于 `cargo test --workspace` 主路径）：
+//! 运行方式：本 crate 已是根 workspace 成员（根 `Cargo.toml` 的
+//! `members = ["crates/*", "examples/*", ...]`），可直接
+//! `cargo test -p plugin-demo`；`cargo test --workspace` 亦会覆盖本套件。
 //!
-//! ```text
-//! cargo test --manifest-path crates/plugins/examples/plugin-demo/Cargo.toml
-//! ```
-//!
-//! 前置：`rustup target add wasm32-unknown-unknown`。
+//! 前置：`rustup target add wasm32-unknown-unknown`（CI 已安装）。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use ra_core::message::ToolCall;
-use ra_plugins::acl::PluginAcl;
-use ra_plugins::registry::{PluginRegistry, plugin_aware_tool_manager_config};
-use ra_plugins::wasm::host::WasmPluginHost;
-use ra_plugins::acl::UrlPolicy;
-use ra_plugins::authority::AuthorityManifest;
-use ra_tools::context::ToolContext;
-use tokio_util::sync::CancellationToken;
-use ra_tools::manager::ToolManager;
 use ra_agent::events::AgentEvent;
 use ra_cli::config::assemble::assemble_with_steps;
 use ra_cli::config::{
@@ -34,10 +23,21 @@ use ra_cli::config::{
   PluginAclSchema, PluginEntrySchema, PluginVerifySchema, PluginsSchema,
   ProviderSchema, RetrySchema, SessionSchema, ToolsSchema,
 };
-use ra_core::message::{AssistantMessage, Content, Message, StopReason, TextContent};
+use ra_core::message::ToolCall;
+use ra_core::message::{
+  AssistantMessage, Content, Message, StopReason, TextContent,
+};
+use ra_plugins::acl::PluginAcl;
+use ra_plugins::acl::UrlPolicy;
+use ra_plugins::authority::AuthorityManifest;
+use ra_plugins::registry::{PluginRegistry, plugin_aware_tool_manager_config};
+use ra_plugins::wasm::host::WasmPluginHost;
 use ra_provider::adapters::mock::MockStep;
 use ra_provider::context::Context;
+use ra_tools::context::ToolContext;
+use ra_tools::manager::ToolManager;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 /// 构建 guest wasm 并读取字节（§13.4 方式 B）。
 ///
@@ -62,8 +62,13 @@ fn build_guest_wasm() -> Vec<u8> {
     String::from_utf8_lossy(&output.stderr)
   );
 
-  // 本 crate 为独立 workspace 根，target 目录在 crate 内
-  let wasm: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+  // 本 crate 为根 workspace 成员，cargo build 的产物落在 workspace 根的
+  // target 目录（而非 crate 内）——CARGO_MANIFEST_DIR 上溯两级即根。
+  let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .and_then(Path::parent)
+    .expect("examples/plugin-demo must live under workspace root");
+  let wasm: PathBuf = workspace_root
     .join("target")
     .join("wasm32-unknown-unknown")
     .join("debug")
@@ -312,15 +317,19 @@ async fn assemble_full_agent_loop_invokes_plugin_tool() {
   let mut final_texts: Vec<String> = Vec::new();
   while let Ok(event) = events.try_recv() {
     match event {
-      AgentEvent::ToolExecutionEnd { tool_name, is_error, .. } => {
+      AgentEvent::ToolExecutionEnd {
+        tool_name,
+        is_error,
+        ..
+      } => {
         tool_ends.push((tool_name, is_error));
       }
-      AgentEvent::MessageEnd { message } => {
-        if let Message::Assistant(m) = message {
-          for block in &m.content {
-            if let Content::Text(t) = block {
-              final_texts.push(t.content.clone());
-            }
+      AgentEvent::MessageEnd {
+        message: Message::Assistant(m),
+      } => {
+        for block in &m.content {
+          if let Content::Text(t) = block {
+            final_texts.push(t.content.clone());
           }
         }
       }
@@ -414,7 +423,8 @@ async fn demo_with_http_acl(url_policy: Arc<UrlPolicy>) -> Arc<ToolManager> {
 async fn http_get_succeeds_with_loopback_whitelist() {
   let port = spawn_http_mock(http_ok("pong"), 0);
   let manager =
-    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"]))).await;
+    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"])))
+      .await;
   let result = manager
     .execute(
       &call(
@@ -434,7 +444,8 @@ async fn http_get_succeeds_with_loopback_whitelist() {
 #[tokio::test]
 async fn loopback_is_blocked_without_explicit_opt_in() {
   let port = spawn_http_mock(http_ok("should-not-reach"), 0);
-  let manager = demo_with_http_acl(Arc::new(UrlPolicy::new(["127.0.0.1"]))).await;
+  let manager =
+    demo_with_http_acl(Arc::new(UrlPolicy::new(["127.0.0.1"]))).await;
   let err = manager
     .execute(
       &call(
@@ -459,7 +470,8 @@ async fn redirect_is_not_followed() {
     0,
   );
   let manager =
-    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"]))).await;
+    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"])))
+      .await;
   let result = manager
     .execute(
       &call(
@@ -487,7 +499,8 @@ async fn oversized_response_first_block_is_rejected() {
   .into_bytes();
   let port = spawn_http_mock(resp, 0);
   let manager =
-    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"]))).await;
+    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"])))
+      .await;
   let err = manager
     .execute(
       &call(
@@ -520,7 +533,8 @@ async fn oversized_response_chunked_accumulation_is_rejected() {
   let chunks: Vec<&str> = vec![&chunk; 5];
   let port = spawn_http_mock(http_chunked(&chunks), 0);
   let manager =
-    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"]))).await;
+    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"])))
+      .await;
   let err = manager
     .execute(
       &call(
@@ -545,7 +559,8 @@ async fn oversized_response_chunked_accumulation_is_rejected() {
 async fn concurrent_cancel_does_not_kill_others() {
   let port = spawn_http_mock(http_ok("slow"), 500);
   let manager =
-    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"]))).await;
+    demo_with_http_acl(Arc::new(UrlPolicy::allowing_loopback(["127.0.0.1"])))
+      .await;
 
   let mut handles = Vec::new();
   for i in 0..10 {
@@ -564,7 +579,10 @@ async fn concurrent_cancel_does_not_kill_others() {
     } else {
       handles.push(tokio::spawn(async move {
         let r = manager
-          .execute(&call("demo__echo", json!({ "i": i })), &ToolContext::detached())
+          .execute(
+            &call("demo__echo", json!({ "i": i })),
+            &ToolContext::detached(),
+          )
           .await;
         ("echo", r)
       }));
@@ -630,12 +648,16 @@ async fn large_payload_echo_roundtrip() {
 async fn authority_manifest_mismatch_is_rejected() {
   let wasm = build_guest_wasm();
   let host = WasmPluginHost::new().expect("wasm host init");
-  let auth = AuthorityManifest::from_json(
-    br#"{"plugin_id":"not-demo","tools":[]}"#,
-  )
-  .expect("authority manifest");
+  let auth =
+    AuthorityManifest::from_json(br#"{"plugin_id":"not-demo","tools":[]}"#)
+      .expect("authority manifest");
   // Arc<dyn Plugin> 无 Debug，无法用 expect_err（需打印 Ok 值）
-  let err = match host.load_with_authority(&wasm, None, &PluginAcl::default(), Some(&auth)) {
+  let err = match host.load_with_authority(
+    &wasm,
+    None,
+    &PluginAcl::default(),
+    Some(&auth),
+  ) {
     Err(err) => err,
     Ok(_) => panic!("authority mismatch must be rejected"),
   };
