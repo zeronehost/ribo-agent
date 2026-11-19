@@ -20,6 +20,8 @@ pub const INVALID_ARGUMENTS: &str = "tool.invalid_arguments";
 pub const EXEC_FAILED: &str = "tool.exec_failed";
 /// 错误码：执行被取消。
 pub const CANCELLED: &str = "tool.cancelled";
+/// 错误码：具名域只读写入被拒（复用 plugin 域既有码，19_ Step 3）。
+pub const PLUGIN_FORBIDDEN: &str = "plugin.plugin_forbidden";
 /// 错误码：熔断打开，调用被拒绝。
 pub const RATE_LIMITED: &str = "tool.rate_limited";
 
@@ -101,4 +103,25 @@ pub fn cancelled(tool_name: impl Into<String>) -> RiboError {
   )
   .with_severity(Severity::Warning)
   .with_context("tool_name", tool_name)
+}
+
+/// 构造「具名域只读写入被拒」错误（复用 `plugin.plugin_forbidden`）。
+///
+/// `domain_id` 为域声明 id（如 `dataset`），`tool_name` 为触发的工具。
+pub fn plugin_forbidden(
+  tool_name: impl Into<String>,
+  domain_id: impl Into<String>,
+) -> RiboError {
+  let tool_name = tool_name.into();
+  let domain_id = domain_id.into();
+  // domain 用 "plugin" 字面量：错误码是跨 crate 的稳定契约，
+  // ra-tools 不依赖 ra-plugins（避免循环依赖），故不引用其 DOMAIN 常量
+  RiboError::new(
+    "plugin",
+    PLUGIN_FORBIDDEN,
+    format!("domain `{domain_id}` is read-only for tool {tool_name}"),
+  )
+  .with_severity(Severity::Error)
+  .with_context("tool_name", tool_name)
+  .with_context("domain_id", domain_id)
 }

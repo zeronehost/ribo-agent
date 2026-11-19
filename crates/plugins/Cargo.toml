@@ -32,6 +32,8 @@ ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# TrustedKeys 的 TOML 入口（Global 域 trusted_keys.toml）；JSON 入口保留给 provenance 信任材料
+toml.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

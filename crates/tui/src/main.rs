@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use ra_cli::config::assemble::{CliSession, assemble};
+use ra_cli::config::assemble::{
+  AssembleOptions, CliSession, assemble_with_options,
+};
 use ra_cli::config::{LoadOutcome, resolve_config_path};
 
 mod app;
@@ -22,6 +24,7 @@ mod input;
 mod lifecycle;
 mod render_helpers;
 mod state;
+mod trust_gate;
 mod turn;
 mod view;
 
@@ -40,6 +43,14 @@ pub struct TuiArgs {
   /// 覆盖配置中的工作空间根目录（harness 层 `root`）。
   #[arg(long, value_name = "PATH")]
   pub root: Option<PathBuf>,
+
+  /// 覆盖全局域目录（默认平台配置目录 + `/ribo`）。
+  #[arg(long, value_name = "PATH")]
+  pub global_dir: Option<PathBuf>,
+
+  /// 允许跨源重复的 plugin_id（首声明胜出；默认拒绝并启动致命）。
+  #[arg(long)]
+  pub allow_duplicate_plugin_id: bool,
 }
 
 /// ra-tui 入口：整个函数体运行在 `#[tokio::main]` 的 runtime 上下文中。
@@ -49,7 +60,11 @@ async fn main() -> ExitCode {
   let args = TuiArgs::parse();
   // 与 ra-cli 同规则：未指定 --config 时探测默认文件，探测不到走 mock
   let config_path = resolve_config_path(args.config.as_deref());
-  let outcome = LoadOutcome::load(config_path.as_deref(), args.root.as_deref());
+  let mut outcome = LoadOutcome::load_with_global(
+    config_path.as_deref(),
+    args.root.as_deref(),
+    args.global_dir.as_deref(),
+  );
   let root = outcome.harness.root.clone();
 
   // ===== 阶段 2：日志落文件（stdout 由 TUI 全屏占用，11 §11）=====
@@ -69,8 +84,51 @@ async fn main() -> ExitCode {
     .and_then(|path| std::fs::read_to_string(path).ok());
   let ctrl_c_timeout = lifecycle::parse_ctrl_c_timeout(config_text.as_deref());
 
+  // ===== 阶段 3.5：首次信任确认（19_ Step 6，设计§7.2）=====
+  // 项目有插件但未 code-trust 时，raw mode 下读单个 y/n：
+  // y → 写 trusted_projects.toml 并重载配置（插件正常加载）；
+  // n → 保持未信任，装配层跳过插件（Step 4 行为），继续启动。
+  if trust_gate::needs_prompt(&outcome) {
+    let plugin_count =
+      outcome.plugins.entries.len() + outcome.plugins.roots.len();
+    let global_root = outcome
+      .code_trust
+      .as_ref()
+      .and_then(|ctx| ctx.global_root())
+      .map(std::path::Path::to_path_buf);
+    if let Some(groot) = global_root {
+      match trust_gate::prompt_and_grant(
+        &groot,
+        &outcome.harness.root,
+        plugin_count,
+      ) {
+        Ok(trust_gate::TrustDecision::Granted) => {
+          // 重新加载：让 code_trust 上下文看到刚写入的信任记录
+          let reloaded = LoadOutcome::load_with_global(
+            config_path.as_deref(),
+            args.root.as_deref(),
+            args.global_dir.as_deref(),
+          );
+          outcome = reloaded;
+        }
+        Ok(trust_gate::TrustDecision::Declined) => {
+          eprintln!("已跳过插件加载（项目未授信）。");
+        }
+        Err(err) => {
+          eprintln!("信任确认失败（{err}），本次跳过插件加载。");
+        }
+      }
+    }
+  }
+
   // ===== 阶段 4：装配（失败在 guard 前 stderr 退出）=====
-  let session: CliSession = match assemble(&outcome) {
+  let session: CliSession = match assemble_with_options(
+    &outcome,
+    Vec::new(),
+    AssembleOptions {
+      allow_duplicate_plugin_id: args.allow_duplicate_plugin_id,
+    },
+  ) {
     Ok(session) => session,
     Err(err) => {
       eprintln!("装配失败：{err}");

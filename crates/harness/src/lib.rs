@@ -6,6 +6,7 @@
 pub mod compaction;
 pub mod config;
 pub mod context;
+pub mod instructions;
 pub mod session_provider;
 pub mod session_store;
 pub mod skills;
@@ -25,13 +26,16 @@ pub use self::compaction::{
 };
 pub use self::config::{CompactionConfig, ContextConfig, HarnessConfig};
 pub use self::context::HarnessContext;
+pub use self::instructions::{
+  InstructionRoot, Instructions, MAX_AGENTS_BYTES, load_instructions,
+};
 pub use self::session_provider::PersistentSessionProvider;
 pub use self::session_store::{
   JsonlSessionStore, ReplayDiagnostic, ReplayDiagnosticCode, SessionKeyCodec,
   SessionReplay,
 };
 pub use self::skills::{
-  Skill, SkillDiagnostic, SkillDiagnosticCode, SkillsLoader,
+  Skill, SkillDiagnostic, SkillDiagnosticCode, SkillRoot, SkillsLoader,
 };
 pub use self::system_prompt::{
   SystemPromptBuilder, escape_xml, format_skill_invocation,

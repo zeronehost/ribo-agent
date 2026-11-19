@@ -5,6 +5,28 @@ use std::{collections::HashMap, path::PathBuf};
 
 use serde::Deserialize;
 
+/// global 层：全局域开关与目录（对应设计§8.1）。
+///
+/// `enabled` 默认 `true`，但全局目录不存在时自动禁用（非致命，R4：不主动创建）。
+/// `dir` 由 `--global-dir` 覆盖；未设置时用平台默认配置目录 + `/ribo`。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GlobalSchema {
+  /// 是否启用全局域（默认 `true`；目录不存在时仍会自动禁用）。
+  pub enabled: bool,
+  /// 全局域目录；`None` 表示走平台默认配置目录。
+  pub dir: Option<PathBuf>,
+}
+
+impl Default for GlobalSchema {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      dir: None,
+    }
+  }
+}
+
 /// provider 层：`query_model` 为 TOML 根级字段（与 harness_fallback.toml 同构），
 /// 反序列化时并入本层。
 #[derive(Debug, Clone, Deserialize)]
@@ -186,6 +208,13 @@ pub struct PluginsSchema {
   /// 来源校验策略（Step C 签名校验）：生产须 `require_signature = true`
   /// 并提供非空公钥白名单；默认关闭，保持既有配置零行为变化。
   pub verify: PluginVerifySchema,
+  /// 插件域声明（`[[plugins.domains]]`）：外部资源根，默认空。
+  ///
+  /// 与 `entries`（插件条目）是**两个概念**：entries 描述"加载哪些
+  /// wasm"，domains 描述"可用哪些具名资源根"（供 `dataset://` 等前缀
+  /// 寻址）。域 id 跨域唯一，root 必须绝对且存在——校验在装配期完成。
+  #[serde(default)]
+  pub domains: Vec<PluginDomainSchema>,
 }
 
 impl Default for PluginsSchema {
@@ -196,8 +225,80 @@ impl Default for PluginsSchema {
       roots: Vec::new(),
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     }
   }
+}
+
+/// 插件域类型（设计§7.3）：决定该域提供什么资源、是否参与提示词加载。
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginDomainKind {
+  /// 插件仓库（`.wasm` 资源）。
+  Plugins,
+  /// 技能目录。
+  Skills,
+  /// 提示词 / 指令目录（`AGENTS.md` 仅此类域加载，Step 5）。
+  Prompts,
+  /// 数据目录（默认只读，`dataset://` 前缀默认指向此类域）。
+  Data,
+  /// 全部类型。
+  All,
+}
+
+impl PluginDomainKind {
+  /// 配置与错误信息中的规范化小写名。
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Plugins => "plugins",
+      Self::Skills => "skills",
+      Self::Prompts => "prompts",
+      Self::Data => "data",
+      Self::All => "all",
+    }
+  }
+}
+
+/// `[[plugins.domains]]` 单条目：插件域（Plugin Domain）的声明。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct PluginDomainSchema {
+  /// 域 id：匹配 `^[a-z][a-z0-9_]{0,31}$` 且跨域唯一；也是 fs 前缀名
+  ///（`dataset://` 的 `dataset` 即某域的 id）。
+  pub id: String,
+  /// 域根：必须为绝对路径，且存在、是目录（域选择器校验，装配期执行）。
+  pub root: PathBuf,
+  /// 域类型。
+  pub kind: PluginDomainKind,
+  /// 只读覆盖：`kind = "data"` 缺省 `true`，其余缺省 `false`；显式值优先。
+  #[serde(default)]
+  pub read_only: Option<bool>,
+  /// 代码信任标记（Step 4 消费）：项目自签无效，只认 Global 域或
+  /// `trusted_projects.toml` 的 `[plugin_domains.<id>]` 记录。
+  #[serde(default)]
+  pub trusted: bool,
+}
+
+impl PluginDomainSchema {
+  /// 生效的只读语义：显式 `read_only` 优先，否则按类型取默认
+  ///（`data` 只读，其余可写）。
+  pub fn is_read_only(&self) -> bool {
+    self
+      .read_only
+      .unwrap_or(self.kind == PluginDomainKind::Data)
+  }
+}
+
+/// 校验域 id 是否匹配 `^[a-z][a-z0-9_]{0,31}$`（纯 std，无需 regex 依赖）。
+pub fn is_valid_domain_id(id: &str) -> bool {
+  let mut chars = id.chars();
+  if !chars.next().is_some_and(|c| c.is_ascii_lowercase()) {
+    return false;
+  }
+  let tail: Vec<char> = chars.collect();
+  tail.len() <= 31
+    && tail
+      .iter()
+      .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
 }
 
 /// `[plugins.verify]` 来源校验配置。
@@ -319,6 +420,58 @@ pub fn expand_api_key(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// 场景：`[plugins]` 条目与 `[[plugins.domains]]` 域共存解析（TOML 合法层级），
+  /// 且 `domains` 默认空、`kind` 小写枚举、`data` 默认只读。
+  #[test]
+  fn plugins_domains_coexist_and_defaults_hold() {
+    let text = r#"
+[plugins]
+enabled = true
+[[plugins.entries]]
+path = "foo.wasm"
+[[plugins.domains]]
+id = "dataset"
+root = "/mnt/datasets"
+kind = "data"
+[[plugins.domains]]
+id = "company"
+root = "/opt/company"
+kind = "plugins"
+read_only = false
+trusted = true
+"#;
+    let table: toml::Table = toml::from_str(text).expect("valid TOML");
+    let parsed: PluginsSchema = table["plugins"]
+      .clone()
+      .try_into()
+      .expect("plugins table is valid");
+    assert!(parsed.enabled);
+    assert_eq!(parsed.entries.len(), 1);
+    assert_eq!(parsed.domains.len(), 2);
+    // data 默认只读；显式 read_only=false 覆盖
+    assert!(parsed.domains[0].is_read_only());
+    assert!(!parsed.domains[0].trusted);
+    assert_eq!(parsed.domains[0].kind, PluginDomainKind::Data);
+    assert!(!parsed.domains[1].is_read_only());
+    assert!(parsed.domains[1].trusted);
+    // 默认空
+    assert!(PluginsSchema::default().domains.is_empty());
+  }
+
+  /// 场景：域 id 正则 `^[a-z][a-z0-9_]{0,31}$`。
+  #[test]
+  fn domain_id_regex_is_enforced() {
+    assert!(is_valid_domain_id("dataset"));
+    assert!(is_valid_domain_id("a"));
+    assert!(is_valid_domain_id("company_plugins2"));
+    assert!(is_valid_domain_id(&"a".repeat(32)));
+    assert!(!is_valid_domain_id(""));
+    assert!(!is_valid_domain_id("Dataset"));
+    assert!(!is_valid_domain_id("_dataset"));
+    assert!(!is_valid_domain_id("data-set"));
+    assert!(!is_valid_domain_id(&"a".repeat(33)));
+  }
 
   /// 场景：占位值与 `$ENV` 展开识别。
   ///

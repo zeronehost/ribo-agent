@@ -72,7 +72,7 @@ impl AgentTool for WriteTool {
       invalid_arguments("write", "field 'content' must be a string")
     })?;
     let create_dirs = args["create_dirs"].as_bool().unwrap_or(false);
-    let path = self.root.resolve(raw)?;
+    let path = self.root.resolve_for_write(raw, "write")?;
     check_cancel(ctx, "write")?;
     // ===== 父目录保障（目录创建必须显式） =====
     let parent = path

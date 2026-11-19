@@ -79,6 +79,15 @@ skills_roots = ["skills"]      # 默认 ["skills"]，技能扫描根（可多个
                                # 相对 root 解析）
 include_environment = true     # 默认 true，系统提示注入 <environment> 段
 
+
+# ── global 层（全局域，跨项目共享；默认启用）─────────────────
+# [global]
+# enabled = true                 # 默认 true；目录不存在时自动禁用（非致命，R4）
+# dir = "~/.config/ribo"         # 可选；命令行 --global-dir 优先；
+#                                # 未设置时用平台默认配置目录 + /ribo。
+#                                # 全局配置 settings.toml 与信任记录
+#                                # trusted_projects.toml 位于该目录。
+#
 # ── plugins 层（阶段 6 WASM 插件装配，默认关闭）───────────────
 # enabled = true 时启动期加载插件：扫描 roots 目录下全部 *.wasm
 #（最小权限：无注入 config、ACL 全关）+ 逐条加载 entries 显式清单
@@ -110,3 +119,22 @@ include_environment = true     # 默认 true，系统提示注入 <environment> 
 #
 # [plugins.entries.config]       # 注入插件的 config（args 信封，18_ §9）
 # greeting_prefix = "你好"
+#
+# ── 插件域声明（19_ Step 3）────────────────────────────────
+# 注意区分：[plugins] 是「插件条目」（加载哪些 wasm），
+#            [[plugins.domains]] 是「插件域」（外部资源根声明）。
+# 域 id 匹配 ^[a-z][a-z0-9_]{0,31}$ 且跨域唯一；root 必须绝对路径、
+# 存在且是目录，否则启动致命。fs 六件套通过 `scheme://相对路径` 访问域内资源，
+# 无前缀路径仍走主沙箱根（行为不变）。
+#
+# [[plugins.domains]]
+# id = "dataset"                  # fs 前缀名：read("dataset://a/b.jpg")
+# root = "/mnt/datasets"          # 必须绝对；不存在 / 非目录 → 启动致命
+# kind = "data"                   # plugins | skills | prompts | data | all
+# read_only = true                # kind=data 默认 true；写入 → plugin.plugin_forbidden
+#
+# [[plugins.domains]]
+# id = "company"
+# root = "/opt/company/plugins"
+# kind = "plugins"
+# trusted = false                 # Step 4 代码信任用；项目自签无效（须 Global 域声明）

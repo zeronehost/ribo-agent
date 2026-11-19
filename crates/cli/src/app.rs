@@ -282,8 +282,21 @@ impl<S: LineSource + Send + 'static> Repl<S> {
       println!("（无技能）");
       return;
     }
-    for name in &self.session.skills {
-      println!("skill: {name}");
+    for (name, origin) in self
+      .session
+      .skills
+      .iter()
+      .zip(self.session.skill_origins.iter())
+    {
+      let origin_label = match origin.as_str() {
+        "project" => "来自项目".to_string(),
+        "global" => "来自全局".to_string(),
+        other if other.starts_with("plugin:") => {
+          format!("来自插件域 {}", &other["plugin:".len()..])
+        }
+        other => other.to_string(),
+      };
+      println!("skill: {name}（{origin_label}）");
     }
     for diagnostic in &self.session.skill_diagnostics {
       println!("diagnostic: {diagnostic}");

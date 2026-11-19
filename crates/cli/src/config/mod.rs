@@ -2,19 +2,27 @@
 //!（14 详细设计 §5）。
 
 pub mod assemble;
+pub mod code_trust;
+pub mod credentials;
+pub mod origin;
 pub mod schema;
+pub mod trust;
 
 use std::{
   collections::HashSet,
   path::{Path, PathBuf},
 };
 
+use ra_core::path::is_lexically_safe;
 use serde::de::DeserializeOwned;
 
+use self::code_trust::CodeTrustContext;
+pub use origin::{ConfigOrigin, ConfigOrigins};
 pub use schema::{
-  CompressionSchema, HarnessLayerSchema, PluginAclSchema, PluginEntrySchema,
-  PluginVerifySchema, PluginsSchema, ProviderEntry, ProviderSchema,
-  RetrySchema, RoutingSchema, SessionSchema, ToolsSchema,
+  CompressionSchema, GlobalSchema, HarnessLayerSchema, PluginAclSchema,
+  PluginDomainKind, PluginDomainSchema, PluginEntrySchema, PluginVerifySchema,
+  PluginsSchema, ProviderEntry, ProviderSchema, RetrySchema, RoutingSchema,
+  SessionSchema, ToolsSchema,
 };
 
 /// 默认配置文件名：`--config` 未指定时自动探测。
@@ -43,6 +51,48 @@ fn resolve_with_default(
   }
 }
 
+/// 全局域：跨项目共享的用户级配置根（设计§3 / §8.1）。
+///
+/// 目录发现遵循"`--global-dir` > 平台默认配置目录 + `/ribo`"，目录不存在
+/// 时域禁用（非致命，R4：不主动创建、不报错）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalDomain {
+  /// 全局域根目录（已由发现逻辑确认为存在的目录）。
+  pub root: PathBuf,
+}
+
+impl GlobalDomain {
+  /// 默认目录名：平台配置目录之下的子目录。
+  pub const DIR_NAME: &'static str = "ribo";
+  /// 全局默认配置文件名。
+  pub const SETTINGS_FILE: &'static str = "settings.toml";
+
+  /// 发现全局域：`cli_dir` > `dirs::config_dir()/ribo`；目录不存在返回 `None`。
+  ///
+  /// `enabled == false` 时直接禁用（对应 `[global] enabled`）。本函数**不做
+  /// 任何创建目录的 IO**，仅检查存在性与目录类型。
+  pub fn discover(cli_dir: Option<&Path>, enabled: bool) -> Option<Self> {
+    if !enabled {
+      return None;
+    }
+    let root = match cli_dir {
+      Some(dir) => dir.to_path_buf(),
+      None => dirs::config_dir()?.join(Self::DIR_NAME),
+    };
+    if root.is_dir() {
+      tracing::info!(global_root = %root.display(), "global domain discovered");
+      Some(Self { root })
+    } else {
+      None
+    }
+  }
+
+  /// 全局默认配置文件路径（`root/settings.toml`）。
+  pub fn settings_path(&self) -> PathBuf {
+    self.root.join(Self::SETTINGS_FILE)
+  }
+}
+
 /// 配置模式（启动横幅显式展示，概设 D3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigMode {
@@ -66,6 +116,12 @@ pub struct LoadOutcome {
   pub mode: ConfigMode,
   /// 局部降级与回退原因（启动横幅逐条展示）。
   pub warnings: Vec<String>,
+  /// 字段级来源标记：`--show-origin` / `--explain` 的数据源。
+  /// 零配置时为空（所有字段隐含来源为 `default`）。
+  pub origins: ConfigOrigins,
+  /// 代码信任判定上下文（19_ Step 4）。`None` = 无 Global 域 / 兼容入口，
+  /// 装配层退化为「自动加载」的旧语义（回滚开关）。
+  pub code_trust: Option<CodeTrustContext>,
 }
 
 /// 单层反序列化：损坏 → warning + 保留默认（局部降级）。
@@ -86,15 +142,224 @@ fn load_layer<T: DeserializeOwned + Default>(
   }
 }
 
+/// 解析 TOML 文本 → 表；解析失败返回 `None`（调用方按降级处理）。
+fn parse_table(text: Option<String>) -> Option<toml::Table> {
+  text.and_then(|t| match toml::from_str::<toml::Table>(&t) {
+    Ok(table) => Some(table),
+    Err(err) => {
+      tracing::warn!(error = %err, "config layer parse failed");
+      None
+    }
+  })
+}
+
+/// 记录一个 TOML 值内所有叶子字段的来源（子表递归，路径以 `.` 连接）。
+///
+/// 数组（如 `[[providers]]`）视为整体字段，只记录数组名本身——来源标记
+/// 服务于 `--show-origin`，无需细分到数组元素。
+fn record_origin(
+  prefix: &str,
+  value: &toml::Value,
+  origin: ConfigOrigin,
+  origins: &mut ConfigOrigins,
+) {
+  match value {
+    toml::Value::Table(sub) => {
+      for (key, v) in sub {
+        record_origin(&format!("{prefix}.{key}"), v, origin, origins);
+      }
+    }
+    _ => origins.set(prefix, origin),
+  }
+}
+
+/// 递归逐字段合并两层 TOML 表：`project` 覆盖 `global`，记录每个叶子来源。
+///
+/// 语义（设计§5.1）：
+/// - 双方同键且都是子表 → **递归合并**（子表内字段各自覆写，这是关键：
+///   `[retry]` 只写 `max_retries` 时不应抹掉 global 的 `initial_backoff_ms`）；
+/// - 其余情况（标量 / 数组 / 类型不同）→ project 整体覆盖，来源 `Project`；
+/// - 仅 global 有的键 → 沿用，来源 `Global`；
+/// - TOML 无 `null`："删键 = 未设置 = 沿用父层"，不做显式清空。
+///
+/// 本函数只合并**已存在的键**，不展开默认值——缺省字段在后续 `load_layer`
+/// 中由各 schema 的 `Default` 填充，来源隐含为 `Default`。
+fn merge_tables(
+  global: Option<&toml::Table>,
+  project: Option<&toml::Table>,
+  origins: &mut ConfigOrigins,
+) -> Option<toml::Table> {
+  match (global, project) {
+    (None, None) => None,
+    (Some(g), None) => {
+      for (key, value) in g {
+        record_origin(key, value, ConfigOrigin::Global, origins);
+      }
+      Some(g.clone())
+    }
+    (None, Some(p)) => {
+      for (key, value) in p {
+        record_origin(key, value, ConfigOrigin::Project, origins);
+      }
+      Some(p.clone())
+    }
+    (Some(g), Some(p)) => {
+      let mut merged = g.clone();
+      // ===== project 的键逐字段覆盖 =====
+      for (key, p_value) in p {
+        let merged_value = match (g.get(key), p_value) {
+          (Some(toml::Value::Table(g_sub)), toml::Value::Table(p_sub)) => {
+            // 双方都是子表 → 递归合并
+            let mut sub = g_sub.clone();
+            for (sk, sv) in p_sub {
+              sub.insert(sk.clone(), sv.clone());
+              record_origin(
+                &format!("{key}.{sk}"),
+                sv,
+                ConfigOrigin::Project,
+                origins,
+              );
+            }
+            // 子表内仅 global 有的字段
+            for sk in g_sub.keys() {
+              if !p_sub.contains_key(sk) {
+                let gv = &g_sub[sk];
+                record_origin(
+                  &format!("{key}.{sk}"),
+                  gv,
+                  ConfigOrigin::Global,
+                  origins,
+                );
+              }
+            }
+            toml::Value::Table(sub)
+          }
+          _ => {
+            record_origin(key, p_value, ConfigOrigin::Project, origins);
+            p_value.clone()
+          }
+        };
+        merged.insert(key.clone(), merged_value);
+      }
+      // ===== 仅 global 有的顶层键 =====
+      for (key, g_value) in g {
+        if !p.contains_key(key) {
+          record_origin(key, g_value, ConfigOrigin::Global, origins);
+        }
+      }
+      Some(merged)
+    }
+  }
+}
+
+/// 从 Global 配置表提取 `plugins.domains` 声明的域 id 集合。
+///
+/// 只有 Global 域声明的 `trusted = true` 才生效（设计§7.3）；项目自签
+/// 的域不在该集合中，装配层据此拒绝其代码信任。
+fn extract_domain_ids(table: Option<&toml::Table>) -> Vec<String> {
+  let Some(t) = table else {
+    return Vec::new();
+  };
+  let Some(plugins) = t.get("plugins").and_then(|v| v.as_table()) else {
+    return Vec::new();
+  };
+  let Some(domains) = plugins.get("domains").and_then(|v| v.as_array()) else {
+    return Vec::new();
+  };
+  domains
+    .iter()
+    .filter_map(|v| v.as_table())
+    .filter_map(|d| d.get("id").and_then(|v| v.as_str()))
+    .map(str::to_string)
+    .collect()
+}
+
 impl LoadOutcome {
   /// 加载配置（`path` 为 None 或文件不存在 → 全默认 mock 模式）。
   ///
   /// `cli_root` 为 `--root` 参数，覆盖 harness 层 `root`。
+  ///
+  /// **兼容入口**：不发现 Global 域、`origins` 恒为空，行为与 v1（单一
+  /// 配置文件）完全一致。新入口 [`Self::load_with_global`] 才启用分层合并。
   pub fn load(path: Option<&Path>, cli_root: Option<&Path>) -> LoadOutcome {
-    let mut warnings = Vec::new();
-    let text = path.and_then(|p| std::fs::read_to_string(p).ok());
-    let table = text.and_then(|t| toml::from_str::<toml::Table>(&t).ok());
+    let table = parse_table(path.and_then(|p| std::fs::read_to_string(p).ok()));
+    Self::from_table(table, cli_root, Vec::new(), ConfigOrigins::new(), None)
+  }
 
+  /// 加载配置（含 Global 域）：`Global.settings.toml` ← `Project.ribo.toml` ← CLI。
+  ///
+  /// `cli_root` 覆盖 harness.root；`global_dir` 覆盖 `--global-dir`。
+  /// Global 目录不存在 / `[global] enabled = false` → 域禁用（非致命），
+  /// 退化为与 [`Self::load`] 相同的单项目配置行为。
+  pub fn load_with_global(
+    path: Option<&Path>,
+    cli_root: Option<&Path>,
+    global_dir: Option<&Path>,
+  ) -> LoadOutcome {
+    let mut warnings = Vec::new();
+
+    // ===== ① 先读 Project 表（ribo.toml / --config）=====
+    let project_table =
+      parse_table(path.and_then(|p| std::fs::read_to_string(p).ok()));
+
+    // ===== ② 解析 [global]：enabled 开关 + dir 覆盖 =====
+    // 全局开关必须写在项目配置里——全局目录尚未发现时无从读取其 [global] 段。
+    let global_schema: GlobalSchema =
+      load_layer(project_table.as_ref(), "global", &mut warnings);
+    let effective_dir = global_dir.or(global_schema.dir.as_deref());
+
+    // ===== ③ 发现 Global 域（目录缺失 / enabled=false → None，非致命）=====
+    let global = GlobalDomain::discover(effective_dir, global_schema.enabled);
+
+    // ===== ④ 读 Global.settings.toml（单层损坏 → warning + 忽略该层）=====
+    let global_table = global.as_ref().and_then(|g| {
+      match std::fs::read_to_string(g.settings_path()) {
+        Ok(text) => parse_table(Some(text)),
+        Err(_) => None, // settings.toml 不存在属正常（全局域可只有资源目录）
+      }
+    });
+    if global.is_some()
+      && global_table.is_none()
+      && global.as_ref().is_some_and(|g| g.settings_path().exists())
+    {
+      warnings.push(
+        "global settings.toml parse failed, global layer ignored".to_string(),
+      );
+    }
+
+    // ===== ⑤ 逐字段合并 + 来源标记 =====
+    let mut origins = ConfigOrigins::new();
+    let merged =
+      merge_tables(global_table.as_ref(), project_table.as_ref(), &mut origins);
+
+    // ===== ⑥ 代码信任上下文（19_ Step 4）=====
+    // 仅当 Global 域存在时启用闸门；无 Global 域 → None（回滚为自动加载）。
+    // 信任记录位于 global.root/trusted_projects.toml（设计§7.1）。
+    let code_trust = global.as_ref().map(|g| {
+      let global_domain_ids = extract_domain_ids(global_table.as_ref());
+      let trust = self::trust::TrustedProjects::load(
+        &g.root.join("trusted_projects.toml"),
+      )
+      .unwrap_or_else(|e| {
+        warnings.push(format!(
+          "trusted_projects.toml load failed: {e}; code trust denied"
+        ));
+        self::trust::TrustedProjects::empty()
+      });
+      CodeTrustContext::new(trust, global_domain_ids).with_global_root(&g.root)
+    });
+
+    Self::from_table(merged, cli_root, warnings, origins, code_trust)
+  }
+
+  /// 从合并后的表构造 outcome（含逐层反序列化、校验、mock 降级）。
+  fn from_table(
+    table: Option<toml::Table>,
+    cli_root: Option<&Path>,
+    mut warnings: Vec<String>,
+    mut origins: ConfigOrigins,
+    code_trust: Option<CodeTrustContext>,
+  ) -> LoadOutcome {
     // ===== 逐层反序列化（单层损坏保留默认）=====
     // provider 层特殊：query_model/[[providers]]/[routing] 均为根级键，
     // 直接从根表整体反序列化（其余五层走 [layer] 子表）
@@ -121,23 +386,21 @@ impl LoadOutcome {
       load_layer(table.as_ref(), "harness", &mut warnings);
     if let Some(dir) = cli_root {
       harness.root = dir.to_path_buf(); // CLI 参数覆盖（概设决策 3）
+      origins.set("harness.root", ConfigOrigin::Cli);
     }
 
     // ===== tools.fs_root 校验：必须是 root 下的相对子路径 =====
-    // 沙箱不变式：fs_root 恒位于 root 之下——绝对路径 / ".." 逃逸组件
-    // 都会导致沙箱脱离工作空间，warning 后回退 root
-    if let Some(fs) = tools.fs_root.as_ref() {
-      let escapes = fs.is_absolute()
-        || fs
-          .components()
-          .any(|c| matches!(c, std::path::Component::ParentDir));
-      if escapes {
-        warnings.push(format!(
-          "tools.fs_root must be a relative path under harness.root, fallback to root: {}",
-          fs.display()
-        ));
-        tools.fs_root = None;
-      }
+    // 沙箱不变式（P1）：fs_root 是域内路径，恒位于 root 之下——绝对路径 /
+    // ".." 逃逸组件都会导致沙箱脱离工作空间，warning 后回退 root。
+    // 词法判定复用 ra_core::path 统一原语，避免与插件 / 技能路径的判定漂移。
+    if let Some(fs) = tools.fs_root.as_ref()
+      && !is_lexically_safe(fs)
+    {
+      warnings.push(format!(
+        "tools.fs_root must be a relative path under harness.root, fallback to root: {}",
+        fs.display()
+      ));
+      tools.fs_root = None;
     }
 
     // ===== 聚合 outcome（先按 Real 构造；各 mock 分支就地降级）=====
@@ -151,6 +414,8 @@ impl LoadOutcome {
       harness,
       mode: ConfigMode::Real,
       warnings,
+      origins,
+      code_trust,
     };
 
     // ===== 无 provider：mock =====
@@ -493,5 +758,197 @@ fs_root = "../outside"
         .iter()
         .any(|w| w.contains("tools.fs_root must be a relative path"))
     );
+  }
+
+  /// 场景：全局域目录发现与禁用。
+  ///
+  /// 预期：目录存在 → Some；`enabled=false` 或目录不存在 → None（非致命）。
+  #[test]
+  fn global_domain_discover_respects_enabled_and_existence() {
+    let dir = tempfile::tempdir().expect("temp");
+    let global_root = dir.path().join("global");
+    std::fs::create_dir_all(&global_root).expect("mkdir global");
+
+    let discovered = GlobalDomain::discover(Some(&global_root), true)
+      .expect("should discover");
+    assert_eq!(discovered.root, global_root);
+    assert_eq!(
+      discovered.settings_path(),
+      global_root.join(GlobalDomain::SETTINGS_FILE)
+    );
+
+    // enabled=false → 禁用
+    assert!(GlobalDomain::discover(Some(&global_root), false).is_none());
+    // 目录不存在 → 禁用
+    assert!(
+      GlobalDomain::discover(Some(&dir.path().join("missing")), true).is_none()
+    );
+  }
+
+  /// 场景：Global.settings 与 Project.ribo 逐字段合并 + 来源标记。
+  ///
+  /// 预期：project 有则覆盖 global；来源标记反映最终来源；
+  /// 仅 global 有的字段沿用 global 并标记 global。
+  #[test]
+  fn load_with_global_merges_fields_and_tracks_origin() {
+    let dir = tempfile::tempdir().expect("temp");
+    let global_root = dir.path().join("global");
+    std::fs::create_dir_all(&global_root).expect("mkdir global");
+    std::fs::write(
+      global_root.join("settings.toml"),
+      r#"
+[retry]
+max_retries = 9
+initial_backoff_ms = 123
+
+[session]
+default_key = "from-global"
+"#,
+    )
+    .expect("write global settings");
+
+    let project = dir.path().join("ribo.toml");
+    std::fs::write(
+      &project,
+      r#"
+[retry]
+max_retries = 3
+
+[harness]
+root = "./proj"
+"#,
+    )
+    .expect("write project");
+
+    let outcome =
+      LoadOutcome::load_with_global(Some(&project), None, Some(&global_root));
+
+    // project 覆盖 global
+    assert_eq!(outcome.retry.max_retries, 3);
+    assert_eq!(
+      outcome.origins.get("retry.max_retries"),
+      ConfigOrigin::Project
+    );
+    // 仅 global 有的字段沿用
+    assert_eq!(outcome.retry.initial_backoff_ms, 123);
+    assert_eq!(
+      outcome.origins.get("retry.initial_backoff_ms"),
+      ConfigOrigin::Global
+    );
+    assert_eq!(outcome.session.default_key, "from-global");
+    assert_eq!(
+      outcome.origins.get("session.default_key"),
+      ConfigOrigin::Global
+    );
+    // 项目字段来源 project
+    assert_eq!(outcome.harness.root, Path::new("./proj"));
+    assert_eq!(outcome.origins.get("harness.root"), ConfigOrigin::Project);
+  }
+
+  /// 场景：全局域目录缺失但项目配置正常（P3 故障隔离）。
+  ///
+  /// 预期：项目配置照常加载、无 warning、启动不被全局域缺失拖垮。
+  #[test]
+  fn load_with_global_missing_domain_keeps_project_alive() {
+    let dir = tempfile::tempdir().expect("temp");
+    let missing_global = dir.path().join("absent-global");
+    let project = dir.path().join("ribo.toml");
+    std::fs::write(
+      &project,
+      "[session]\ndefault_key = \"project-session\"\n[harness]\nroot = \"./work\"\n",
+    )
+    .expect("write project");
+
+    let outcome = LoadOutcome::load_with_global(
+      Some(&project),
+      None,
+      Some(&missing_global),
+    );
+    assert_eq!(outcome.session.default_key, "project-session");
+    assert_eq!(outcome.harness.root, Path::new("./work"));
+    assert_eq!(
+      outcome.origins.get("session.default_key"),
+      ConfigOrigin::Project
+    );
+    // 全局域缺失不应产生 fatal；mock warning 属正常（无 provider）
+    assert!(outcome.warnings.iter().all(|w| !w.contains("global")));
+  }
+
+  /// 场景：CLI --root 覆盖并标记为 cli 来源。
+  ///
+  /// 预期：harness.root 取 CLI 值，来源标记为 Cli（最高优先级）。
+  #[test]
+  fn load_with_global_cli_root_wins_with_cli_origin() {
+    let dir = tempfile::tempdir().expect("temp");
+    let project = dir.path().join("ribo.toml");
+    std::fs::write(&project, "[harness]\nroot = \"./from-file\"\n")
+      .expect("write project");
+    let cli_root = Path::new("/tmp/cli-root");
+
+    let outcome =
+      LoadOutcome::load_with_global(Some(&project), Some(cli_root), None);
+    assert_eq!(outcome.harness.root, cli_root);
+    assert_eq!(outcome.origins.get("harness.root"), ConfigOrigin::Cli);
+  }
+
+  /// 场景：零配置 + 全局域缺失 → 退化为默认，来源映射为空。
+  ///
+  /// 预期：所有字段取默认，`origins.is_empty()`（隐含 default）。
+  #[test]
+  fn load_with_global_zero_config_degrades_to_defaults() {
+    let dir = tempfile::tempdir().expect("temp");
+    let missing_global = dir.path().join("no-global-here");
+    let outcome =
+      LoadOutcome::load_with_global(None, None, Some(&missing_global));
+    assert!(outcome.origins.is_empty());
+    assert_eq!(outcome.harness.root, Path::new("."));
+    assert_eq!(outcome.origins.get("harness.root"), ConfigOrigin::Default);
+  }
+
+  /// 场景：[global] enabled=false 关闭全局域。
+  ///
+  /// 预期：即使 global_dir 存在，settings 也不被合并。
+  #[test]
+  fn load_with_global_respects_enabled_false() {
+    let dir = tempfile::tempdir().expect("temp");
+    let global_root = dir.path().join("global");
+    std::fs::create_dir_all(&global_root).expect("mkdir global");
+    std::fs::write(
+      global_root.join("settings.toml"),
+      "[session]\ndefault_key = \"should-not-load\"\n",
+    )
+    .expect("write global settings");
+
+    let project = dir.path().join("ribo.toml");
+    std::fs::write(&project, "[global]\nenabled = false\n")
+      .expect("write project");
+
+    let outcome =
+      LoadOutcome::load_with_global(Some(&project), None, Some(&global_root));
+    assert_eq!(outcome.session.default_key, "default");
+    assert_eq!(
+      outcome.origins.get("session.default_key"),
+      ConfigOrigin::Default
+    );
+  }
+
+  /// 场景：旧入口 `load` 不发现全局域（向后兼容）。
+  ///
+  /// 预期：即便存在 settings.toml，`load` 也不读取，origins 为空。
+  #[test]
+  fn legacy_load_ignores_global_domain() {
+    let dir = tempfile::tempdir().expect("temp");
+    let global_root = dir.path().join("global");
+    std::fs::create_dir_all(&global_root).expect("mkdir global");
+    std::fs::write(
+      global_root.join("settings.toml"),
+      "[session]\ndefault_key = \"legacy-should-ignore\"\n",
+    )
+    .expect("write global settings");
+
+    // 旧入口只接受 config/root 两参数，无法传 global_dir → 不发现全局域
+    let outcome = LoadOutcome::load(None, None);
+    assert!(outcome.origins.is_empty());
+    assert_eq!(outcome.session.default_key, "default");
   }
 }

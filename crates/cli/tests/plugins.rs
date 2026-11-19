@@ -28,6 +28,8 @@ fn outcome_with(root: &Path, plugins: PluginsSchema) -> LoadOutcome {
     },
     mode: ConfigMode::Mock,
     warnings: Vec::new(),
+    origins: Default::default(),
+    code_trust: None,
   }
 }
 
@@ -114,6 +116,7 @@ fn plugins_enabled_with_missing_file_is_fatal() {
         provenance: None,
       }],
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   // CliSession 未实现 Debug，无法用 expect_err（需打印 Ok 值）
@@ -142,6 +145,7 @@ fn plugins_reject_escaping_entry_path() {
         provenance: None,
       }],
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -208,6 +212,7 @@ fn plugins_reject_escaping_root_path() {
       roots: vec![PathBuf::from("../outside")],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -231,6 +236,7 @@ fn plugins_reject_absolute_root_path() {
       roots: vec![outside],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -259,6 +265,7 @@ fn plugins_reject_symlinked_escape_from_root_scan() {
       roots: vec![PathBuf::from("plugins")],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -292,6 +299,7 @@ fn plugins_reject_symlinked_escape_from_entries() {
         provenance: None,
       }],
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -317,6 +325,7 @@ fn plugins_accept_absolute_harness_root() {
       roots: vec![PathBuf::from("plugins")],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let session = assemble_with_steps(&outcome, Vec::new()).expect("assemble");
@@ -363,6 +372,7 @@ fn plugins_missing_authority_manifest_is_fatal() {
         acl: PluginAclSchema::default(),
       }],
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -388,6 +398,7 @@ fn plugins_roots_scan_missing_dir_is_fatal() {
       roots: vec![PathBuf::from("no-such-dir")],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
+      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -491,6 +502,7 @@ fn signed_fixture(
       require_signature: true,
       trusted_keys: Some(PathBuf::from("keys.json")),
     },
+    domains: Vec::new(),
   }
 }
 
@@ -549,6 +561,7 @@ fn plugins_require_signature_without_keys_is_fatal() {
         require_signature: true,
         trusted_keys: None,
       },
+      domains: Vec::new(),
     },
   );
   let err = assemble_err(&outcome);
@@ -627,6 +640,7 @@ fn plugins_unsigned_root_scan_is_rejected_in_production() {
         require_signature: true,
         trusted_keys: Some(PathBuf::from("keys.json")),
       },
+      domains: Vec::new(),
     },
   );
   let err = assemble_err(&outcome);

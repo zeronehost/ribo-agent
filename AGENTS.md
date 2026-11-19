@@ -96,6 +96,11 @@ tracing::info!(provider = %provider, "provider init");
 - 对于安全相关代码，添加检查流程说明。
 - 必须使用中文
 
+# 文档
+
+- 所有文档必须使用中文，除非特殊说明，如 `README.en.md` 使用英文
+- 必须符合 markdown 规范
+
 ## 代理工作约定
 
 - 完成 Rust 代码修改后，自动运行 `cargo fmt --all`，无需询问。

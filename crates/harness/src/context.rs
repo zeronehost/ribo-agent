@@ -334,6 +334,7 @@ mod tests {
       description: "Run shell commands".to_string(),
       content: "body".to_string(),
       location: std::path::PathBuf::from("/skills/terminal.md"),
+      origin: "project".to_string(),
     };
 
     let provider = HarnessContext::new(

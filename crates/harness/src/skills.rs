@@ -20,6 +20,31 @@ pub struct Skill {
   pub content: String,
   /// 来源文件路径（绝对，装配时一次性解析）。
   pub location: PathBuf,
+  /// 来源域标签（19_ Step 5）：`project` / `global` / `plugin:<id>`。
+  /// 单根旧构造器下恒为 `project`，保持零配置行为不变。
+  pub origin: String,
+}
+
+/// 带来源域标签的扫描根（19_ Step 5）。
+///
+/// `roots` 顺序即优先级：同名技能**首个 roots 胜出**。装配层按
+/// Project → Global → Plugin[*]（声明序）排列，实现设计的优先级。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRoot {
+  /// 扫描根路径。
+  pub path: PathBuf,
+  /// 来源域标签（写入 [`Skill::origin`]）。
+  pub origin: String,
+}
+
+impl SkillRoot {
+  /// 创建带来源的扫描根。
+  pub fn new(path: PathBuf, origin: impl Into<String>) -> Self {
+    Self {
+      path,
+      origin: origin.into(),
+    }
+  }
 }
 
 /// 技能诊断码。
@@ -50,14 +75,27 @@ pub struct SkillDiagnostic {
 
 /// 技能扫描与加载器（同步 IO，面向装配期调用）。
 pub struct SkillsLoader {
-  roots: Vec<PathBuf>,
+  roots: Vec<SkillRoot>,
   max_name_chars: usize,
   max_description_chars: usize,
 }
 
 impl SkillsLoader {
   /// 以扫描根创建加载器（默认上限：name 64 / description 1024）。
+  ///
+  /// 所有根的来源域标签为 `project`（兼容旧调用；多域场景用
+  /// [`Self::with_origins`]）。
   pub fn new(roots: Vec<PathBuf>) -> Self {
+    Self::with_origins(
+      roots
+        .into_iter()
+        .map(|p| SkillRoot::new(p, "project"))
+        .collect(),
+    )
+  }
+
+  /// 以带来源域标签的扫描根创建加载器（19_ Step 5）。
+  pub fn with_origins(roots: Vec<SkillRoot>) -> Self {
     Self {
       roots,
       max_name_chars: 64,
@@ -92,10 +130,11 @@ impl SkillsLoader {
     let mut names = std::collections::HashSet::new();
 
     for root in &self.roots {
-      match std::fs::read_dir(root) {
+      match std::fs::read_dir(&root.path) {
         Ok(entries) => {
           for entry in entries.flatten() {
-            let (skill, diag) = self.load_entry(&entry, &mut names);
+            let (skill, diag) =
+              self.load_entry(&entry, &mut names, &root.origin);
             if let Some(d) = diag {
               diagnostics.push(d);
             }
@@ -106,7 +145,7 @@ impl SkillsLoader {
         }
         Err(err) => {
           diagnostics.push(SkillDiagnostic {
-            location: Some(root.clone()),
+            location: Some(root.path.clone()),
             code: SkillDiagnosticCode::ListFailed,
             message: format!("read_dir failed: {err}"),
           });
@@ -132,6 +171,7 @@ impl SkillsLoader {
     &self,
     entry: &std::fs::DirEntry,
     names: &mut std::collections::HashSet<String>,
+    origin: &str,
   ) -> (Option<Skill>, Option<SkillDiagnostic>) {
     let path = entry.path();
     let Some(file_name) = path.file_name() else {
@@ -170,7 +210,7 @@ impl SkillsLoader {
           }),
         );
       }
-      self.load_skill_file(&skill_md, names)
+      self.load_skill_file(&skill_md, names, origin)
     } else if ft.is_file() {
       // 文件：非 SKILL.md 的 *.md 直接作为技能
       if name_str == "SKILL.md" {
@@ -179,7 +219,7 @@ impl SkillsLoader {
       if path.extension() != Some(OsStr::new("md")) {
         return (None, None);
       }
-      self.load_skill_file(&path, names)
+      self.load_skill_file(&path, names, origin)
     } else {
       (None, None)
     }
@@ -189,6 +229,7 @@ impl SkillsLoader {
     &self,
     path: &Path,
     names: &mut std::collections::HashSet<String>,
+    origin: &str,
   ) -> (Option<Skill>, Option<SkillDiagnostic>) {
     let content = match std::fs::read_to_string(path) {
       Ok(c) => c,
@@ -271,6 +312,7 @@ impl SkillsLoader {
         description: parsed.description,
         content: parsed.body,
         location: path.to_path_buf(),
+        origin: origin.to_string(),
       }),
       None,
     )
@@ -520,6 +562,48 @@ mod tests {
     assert_eq!(skills.len(), 1);
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].code, SkillDiagnosticCode::ListFailed);
+  }
+
+  /// Step 5-A：多域来源标签 + 同名优先级（首个 roots 胜出）。
+  ///
+  /// 场景：global / project 两域都有同名技能 `dup`，按 project 优先顺序
+  /// 排列；预期加载 project 版本，origin 标记正确。
+  #[test]
+  fn multi_domain_origin_and_priority() {
+    let g = td("multi_domain_origin-global");
+    let p = td("multi_domain_origin-project");
+    std::fs::write(g.join("dup.md"), "---\nname: dup\n---\nGlobal body")
+      .unwrap();
+    std::fs::write(p.join("dup.md"), "---\nname: dup\n---\nProject body")
+      .unwrap();
+    std::fs::write(p.join("only.md"), "---\nname: only\n---\nOnly body")
+      .unwrap();
+
+    // project 先 → 优先胜出
+    let loader = SkillsLoader::with_origins(vec![
+      SkillRoot::new(p.clone(), "project"),
+      SkillRoot::new(g.clone(), "global"),
+    ]);
+    let (skills, _) = loader.load();
+    assert_eq!(skills.len(), 2);
+    let dup = skills.iter().find(|s| s.name == "dup").expect("dup skill");
+    assert_eq!(dup.content, "Project body");
+    assert_eq!(dup.origin, "project");
+    let only = skills
+      .iter()
+      .find(|s| s.name == "only")
+      .expect("only skill");
+    assert_eq!(only.origin, "project");
+  }
+
+  /// Step 5-A：旧 new() 构造器的 origin 恒为 project（零配置兼容）。
+  #[test]
+  fn legacy_new_marks_origin_as_project() {
+    let root = td("legacy_new_marks_origin_as_project");
+    std::fs::write(root.join("a.md"), "---\nname: a\n---\nBody").unwrap();
+    let (skills, _) = SkillsLoader::new(vec![root]).load();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].origin, "project");
   }
 
   /// 补充：同名技能（两个根目录） → 首个胜出，后来者 InvalidMetadata。

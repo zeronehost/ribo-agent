@@ -25,6 +25,24 @@ use ra_core::error::RiboResult;
 
 use crate::{manager::ToolManager, traits::AgentTool};
 
+/// 用已构造的 [`FsRoot`] 构造全部内置工具实例（不注册）。
+///
+/// 与 [`builtin_tools`] 的区别：允许注入带具名域根表的 `FsRoot`
+///（19_ Step 3 的 `scheme://` 前缀解析）。
+pub fn builtin_tools_with_root(fs_root: FsRoot) -> Vec<Arc<dyn AgentTool>> {
+  vec![
+    echo::create_echo_tool(),
+    calculator::create_calculator_tool(),
+    time::create_current_time_tool(),
+    fs::create_read_tool(&fs_root),
+    fs::create_write_tool(&fs_root),
+    fs::create_edit_tool(&fs_root),
+    fs::create_ls_tool(&fs_root),
+    fs::create_glob_tool(&fs_root),
+    fs::create_grep_tool(&fs_root),
+  ]
+}
+
 /// 构造全部内置工具实例（不注册）。
 ///
 /// # 参数
@@ -36,17 +54,21 @@ use crate::{manager::ToolManager, traits::AgentTool};
 /// `fs_root` 无法解析（目录不存在）→ `tool.invalid_arguments`。
 pub fn builtin_tools(fs_root: &Path) -> RiboResult<Vec<Arc<dyn AgentTool>>> {
   let fs_root = fs::FsRoot::new(fs_root)?;
-  Ok(vec![
-    echo::create_echo_tool(),
-    calculator::create_calculator_tool(),
-    time::create_current_time_tool(),
-    fs::create_read_tool(&fs_root),
-    fs::create_write_tool(&fs_root),
-    fs::create_edit_tool(&fs_root),
-    fs::create_ls_tool(&fs_root),
-    fs::create_glob_tool(&fs_root),
-    fs::create_grep_tool(&fs_root),
-  ])
+  Ok(builtin_tools_with_root(fs_root))
+}
+
+/// 用已构造的 [`FsRoot`] 注册全部内置工具（含具名域根表）。
+pub fn register_builtin_with_root(
+  manager: &ToolManager,
+  fs_root: FsRoot,
+) -> RiboResult<()> {
+  let tools = builtin_tools_with_root(fs_root);
+  let total = tools.len();
+  for tool in tools {
+    manager.register(tool)?;
+  }
+  tracing::info!(count = total, "builtin tools registered");
+  Ok(())
 }
 
 /// 把全部内置工具注册进管理器（含 Schema 编译校验）。

@@ -82,7 +82,7 @@ impl AgentTool for EditTool {
       return Err(invalid_arguments("edit", "'old' and 'new' must differ"));
     }
     let replace_all = args["replace_all"].as_bool().unwrap_or(false);
-    let path = self.root.resolve(raw)?;
+    let path = self.root.resolve_for_write(raw, "edit")?;
     check_cancel(ctx, "edit")?;
     // ===== 读全文 =====
     let bytes = tokio::fs::read(&path).await.map_err(|e| {

@@ -11,11 +11,14 @@ use std::{
 use ra_agent::{
   adapter::ToolManagerAdapter, agent::BaseAgent, types::LoopDeps,
 };
-use ra_core::error::RiboResult;
+use ra_core::{
+  error::RiboResult,
+  path::{is_lexically_safe, is_within},
+};
 use ra_harness::{
   CompactionConfig, Compactor, ContextConfig, Harness, HarnessContext,
-  JsonlSessionStore, PersistentSessionProvider, SkillsLoader,
-  SystemPromptBuilder,
+  InstructionRoot, JsonlSessionStore, PersistentSessionProvider, SkillRoot,
+  SkillsLoader, SystemPromptBuilder, load_instructions,
 };
 use ra_plugins::acl::{PluginAcl, UrlPolicy};
 use ra_plugins::provenance::{
@@ -36,7 +39,9 @@ use ra_provider::{
 };
 use ra_tools::manager::ToolManager;
 
-use super::{ConfigMode, LoadOutcome, PluginAclSchema};
+use super::{ConfigMode, LoadOutcome, PluginAclSchema, PluginDomainKind};
+
+use ra_tools::builtin::FsRoot;
 
 /// CLI 内置系统提示模板（v1 不提供配置入口）。
 const DEFAULT_CLI_TEMPLATE: &str = "\
@@ -66,6 +71,8 @@ pub struct CliSession {
   pub default_key: String,
   /// 装配期加载的技能名（`/skills` 输出）。
   pub skills: Vec<String>,
+  /// 每个技能的来源域标签（与 `skills` 平行；19_ Step 5）。
+  pub skill_origins: Vec<String>,
   /// 装配期技能诊断（已格式化为单行，`/skills` 输出）。
   pub skill_diagnostics: Vec<String>,
   /// 装配期插件注册表（`plugins.enabled = false` 时为 `None`，且进程
@@ -212,6 +219,8 @@ struct PluginSpec {
   authority: Option<SignedAuthority>,
   /// 来源校验策略（同一进程内由 [plugins.verify] 统一构造）。
   verify_policy: VerificationPolicy,
+  /// 来源域标记（装配期 plugin_id 冲突检测错误信息用）。
+  source: String,
 }
 
 /// 路径是否逃逸沙箱基准（词法判定）：绝对路径或含 `..` 逃逸组件。
@@ -219,11 +228,111 @@ struct PluginSpec {
 /// 与 `tools.fs_root` / `plugins.entries` 同一沙箱纪律——配置层给出的
 /// 相对路径不得脱离 harness.root。注意本判定只看**词法**形态：符号链接
 /// 与目录联接的逃逸由规范化后的归属校验兜底（见 [`collect_plugin_specs`]）。
+/// 判定逻辑复用 [`is_lexically_safe`] 统一原语，避免与 fs_root / 技能路径漂移。
 fn escapes_root(path: &Path) -> bool {
-  path.is_absolute()
-    || path
-      .components()
-      .any(|c| matches!(c, std::path::Component::ParentDir))
+  !is_lexically_safe(path)
+}
+
+/// 插件域选择器校验（19_ Step 3，P3 启动致命）。
+///
+/// 逐条校验 `[[plugins.domains]]` 的声明：
+/// 1. `id` 匹配 `^[a-z][a-z0-9_]{0,31}$` 且**跨域唯一**；
+/// 2. `root` 必须绝对路径（域选择器，D2：允许绝对但不参与 P1 词法校验）；
+/// 3. `root` 存在且是目录（不创建、不解析相对路径）。
+///
+/// 返回已按声明序构造的具名域描述（id / 规范根 / 类型 / 只读），供
+/// [`build_named_roots`] 注入 fs；域 id 冲突 → `config.domain_conflict`。
+///
+/// # Errors
+///
+/// id 非法 / 重复 → `config.domain_conflict`；root 非绝对 / 不存在 /
+/// 非目录 → `config.plugin_domain_invalid`。
+fn validate_plugin_domains(
+  outcome: &LoadOutcome,
+) -> RiboResult<Vec<(String, PathBuf, PluginDomainKind, bool)>> {
+  let mut seen: HashSet<&str> = HashSet::new();
+  let mut valid = Vec::with_capacity(outcome.plugins.domains.len());
+  for domain in &outcome.plugins.domains {
+    if !super::schema::is_valid_domain_id(&domain.id) {
+      return Err(ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "domain_conflict",
+        format!(
+          "plugin domain id `{}` must match ^[a-z][a-z0-9_]{{0,31}}$",
+          domain.id
+        ),
+      ));
+    }
+    if !seen.insert(domain.id.as_str()) {
+      return Err(ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "domain_conflict",
+        format!("duplicate plugin domain id `{}`", domain.id),
+      ));
+    }
+    // 项目自签 trusted=true 无效（设计§7.3）：只有 Global 域声明才生效。
+    // 用域 id 记录（敏感信息规则：不在 tracing 日志打印绝对路径）。
+    if domain.trusted
+      && !outcome
+        .code_trust
+        .as_ref()
+        .is_some_and(|ctx| ctx.is_global_domain(&domain.id))
+    {
+      tracing::warn!(
+        domain_id = %domain.id,
+        "plugin domain self-declared trusted ignored (must be declared in global domain)"
+      );
+    }
+    if !domain.root.is_absolute() {
+      return Err(ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "plugin_domain_invalid",
+        format!(
+          "plugin domain `{}` root must be absolute: {}",
+          domain.id,
+          domain.root.display()
+        ),
+      ));
+    }
+    if !domain.root.is_dir() {
+      return Err(ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "plugin_domain_invalid",
+        format!(
+          "plugin domain `{}` root missing or not a directory: {}",
+          domain.id,
+          domain.root.display()
+        ),
+      ));
+    }
+    valid.push((
+      domain.id.clone(),
+      domain.root.clone(),
+      domain.kind,
+      domain.is_read_only(),
+    ));
+  }
+  Ok(valid)
+}
+
+/// 按声明序构建具名域根表注入 fs（19_ Step 3）。
+///
+/// 空表 → 返回 `FsRoot::default()` 语义之外的主根（无具名域，行为与
+/// Step 2 一致）；非空时每域独立构造 [`FsRoot::named`]，享有完整 P1 校验。
+///
+/// # Errors
+///
+/// 域根 canonicalize 失败（极少见：校验后目录被并发删除）→ 透传
+/// `tool.invalid_arguments`。
+fn build_named_roots(
+  domains: &[(String, PathBuf, PluginDomainKind, bool)],
+  main_root: &Path,
+) -> RiboResult<FsRoot> {
+  let mut fs_root = FsRoot::new(main_root)?;
+  for (id, root, _kind, read_only) in domains {
+    fs_root.add_named_root(id.clone(), FsRoot::named(id, root, *read_only)?);
+  }
+  Ok(fs_root)
 }
 
 /// 校验插件 wasm 路径：canonicalize + harness.root 沙箱归属判定。
@@ -247,7 +356,7 @@ fn validate_plugin_path(
     )
   })?;
   if let Some(root) = sandbox
-    && !canonical.starts_with(root)
+    && !is_within(root, &canonical)
   {
     return Err(ra_core::error::RiboError::new(
       CONFIG_DOMAIN,
@@ -296,7 +405,7 @@ fn build_verify_policy(
     )
   })?;
   if let Some(root) = std::fs::canonicalize(&outcome.harness.root).ok()
-    && !canonical.starts_with(&root)
+    && !is_within(&root, &canonical)
   {
     return Err(ra_core::error::RiboError::new(
       CONFIG_DOMAIN,
@@ -417,6 +526,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
         acl: PluginAclSchema::default(),
         authority: None,
         verify_policy: verify_policy.clone(),
+        source: format!("plugin root `{}`", root.display()),
       });
     }
   }
@@ -437,11 +547,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
     // 启动致命（信任链不完整不如明确失败）
     let manifest_bytes = match entry.manifest.as_ref() {
       Some(mpath) => {
-        if mpath.is_absolute()
-          || mpath
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        if escapes_root(mpath) {
           return Err(ra_core::error::RiboError::new(
             CONFIG_DOMAIN,
             "plugin_load_failed",
@@ -466,11 +572,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
     // 侧载签名块（Step C 来源校验）：相对 root、沙箱归属校验同 manifest。
     let provenance_bytes = match entry.provenance.as_ref() {
       Some(ppath) => {
-        if ppath.is_absolute()
-          || ppath
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        if escapes_root(ppath) {
           return Err(ra_core::error::RiboError::new(
             CONFIG_DOMAIN,
             "plugin_load_failed",
@@ -489,7 +591,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
           )
         })?;
         if let Some(root) = std::fs::canonicalize(&outcome.harness.root).ok()
-          && !canonical.starts_with(&root)
+          && !is_within(&root, &canonical)
         {
           return Err(ra_core::error::RiboError::new(
             CONFIG_DOMAIN,
@@ -529,6 +631,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
       acl: entry.acl.clone(),
       authority,
       verify_policy: verify_policy.clone(),
+      source: format!("plugin entry `{}`", entry.path.display()),
     });
   }
 
@@ -553,17 +656,26 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
 /// 毒化整个进程——半装配状态只会把问题推迟到首次工具调用，故任何
 /// 插件加载 / 注册失败都直接上抛，由启动流程终结。
 ///
+/// `allow_duplicate_plugin_id`（D3 逃生舱口）：`false` 时在注册前检测
+/// 跨源 `plugin_id` 冲突并**致命**（列出全部来源）；`true` 时降级为
+/// Warning + 首声明胜出（与 registry 二道防线行为一致）。
+///
 /// # Errors
 /// - wasm 文件读取失败（`config.plugin_load_failed`）；
 /// - [`WasmPluginHost::load`] 失败（编译 / manifest / 命名，`plugin.plugin_*`）；
-/// - [`PluginRegistry::register`] 失败（重复 ID / schema 非法 / 批量注入）。
+/// - [`PluginRegistry::register`] 失败（重复 ID / schema 非法 / 批量注入）；
+/// - plugin_id 跨源冲突且未传逃生舱口 → `config.plugin_duplicate_id`。
 fn load_and_register_plugins(
   outcome: &LoadOutcome,
   registry: &PluginRegistry,
+  allow_duplicate_plugin_id: bool,
 ) -> RiboResult<Vec<String>> {
   let specs = collect_plugin_specs(outcome)?;
   let host = WasmPluginHost::new()?;
   let mut loaded = Vec::with_capacity(specs.len());
+  let mut seen: std::collections::HashMap<String, String> =
+    std::collections::HashMap::new();
+  let mut duplicates: Vec<(String, Vec<String>)> = Vec::new();
   for spec in specs {
     let started = std::time::Instant::now();
     let wasm = std::fs::read(&spec.full).map_err(|e| {
@@ -581,14 +693,52 @@ fn load_and_register_plugins(
       spec.authority.as_ref(),
       &spec.verify_policy,
     )?;
+    let plugin_id = plugin.id().to_string();
     tracing::info!(
-      plugin = %plugin.id(),
+      plugin = %plugin_id,
       duration_ms = started.elapsed().as_millis() as u64,
       "plugin loaded"
     );
-    registry.register(Arc::clone(&plugin))?;
-    tracing::info!(plugin = %plugin.id(), "plugin registered");
-    loaded.push(plugin.id().to_string());
+
+    // ===== 装配期 plugin_id 冲突检测（C10 / D3）=====
+    if let Some(first_source) = seen.get(&plugin_id) {
+      tracing::warn!(
+        plugin = %plugin_id,
+        first = %first_source,
+        later = %spec.source,
+        "duplicate plugin_id across sources"
+      );
+      if allow_duplicate_plugin_id {
+        continue; // 首声明胜出，跳过本条
+      }
+      duplicates.push((
+        plugin_id.clone(),
+        vec![first_source.clone(), spec.source.clone()],
+      ));
+    } else {
+      seen.insert(plugin_id.clone(), spec.source.clone());
+      registry.register(Arc::clone(&plugin))?;
+      tracing::info!(plugin = %plugin_id, "plugin registered");
+      loaded.push(plugin_id);
+    }
+  }
+  if !duplicates.is_empty() && !allow_duplicate_plugin_id {
+    let mut msg = String::from("duplicate plugin_id from multiple sources:\n");
+    for (id, sources) in &duplicates {
+      msg.push_str(&format!("  - \"{id}\"\n"));
+      for src in sources {
+        msg.push_str(&format!("      {src}\n"));
+      }
+    }
+    msg.push_str(
+      "Resolve by renaming one plugin, or pass --allow-duplicate-plugin-id \
+       to load with the first declaration winning (not recommended).",
+    );
+    return Err(ra_core::error::RiboError::new(
+      CONFIG_DOMAIN,
+      "plugin_duplicate_id",
+      msg,
+    ));
   }
   Ok(loaded)
 }
@@ -655,8 +805,28 @@ pub fn assemble(outcome: &LoadOutcome) -> RiboResult<CliSession> {
   assemble_with_steps(outcome, Vec::new())
 }
 
+/// 装配选项（19_ Step 3）：控制装配期策略开关。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AssembleOptions {
+  /// 允许跨源重复 plugin_id（首声明胜出，降级 Warning）。
+  pub allow_duplicate_plugin_id: bool,
+}
+
+/// 带选项的装配入口：CLI/TUI 传入 `--allow-duplicate-plugin-id` 等开关。
+///
+/// # Errors
+///
+/// 同 [`assemble`]。
+pub fn assemble_with_options(
+  outcome: &LoadOutcome,
+  steps: Vec<MockStep>,
+  options: AssembleOptions,
+) -> RiboResult<CliSession> {
+  assemble_impl(outcome, steps, options)
+}
+
 /// E2E 专用装配入口：mock 网关注入脚本步骤（步骤按 `stream` 调用
-/// 次序逐回合消费）。
+/// 次序逐回合消费）。默认拒绝跨源重复 plugin_id。
 ///
 /// # Errors
 ///
@@ -664,6 +834,19 @@ pub fn assemble(outcome: &LoadOutcome) -> RiboResult<CliSession> {
 pub fn assemble_with_steps(
   outcome: &LoadOutcome,
   steps: Vec<MockStep>,
+) -> RiboResult<CliSession> {
+  assemble_impl(outcome, steps, AssembleOptions::default())
+}
+
+/// 装配实现体（三入口共用的唯一实现）。
+///
+/// # Errors
+///
+/// 网关 / 域校验 / 插件装配任一失败 → 启动致命。
+fn assemble_impl(
+  outcome: &LoadOutcome,
+  steps: Vec<MockStep>,
+  options: AssembleOptions,
 ) -> RiboResult<CliSession> {
   // ===== 阶段 1：网关 =====
   let (gateway, model) = match outcome.mode {
@@ -676,13 +859,34 @@ pub fn assemble_with_steps(
     outcome.harness.root.join("sessions"),
   ));
   let provider = Arc::new(PersistentSessionProvider::new(store.clone()));
-  let skill_roots: Vec<std::path::PathBuf> = outcome
-    .harness
-    .skills_roots
-    .iter()
-    .map(|r| outcome.harness.root.join(r))
-    .collect();
-  let (skills, diagnostics) = SkillsLoader::new(skill_roots).load();
+  // ===== 三域技能汇总（19_ Step 5）=====
+  // 同名优先级 Project > Global > Plugin[*]：SkillsLoader 按 roots 顺序
+  // 首个胜出，故此处按优先级排列。Plugin 域按声明序（先声明优先）。
+  let mut skill_roots: Vec<SkillRoot> = Vec::new();
+  for r in &outcome.harness.skills_roots {
+    skill_roots.push(SkillRoot::new(outcome.harness.root.join(r), "project"));
+  }
+  let global_root = outcome
+    .code_trust
+    .as_ref()
+    .and_then(|ctx| ctx.global_root())
+    .map(Path::to_path_buf);
+  if let Some(groot) = &global_root {
+    skill_roots.push(SkillRoot::new(groot.join("skills"), "global"));
+  }
+  for domain in &outcome.plugins.domains {
+    if matches!(
+      domain.kind,
+      super::schema::PluginDomainKind::Skills
+        | super::schema::PluginDomainKind::All
+    ) {
+      skill_roots.push(SkillRoot::new(
+        domain.root.join("skills"),
+        format!("plugin:{}", domain.id),
+      ));
+    }
+  }
+  let (skills, diagnostics) = SkillsLoader::with_origins(skill_roots).load();
   for d in &diagnostics {
     tracing::warn!(code = ?d.code, path = ?d.location, "skill diagnostic");
   }
@@ -698,7 +902,43 @@ pub fn assemble_with_steps(
       format!("{:?} {location}: {}", d.code, d.message)
     })
     .collect::<Vec<_>>();
-  let skill_names = skills.iter().map(|s| s.name.clone()).collect();
+  let skill_names: Vec<String> =
+    skills.iter().map(|s| s.name.clone()).collect();
+  let skill_origins: Vec<String> =
+    skills.iter().map(|s| s.origin.clone()).collect();
+
+  // ===== 域内 AGENTS.md 拼接（19_ Step 5）=====
+  // 顺序 Global → Project → Plugin[* prompts/all]（后写更具体）；
+  // 文档级资源默认加载，与代码信任无关（P4）。
+  let mut instruction_roots: Vec<InstructionRoot> = Vec::new();
+  if let Some(groot) = &global_root {
+    instruction_roots.push(InstructionRoot::new(groot.clone(), "global"));
+  }
+  instruction_roots.push(InstructionRoot::new(
+    outcome.harness.root.clone(),
+    "project",
+  ));
+  for domain in &outcome.plugins.domains {
+    if matches!(
+      domain.kind,
+      super::schema::PluginDomainKind::Prompts
+        | super::schema::PluginDomainKind::All
+    ) {
+      instruction_roots.push(InstructionRoot::new(
+        domain.root.clone(),
+        format!("plugin:{}", domain.id),
+      ));
+    }
+  }
+  let instructions = load_instructions(&instruction_roots);
+  for src in &instructions.sources {
+    if src.truncated {
+      eprintln!(
+        "WARN AGENTS.md from {} exceeds 32KB and was truncated",
+        src.origin
+      );
+    }
+  }
 
   // ===== 阶段 3：上下文装配（compression 层 → ContextConfig.compaction 唯一真值）=====
   let ctx_cfg = ContextConfig {
@@ -717,7 +957,9 @@ pub fn assemble_with_steps(
   };
   let compactor = Arc::new(Compactor::new(gateway.clone(), model.clone()));
   let context = HarnessContext::new(
-    SystemPromptBuilder::new().with_template(DEFAULT_CLI_TEMPLATE),
+    SystemPromptBuilder::new()
+      .with_template(DEFAULT_CLI_TEMPLATE)
+      .with_instructions(instructions),
     Some(compactor),
     skills,
     ctx_cfg,
@@ -731,21 +973,67 @@ pub fn assemble_with_steps(
   let manager =
     Arc::new(ToolManager::with_config(plugin_aware_tool_manager_config()));
   if outcome.tools.builtin_enabled {
-    let fs_root = match outcome.tools.fs_root.as_ref() {
+    // ===== 插件域具名根表（19_ Step 3）=====
+    // 先校验域声明（id / 绝对 root / 存在 / 是目录 / 唯一），再构建
+    // FsRoot 具名根表注入 fs 六件套；无 [[plugins.domains]] 时等价于
+    // 原单根行为（零配置兼容）。
+    let domains = validate_plugin_domains(outcome)?;
+    // tools.fs_root 相对 harness.root 解析（加载期已校验词法安全）；
+    // 未设置即 root 本身——沙箱恒位于工作空间之下。
+    let main_root = match outcome.tools.fs_root.as_ref() {
       Some(sub) => outcome.harness.root.join(sub),
       None => outcome.harness.root.clone(),
     };
-    ra_tools::builtin::register_builtin(&manager, &fs_root)?;
+    let fs_root = build_named_roots(&domains, &main_root)?;
+    if fs_root.named_root_count() > 0 {
+      tracing::info!(
+        domains = fs_root.named_root_count(),
+        "plugin domains injected into fs"
+      );
+    }
+    ra_tools::builtin::register_builtin_with_root(&manager, fs_root)?;
   }
-  let (plugin_registry, loaded_plugins) = if outcome.plugins.enabled {
-    let registry = PluginRegistry::new(Arc::clone(&manager));
-    let loaded = load_and_register_plugins(outcome, &registry)?;
-    tracing::info!(plugins = ?loaded, "plugins assembled");
-    (Some(Arc::new(registry)), loaded)
-  } else {
-    tracing::debug!("plugins disabled, skipping wasm plugin loading");
-    (None, Vec::new())
+  // ===== 阶段 4.5：代码信任闸门（19_ Step 4，设计§7.1/§7.2）=====
+  // Project 插件须显式 code_trust 才加载；无 Global 域（code_trust=None）
+  // 时退化为自动加载（回滚开关）。未信任不致命——只弃加载 + warning，
+  // 技能与 AGENTS.md 仍照常加载（P4 域故障隔离）。
+  let mut warnings = outcome.warnings.clone();
+  let project_code_trusted = match outcome.code_trust.as_ref() {
+    Some(ctx) => {
+      let trusted = ctx.is_project_code_trusted(&outcome.harness.root);
+      if !trusted && outcome.plugins.enabled {
+        let path = outcome.harness.root.display().to_string();
+        warnings.push(format!(
+          "project `{path}` has plugins but is not code-trusted. \
+           Run `ribo trust add {path}` after reviewing the plugins. \
+           Skills and AGENTS.md are still loaded."
+        ));
+        tracing::warn!("project plugins skipped: code trust not granted");
+      }
+      trusted
+    }
+    // 无 Global 域 → 兼容旧语义（自动加载）
+    None => true,
   };
+
+  let (plugin_registry, loaded_plugins) =
+    if outcome.plugins.enabled && project_code_trusted {
+      let registry = PluginRegistry::new(Arc::clone(&manager));
+      let loaded = load_and_register_plugins(
+        outcome,
+        &registry,
+        options.allow_duplicate_plugin_id,
+      )?;
+      tracing::info!(plugins = ?loaded, "plugins assembled");
+      (Some(Arc::new(registry)), loaded)
+    } else {
+      if outcome.plugins.enabled && !project_code_trusted {
+        tracing::info!("plugins skipped: project not code-trusted");
+      } else {
+        tracing::debug!("plugins disabled, skipping wasm plugin loading");
+      }
+      (None, Vec::new())
+    };
   let tools = Arc::new(ToolManagerAdapter::new(Arc::clone(&manager)));
 
   // ===== 阶段 5：BaseAgent + Harness + CliSession =====
@@ -762,10 +1050,11 @@ pub fn assemble_with_steps(
     harness,
     events,
     mode: outcome.mode,
-    warnings: outcome.warnings.clone(),
+    warnings,
     history_lines: outcome.session.history_lines,
     default_key: outcome.session.default_key.clone(),
     skills: skill_names,
+    skill_origins,
     skill_diagnostics,
     plugin_registry,
     loaded_plugins,

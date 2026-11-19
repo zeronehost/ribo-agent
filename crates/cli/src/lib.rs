@@ -4,6 +4,7 @@
 //! 供 `tests/e2e.rs` 集成测试引用（bin target 不对外导出）。
 
 pub mod app;
+pub mod cli_commands;
 pub mod commands;
 pub mod config;
 pub mod logging;

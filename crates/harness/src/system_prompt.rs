@@ -9,6 +9,7 @@ use std::path::Path;
 
 use ra_core::message::{Content, TextContent};
 
+use crate::instructions::Instructions;
 use crate::skills::Skill;
 
 /// 默认系统提示模板（英文：与模型指令语言一致，避免中英混排）。
@@ -24,6 +25,8 @@ pub struct SystemPromptBuilder {
   template: String,
   include_env: bool,
   custom: Vec<String>,
+  /// 域内 AGENTS.md 拼接内容（19_ Step 5）；空集不产段。
+  instructions: Option<Instructions>,
 }
 
 impl Default for SystemPromptBuilder {
@@ -39,6 +42,7 @@ impl SystemPromptBuilder {
       template: DEFAULT_TEMPLATE.to_string(),
       include_env: true,
       custom: Vec::new(),
+      instructions: None,
     }
   }
 
@@ -57,6 +61,13 @@ impl SystemPromptBuilder {
   /// 追加自定义段（按添加顺序拼接）。
   pub fn with_custom_section(mut self, section: impl Into<String>) -> Self {
     self.custom.push(section.into());
+    self
+  }
+
+  /// 注入域内 `AGENTS.md` 拼接内容（19_ Step 5）。
+  /// 空集时 build 不产 `<agents-instructions>` 段。
+  pub fn with_instructions(mut self, instructions: Instructions) -> Self {
+    self.instructions = Some(instructions);
     self
   }
 
@@ -89,13 +100,24 @@ impl SystemPromptBuilder {
       let mut list = "<available-skills>\n".to_string();
       for skill in skills {
         list.push_str(&format!(
-          "  <skill name=\"{}\" description=\"{}\"/>\n",
+          "  <skill name=\"{}\" description=\"{}\" origin=\"{}\"/>\n",
           escape_xml(&skill.name),
           escape_xml(&skill.description),
+          escape_xml(&skill.origin),
         ));
       }
       list.push_str("</available-skills>");
       sections.push(list);
+    }
+
+    // 3.5 域内 AGENTS.md 指令段（文档级资源，默认加载）
+    if let Some(instructions) = &self.instructions
+      && !instructions.is_empty()
+    {
+      sections.push(format!(
+        "<agents-instructions>\n{}\n</agents-instructions>",
+        instructions.content.trim()
+      ));
     }
 
     // 4. 自定义段
@@ -165,6 +187,7 @@ mod tests {
       description: desc.to_string(),
       content: content.to_string(),
       location: Path::new("/skills").join(format!("{name}.md")),
+      origin: "project".to_string(),
     }
   }
 
@@ -247,6 +270,56 @@ mod tests {
     };
     assert!(text.contains("<conversation-summary>"));
     assert!(text.contains("This is summary"));
+  }
+
+  /// Step 5-C：技能清单带 origin 属性（来源域标签）。
+  #[test]
+  fn skill_list_includes_origin_attribute() {
+    let mut s = skill("review", "desc", "body");
+    s.origin = "plugin:company".to_string();
+    let prompt = SystemPromptBuilder::new()
+      .with_template("TPL")
+      .with_environment(false)
+      .build(&[s], None);
+    let text = match &prompt[0] {
+      Content::Text(t) => &t.content,
+      _ => panic!("expected Text"),
+    };
+    assert!(text.contains("origin=\"plugin:company\""));
+  }
+
+  /// Step 5-C：Instructions 非空 → 产 <agents-instructions> 段；空 → 不产。
+  #[test]
+  fn agents_instructions_section_conditional() {
+    let instr = Instructions {
+      content: "<!-- source: project (x) -->\nBe concise".to_string(),
+      sources: vec![crate::instructions::InstructionSource {
+        origin: "project".to_string(),
+        path: std::path::PathBuf::from("x/AGENTS.md"),
+        truncated: false,
+      }],
+    };
+    let with = SystemPromptBuilder::new()
+      .with_template("TPL")
+      .with_environment(false)
+      .with_instructions(instr)
+      .build(&[], None);
+    let text = match &with[0] {
+      Content::Text(t) => &t.content,
+      _ => panic!("expected Text"),
+    };
+    assert!(text.contains("<agents-instructions>"));
+    assert!(text.contains("Be concise"));
+
+    let without = SystemPromptBuilder::new()
+      .with_template("TPL")
+      .with_environment(false)
+      .build(&[], None);
+    let text2 = match &without[0] {
+      Content::Text(t) => &t.content,
+      _ => panic!("expected Text"),
+    };
+    assert!(!text2.contains("<agents-instructions>"));
   }
 
   /// 补充：custom section 非空 → 追加。

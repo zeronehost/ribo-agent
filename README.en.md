@@ -17,7 +17,7 @@ Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ri
 - **Gateway resilience**: request retries (exponential backoff + jitter), first-token timeout, cross-provider fallback, circuit breaking, and admission control.
 - **Sessions & context**: session persistence, configurable context compaction (summary / sliding window), system prompt and environment injection.
 - **Skill system**: loads `SKILL.md` skills from scan roots; load diagnostics are non-fatal.
-- **Layered configuration**: six independent layers (provider / retry / compression / session / tools / harness); falls back to Mock mode when unconfigured.
+- **Layered configuration**: six independent layers (provider / retry / compression / session / tools / harness); falls back to Mock mode when unconfigured. Also supports three trust domains (Project / Global / Plugin) and two trust tiers (documents trusted by default, code requires explicit grant).
 
 ---
 
@@ -71,6 +71,10 @@ Both binaries share the same `clap`-parsed flags:
 | :--- | :--- |
 | `-c, --config <PATH>` | Config file path. When omitted, `ribo.toml` in the current directory is auto-detected; if absent, Mock mode is entered. |
 | `--root <PATH>` | Override the workspace root (`harness` layer `root`, defaults to the process cwd). |
+| `--global-dir <PATH>` | Override the global domain directory (default: platform config dir + `/ribo`). |
+| `--allow-duplicate-plugin-id` | Allow cross-source duplicate plugin IDs (first declaration wins); rejected fatally by default. |
+
+One-shot subcommands (`auth` / `trust` / `config` / `plugins list`) are documented in "One-shot Subcommands" below.
 
 ---
 
@@ -127,6 +131,65 @@ model        = "your-model-name"
 [routing.cross_provider]
 "chat-primary" = ["anthropic-backup"]
 ```
+
+---
+
+## Three Trust Domains and Two Trust Tiers
+
+Ribo separates configuration and resources into three **trust domains**, with two distinct trust tiers:
+
+| Domain | Location | Contents |
+| :--- | :--- | :--- |
+| **Project** | `harness.root` | The project's own `ribo.toml`, `skills/`, `AGENTS.md`, `.wasm` plugins |
+| **Global** | Platform config dir + `/ribo` (override with `--global-dir`) | `settings.toml`, `auth.toml`, `trusted_projects.toml`, cross-project resources |
+| **Plugin Domain** | Absolute paths declared in `[[plugins.domains]]` | Shared enterprise skills / prompts / data / plugin repositories |
+
+**Two trust tiers** (deliberately kept separate):
+
+- **Config trust** (on by default, no record needed): **document-level** resources such as `ribo.toml` / `AGENTS.md` / `skills/`. Loading them only adds context to the model and executes no code, so trusting them by default is safe.
+- **Code trust** (off by default, must be granted explicitly): **executable** resources such as `.wasm` plugins. A Project's plugins are not loaded on first encounter; instead the startup banner prints:
+
+  ```text
+  WARN project `/path/to/proj` has plugins but is not code-trusted.
+       Run `ribo trust add /path/to/proj` after reviewing the plugins.
+       Skills and AGENTS.md are still loaded.
+  ```
+
+  After reviewing the plugins, run `ribo trust add <path>` to grant trust; use `ribo trust list` to inspect and `ribo trust remove <path>` to revoke. Trust records live in the global domain's `trusted_projects.toml` (hand-written comments preserved). The TUI shows a y/n confirmation at startup when an untrusted project declares plugins.
+
+### Plugin Domains and External Resources
+
+`[[plugins.domains]]` declares external resource roots — a separate concept from `[plugins]` (plugin load entries):
+
+```toml
+[[plugins.domains]]
+id = "dataset"              # also the fs tool prefix; must be unique across domains
+root = "/mnt/datasets"      # must be an existing absolute path
+kind = "data"               # plugins | skills | prompts | data | all
+read_only = true            # data defaults to read-only
+```
+
+The six fs tools access in-domain resources via `scheme://relative/path`, e.g. `read("dataset://train/img001.jpg")`; prefix-free paths still resolve against the project's main sandbox root. `data` domains are read-only by default and return `plugin.plugin_forbidden` on writes.
+
+A `trusted = true` declaration **only takes effect in the Global domain**: a project declaring `trusted = true` in its own `ribo.toml` is ignored (preventing self-signed trust) and produces a warning. A domain's `skills/` and `AGENTS.md` are merged according to its `kind`.
+
+### One-shot Subcommands
+
+These run before REPL assembly, print their output, and exit; with no subcommand, behavior is unchanged (the REPL starts directly):
+
+```bash
+ribo auth login <provider> [--api-key KEY]   # set a credential (KEY omitted → read from stdin)
+ribo auth status                             # list configured providers (keys hidden)
+ribo auth logout <provider>                  # remove a credential
+ribo trust add <path> [--note NOTE]          # grant project code trust
+ribo trust remove <path>                     # revoke code trust
+ribo trust list                              # list trust records
+ribo config --show-origin                    # show each config field's source domain
+ribo config --explain                        # same, with conflict explanation
+ribo plugins list                            # list plugin entries and domains in two sections
+```
+
+Credential and trust files are created on first use; no manual migration is needed.
 
 ---
 
