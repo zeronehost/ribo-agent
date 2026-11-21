@@ -1,19 +1,23 @@
 # ra-cli 配置模板（与 crates/cli/src/config/schema.rs 六层 schema 一一对应）
 #
 # 用法：
-#   复制本文件为 ribo.toml（未指定 --config 时自动探测的默认文件名）
-#   并填入真实端点与密钥，或用 --config 指定任意路径；
-#   密钥一律走 "$ENV_NAME" 占位，不落盘。
+#   复制本文件为 ribo.toml（配置文件探测的默认文件名）并填入真实端点
+#   与密钥，或用 --config 指定任意路径；密钥一律走 "$ENV_NAME" 占位，
+#   不落盘。
 #
-# 配置文件选择：显式 --config 优先；未指定时仅当 ribo.toml 存在才加载，
-#   否则走全默认 Mock（ribo 与 ribo-tui 同规则）。
+# 配置文件选择（D2 四档优先级）：
+#   显式 --config 指向不存在的文件 → 启动报错 config.config_file_missing；
+#   未指定 --config → 向上探测 ribo.toml（至 .git 边界），找到即加载；
+#   否则走全默认（ribo 与 ribo-tui 同规则）。
 #
 # 降级语义（启动横幅会打印 mode 与 warnings）：
-#   - 本模板保持占位状态（your-* / example.com） → 整体回退 Mock 模式；
-#   - 未指定 --config 且 ribo.toml 不存在          → 整体回退 Mock 模式；
-#   - 某个 $ENV 密钥未设置                        → 局部降级：该 provider 跳过注册，
-#     路由链中引用它的候选一并剔除；若 query_model 因此悬空 → 整体回退 Mock；
-#   - 单个配置层解析失败（未知字段忽略除外）      → 该层保留默认 + warning。
+#   - debug 构建：无 provider / 占位配置（your-* / example.com）/
+#     query_model 悬空 → 整体回退 Mock 模式；
+#   - release 构建（D7）：上述三类一律启动致命（*_in_release 错误码）；
+#   - 某个 $ENV 密钥未设置 → 局部降级：该 provider 跳过注册，
+#     路由链中引用它的候选一并剔除；若 query_model 因此悬空 →
+#     debug 回退 Mock，release 启动致命；
+#   - 单个配置层解析失败（未知字段忽略除外）→ 该层保留默认 + warning。
 #
 # 六层 schema 相互独立、层间零交叉；下方各层值与代码 Default 一致。
 
@@ -64,47 +68,41 @@ default_key = "default"        # 默认 "default"，REPL 启动会话键（/new 
 history_lines = 10             # 默认 10，/history 未带参数时的条数
 
 # ── tools 层（ToolManager 注册）─────────────────────────────
+# fs 沙箱 = harness.root（v3：无独立 fs_root 配置；项目外数据走挂载点）。
 [tools]
-builtin_enabled = true         # 默认 true，注册全部内置工具（逐工具开关留阶段 6）
-# fs_root = "tool-space"       # Option 字段：注释掉即 None（默认）→ 沙箱 = harness.root；
-#                              # 填写则作为内置工具（fs 六件）的读写沙箱根——
-#                              # 相对 harness.root 解析（恒位于 root 之下）；
-#                              # 绝对路径或 ".." 逃逸 → warning + 回退 root
+builtin_enabled = true         # 默认 true，注册全部内置工具
 
 # ── harness 层（会话存储与技能）─────────────────────────────
 [harness]
-root = "."                     # 默认 "."（进程 cwd），会话 ./sessions/、日志 ./logs/；
-                               # 可被命令行 --root 参数覆盖
-skills_roots = ["skills"]      # 默认 ["skills"]，技能扫描根（可多个，按序加载，
-                               # 相对 root 解析）
+root = "."                     # 默认 "."（进程 cwd），内部产物集中 .ribo/：
+                               # .ribo/skills/、.ribo/plugins/、.ribo/sessions/、
+                               # .ribo/trusted_keys.json；可被 --root 覆盖
 include_environment = true     # 默认 true，系统提示注入 <environment> 段
-
 
 # ── global 层（全局域，跨项目共享；默认启用）─────────────────
 # [global]
-# enabled = true                 # 默认 true；目录不存在时自动禁用（非致命，R4）
+# enabled = true                 # 默认 true；目录不存在时自动禁用（非致命）
 # dir = "~/.config/ribo"         # 可选；命令行 --global-dir 优先；
 #                                # 未设置时用平台默认配置目录 + /ribo。
-#                                # 全局配置 settings.toml 与信任记录
+#                                # 全局配置 settings.toml、auth.toml 与信任记录
 #                                # trusted_projects.toml 位于该目录。
 #
-# ── plugins 层（阶段 6 WASM 插件装配，默认关闭）───────────────
-# enabled = true 时启动期加载插件：扫描 roots 目录下全部 *.wasm
-#（最小权限：无注入 config、ACL 全关）+ 逐条加载 entries 显式清单
-#（可声明 ACL 与注入 config）。任一插件加载 / 注册失败 → 启动致命
-# 错误（与 PluginRuntime 的 OnceLock 失败语义一致，禁止半装配）。
+# ── plugins 层（WASM 插件装配，默认关闭）─────────────────────
+# enabled = true 时启动期加载插件：固定扫描 .ribo/plugins/ 下全部 *.wasm
+#（缺失 = 软跳过；最小权限：无注入 config、ACL 全关）+ 逐条加载 entries
+# 显式清单（可声明 ACL 与注入 config）。任一插件加载 / 注册失败 →
+# 启动致命错误（禁止半装配）。
 # [plugins]
 # enabled = false
-# roots = []                     # 相对 harness.root 的 .wasm 扫描目录
 #
-# [plugins.verify]               # Step C 来源校验（默认 require_signature = false）
-# require_signature = true       # 生产须开启：每条插件声明都要有有效 Ed25519 签名
-# trusted_keys = "keys.json"     # 相对 harness.root 的公钥白名单（缺失即启动致命）
-#                                #   {"keys":[{"id":"release","public_key":"<64 hex>"}]}
+# [plugins.verify]               # 来源校验（默认 require_signature = false）
+# require_signature = true       # 生产须开启：每条插件都要有有效 Ed25519 签名；
+#                                # 公钥白名单固定为 .ribo/trusted_keys.json
+#                                #（缺失 → plugin_trusted_keys_missing 启动致命）
 #
 # [[plugins.entries]]            # 显式清单：可逐插件声明 ACL 与 config
 # path = "plugins/demo.wasm"     # 相对 harness.root；绝对路径 / ".." 逃逸 → 启动致命
-# manifest = "manifest.json"     # 权威清单（B3.2；guest 自述降级为交叉校验）
+# manifest = "manifest.json"     # 权威清单（guest 自述降级为交叉校验）
 # provenance = "provenance.json" # 侧载签名块（require_signature = true 时必需）
 #                                #   {"signer_id":"release","signature":"<128 hex>","wasm_digest":"<64 hex>"}
 #
@@ -120,21 +118,10 @@ include_environment = true     # 默认 true，系统提示注入 <environment> 
 # [plugins.entries.config]       # 注入插件的 config（args 信封，18_ §9）
 # greeting_prefix = "你好"
 #
-# ── 插件域声明（19_ Step 3）────────────────────────────────
-# 注意区分：[plugins] 是「插件条目」（加载哪些 wasm），
-#            [[plugins.domains]] 是「插件域」（外部资源根声明）。
-# 域 id 匹配 ^[a-z][a-z0-9_]{0,31}$ 且跨域唯一；root 必须绝对路径、
-# 存在且是目录，否则启动致命。fs 六件套通过 `scheme://相对路径` 访问域内资源，
-# 无前缀路径仍走主沙箱根（行为不变）。
-#
-# [[plugins.domains]]
-# id = "dataset"                  # fs 前缀名：read("dataset://a/b.jpg")
-# root = "/mnt/datasets"          # 必须绝对；不存在 / 非目录 → 启动致命
-# kind = "data"                   # plugins | skills | prompts | data | all
-# read_only = true                # kind=data 默认 true；写入 → plugin.plugin_forbidden
-#
-# [[plugins.domains]]
-# id = "company"
-# root = "/opt/company/plugins"
-# kind = "plugins"
-# trusted = false                 # Step 4 代码信任用；项目自签无效（须 Global 域声明）
+# ── 只读挂载点（[fs.mounts]，仅全局 settings.toml）────────
+# 模型默认只能读工作目录内文件。项目外共享数据在全局配置声明挂载点；
+# 项目 ribo.toml 无权声明（写了会被 warning + 忽略）：
+# [fs.mounts]
+# datasets = "/mnt/company-data"   # 绝对路径、必须存在、不能在工作目录内
+# read("datasets://a/b.jpg") 只读访问；write 返回 plugin.plugin_forbidden
+# 保留字：ribo / resources / fs / http / https 不可用作挂载名

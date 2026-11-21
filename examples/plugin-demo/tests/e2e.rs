@@ -255,7 +255,6 @@ async fn assemble_full_agent_loop_invokes_plugin_tool() {
     tools: ToolsSchema::default(),
     plugins: PluginsSchema {
       enabled: true,
-      roots: Vec::new(),
       entries: vec![PluginEntrySchema {
         path: PathBuf::from("demo.wasm"),
         config: Some(json!({ "greeting_prefix": "你好" })),
@@ -268,7 +267,6 @@ async fn assemble_full_agent_loop_invokes_plugin_tool() {
         provenance: None,
       }],
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
     harness: HarnessLayerSchema {
       root: root.clone(),
@@ -278,6 +276,8 @@ async fn assemble_full_agent_loop_invokes_plugin_tool() {
     warnings: Vec::new(),
     origins: Default::default(),
     code_trust: None,
+    fs_mounts: Default::default(),
+    fatal_error: None,
   };
 
   // 第 1 步：LLM 发起 demo__echo 调用（消息携带 ToolCall 内容块 +

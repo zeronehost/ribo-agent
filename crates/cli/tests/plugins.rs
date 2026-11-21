@@ -30,6 +30,8 @@ fn outcome_with(root: &Path, plugins: PluginsSchema) -> LoadOutcome {
     warnings: Vec::new(),
     origins: Default::default(),
     code_trust: None,
+    fs_mounts: Default::default(),
+    fatal_error: None,
   }
 }
 
@@ -59,7 +61,6 @@ fn plugins_layer_parses_entries_and_acl_from_toml() {
     r#"
 [plugins]
 enabled = true
-roots = ["wasm-dir"]
 
 [[plugins.entries]]
 path = "plugins/demo.wasm"
@@ -79,8 +80,6 @@ greeting_prefix = "你好"
   let outcome = LoadOutcome::load(Some(&path), None);
   assert_eq!(outcome.mode, ConfigMode::Mock);
   assert!(outcome.plugins.enabled);
-  assert_eq!(outcome.plugins.roots.len(), 1);
-  assert_eq!(outcome.plugins.roots[0], Path::new("wasm-dir"));
   let entry = &outcome.plugins.entries[0];
   assert_eq!(entry.path, Path::new("plugins/demo.wasm"));
   assert!(entry.acl.log && entry.acl.storage && entry.acl.http);
@@ -107,7 +106,6 @@ fn plugins_enabled_with_missing_file_is_fatal() {
     dir.path(),
     PluginsSchema {
       enabled: true,
-      roots: Vec::new(),
       entries: vec![PluginEntrySchema {
         path: PathBuf::from("missing.wasm"),
         config: None,
@@ -116,7 +114,6 @@ fn plugins_enabled_with_missing_file_is_fatal() {
         provenance: None,
       }],
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
   );
   // CliSession 未实现 Debug，无法用 expect_err（需打印 Ok 值）
@@ -127,8 +124,8 @@ fn plugins_enabled_with_missing_file_is_fatal() {
   assert_eq!(err.code(), "plugin_file_missing", "got: {}", err.code());
 }
 
-/// 场景：清单路径含 `..` 逃逸组件 → 启动致命（与 `tools.fs_root`
-/// 同一沙箱纪律：插件 wasm 恒位于 harness.root 之下）。
+/// 场景：清单路径含 `..` 逃逸组件 → 启动致命（与 fs 沙箱纪律同源：
+/// 插件 wasm 恒位于 harness.root 之下）。
 #[test]
 fn plugins_reject_escaping_entry_path() {
   let dir = tempfile::tempdir().expect("temp dir");
@@ -136,7 +133,6 @@ fn plugins_reject_escaping_entry_path() {
     dir.path(),
     PluginsSchema {
       enabled: true,
-      roots: Vec::new(),
       entries: vec![PluginEntrySchema {
         path: PathBuf::from("../escape.wasm"),
         config: None,
@@ -145,7 +141,6 @@ fn plugins_reject_escaping_entry_path() {
         provenance: None,
       }],
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -197,64 +192,17 @@ fn sandbox_layout() -> (tempfile::TempDir, PathBuf, PathBuf) {
   (tmp, inside, outside)
 }
 
-/// 场景：`roots` 含 `..` 逃逸组件 → 启动致命。
-///
-/// 预期：装配期即拒绝并返回 `config.plugin_load_failed`——扫描目录恒位于
-/// harness.root 之下（`Path::join` 遇 `..` 会解析到沙箱外）。
-#[test]
-fn plugins_reject_escaping_root_path() {
-  let (_tmp, inside, _outside) = sandbox_layout();
-  let outcome = outcome_with(
-    &inside,
-    PluginsSchema {
-      enabled: true,
-      // `../outside` 相对 harness.root（inside）逃逸到沙箱外
-      roots: vec![PathBuf::from("../outside")],
-      entries: Vec::new(),
-      verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
-    },
-  );
-  let err = match assemble_with_steps(&outcome, Vec::new()) {
-    Err(err) => err,
-    Ok(_) => panic!("escaping root must be fatal"),
-  };
-  assert_eq!(err.code(), "plugin_load_failed", "got: {}", err.code());
-}
-
-/// 场景：`roots` 为绝对路径 → 启动致命。
-///
-/// 预期：`config.plugin_load_failed`——`Path::join` 遇绝对路径会直接替换
-/// 基址，扫描目录完全脱离 harness.root。
-#[test]
-fn plugins_reject_absolute_root_path() {
-  let (_tmp, inside, outside) = sandbox_layout();
-  let outcome = outcome_with(
-    &inside,
-    PluginsSchema {
-      enabled: true,
-      roots: vec![outside],
-      entries: Vec::new(),
-      verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
-    },
-  );
-  let err = match assemble_with_steps(&outcome, Vec::new()) {
-    Err(err) => err,
-    Ok(_) => panic!("absolute root must be fatal"),
-  };
-  assert_eq!(err.code(), "plugin_load_failed", "got: {}", err.code());
-}
-
 /// 场景：扫描目录内的链接（符号链接 / 目录联接）指向 harness.root 之外
 /// → 启动致命。
 ///
 /// 预期：`config.plugin_load_failed`——词法合法（相对路径、无 `..`）但
-/// 规范化后落在沙箱之外，属链接逃逸。
+/// 规范化后落在沙箱之外，属链接逃逸。v3 扫描目录固定为 `.ribo/plugins`，
+/// 链接必须建在该固定路径上才会被扫描。
 #[test]
 fn plugins_reject_symlinked_escape_from_root_scan() {
   let (_tmp, inside, outside) = sandbox_layout();
-  if !link_dir(&outside, &inside.join("plugins")) {
+  std::fs::create_dir_all(inside.join(".ribo")).expect("mkdir .ribo");
+  if !link_dir(&outside, &inside.join(".ribo").join("plugins")) {
     eprintln!("skip: link creation not permitted on this host");
     return;
   }
@@ -262,10 +210,8 @@ fn plugins_reject_symlinked_escape_from_root_scan() {
     &inside,
     PluginsSchema {
       enabled: true,
-      roots: vec![PathBuf::from("plugins")],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -278,7 +224,7 @@ fn plugins_reject_symlinked_escape_from_root_scan() {
 /// 场景：显式清单项经链接指向沙箱外 → 启动致命。
 ///
 /// 预期：`config.plugin_load_failed`——词法校验放行但规范化后越界，
-/// 与 roots 扫描走同一归属判定。
+/// 与固定目录扫描走同一归属判定。
 #[test]
 fn plugins_reject_symlinked_escape_from_entries() {
   let (_tmp, inside, outside) = sandbox_layout();
@@ -290,7 +236,6 @@ fn plugins_reject_symlinked_escape_from_entries() {
     &inside,
     PluginsSchema {
       enabled: true,
-      roots: Vec::new(),
       entries: vec![PluginEntrySchema {
         path: PathBuf::from("plugins/evil.wasm"),
         config: None,
@@ -299,7 +244,6 @@ fn plugins_reject_symlinked_escape_from_entries() {
         provenance: None,
       }],
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -312,20 +256,19 @@ fn plugins_reject_symlinked_escape_from_entries() {
 /// 场景：harness.root 本身是绝对路径（`--root` 覆盖的常见形态）→
 /// 不误判为逃逸。
 ///
-/// 预期：roots 下的合法相对子目录照常扫描，装配成功——归属判定以
+/// 预期：`.ribo/plugins` 下的合法子目录照常扫描，装配成功——归属判定以
 /// harness.root 为基准，不以「路径是否绝对」为准。
 #[test]
 fn plugins_accept_absolute_harness_root() {
   let (_tmp, inside, _outside) = sandbox_layout();
-  std::fs::create_dir_all(inside.join("plugins")).expect("mkdir plugins");
+  std::fs::create_dir_all(inside.join(".ribo").join("plugins"))
+    .expect("mkdir plugins");
   let outcome = outcome_with(
     &inside,
     PluginsSchema {
       enabled: true,
-      roots: vec![PathBuf::from("plugins")],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
   );
   let session = assemble_with_steps(&outcome, Vec::new()).expect("assemble");
@@ -363,7 +306,6 @@ fn plugins_missing_authority_manifest_is_fatal() {
     dir.path(),
     PluginsSchema {
       enabled: true,
-      roots: Vec::new(),
       entries: vec![PluginEntrySchema {
         path: PathBuf::from("demo.wasm"),
         manifest: Some(PathBuf::from("missing.json")),
@@ -372,7 +314,6 @@ fn plugins_missing_authority_manifest_is_fatal() {
         acl: PluginAclSchema::default(),
       }],
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
   );
   let err = match assemble_with_steps(&outcome, Vec::new()) {
@@ -387,25 +328,23 @@ fn plugins_missing_authority_manifest_is_fatal() {
   );
 }
 
-/// 场景：`roots` 目录不存在 → 启动致命（配置错误在装配期早暴露）。
+/// 场景：固定扫描目录 `.ribo/plugins` 不存在 → 软跳过（非致命）。
+///
+/// 预期：装配成功、无插件加载——v3 固定路径缺失属正常（项目可只用
+/// `[[plugins.entries]]` 清单），不再视为配置错误。
 #[test]
-fn plugins_roots_scan_missing_dir_is_fatal() {
+fn plugins_scan_missing_dir_is_soft_skipped() {
   let dir = tempfile::tempdir().expect("temp dir");
   let outcome = outcome_with(
     dir.path(),
     PluginsSchema {
       enabled: true,
-      roots: vec![PathBuf::from("no-such-dir")],
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     },
   );
-  let err = match assemble_with_steps(&outcome, Vec::new()) {
-    Err(err) => err,
-    Ok(_) => panic!("missing plugin root must be fatal"),
-  };
-  assert_eq!(err.code(), "plugin_dir_unreadable", "got: {}", err.code());
+  let session = assemble_with_steps(&outcome, Vec::new()).expect("assemble");
+  assert!(session.loaded_plugins.is_empty());
 }
 
 // ===== Step C 来源校验（签名 / 信任链）=====
@@ -468,8 +407,11 @@ fn signed_fixture(
   let sig = pair.sign(&signature_message("signed", wasm, manifest));
   let trusted = ring::signature::Ed25519KeyPair::from_seed_unchecked(seed)
     .expect("valid seed");
+  // v3：公钥白名单固定为 .ribo/trusted_keys.json（内容为 JSON 格式）
+  let ribo_dir = dir.join(".ribo");
+  std::fs::create_dir_all(&ribo_dir).expect("mkdir .ribo");
   std::fs::write(
-    dir.join("keys.json"),
+    ribo_dir.join("trusted_keys.json"),
     format!(
       r#"{{"keys":[{{"id":"release","public_key":"{}"}}]}}"#,
       hex(trusted.public_key().as_ref())
@@ -490,7 +432,6 @@ fn signed_fixture(
 
   PluginsSchema {
     enabled: true,
-    roots: Vec::new(),
     entries: vec![PluginEntrySchema {
       path: PathBuf::from("signed.wasm"),
       config: None,
@@ -500,9 +441,7 @@ fn signed_fixture(
     }],
     verify: PluginVerifySchema {
       require_signature: true,
-      trusted_keys: Some(PathBuf::from("keys.json")),
     },
-    domains: Vec::new(),
   }
 }
 
@@ -526,7 +465,6 @@ enabled = true
 
 [plugins.verify]
 require_signature = true
-trusted_keys = "keys.json"
 
 [[plugins.entries]]
 path = "signed.wasm"
@@ -537,10 +475,6 @@ provenance = "provenance.json"
   .expect("write config");
   let outcome = LoadOutcome::load(Some(&path), None);
   assert!(outcome.plugins.verify.require_signature);
-  assert_eq!(
-    outcome.plugins.verify.trusted_keys,
-    Some(PathBuf::from("keys.json"))
-  );
   assert_eq!(
     outcome.plugins.entries[0].provenance,
     Some(PathBuf::from("provenance.json"))
@@ -555,13 +489,10 @@ fn plugins_require_signature_without_keys_is_fatal() {
     dir.path(),
     PluginsSchema {
       enabled: true,
-      roots: Vec::new(),
       entries: Vec::new(),
       verify: PluginVerifySchema {
         require_signature: true,
-        trusted_keys: None,
       },
-      domains: Vec::new(),
     },
   );
   let err = assemble_err(&outcome);
@@ -608,7 +539,7 @@ fn plugins_untrusted_signer_is_rejected() {
   let schema = signed_fixture(dir.path(), &wasm, &manifest, &[7; 32]);
   // 信任清单里只登记另一个 ID：签名者的 `release` 不在白名单中
   std::fs::write(
-    dir.path().join("keys.json"),
+    dir.path().join(".ribo").join("trusted_keys.json"),
     r#"{"keys":[{"id":"other","public_key":"0000000000000000000000000000000000000000000000000000000000000000"}]}"#,
   )
   .expect("overwrite trust list");
@@ -618,15 +549,21 @@ fn plugins_untrusted_signer_is_rejected() {
   assert!(err.message().contains("untrusted signer"), "got: {err}");
 }
 
-/// 场景：生产策略下 roots 扫描项（无清单 / 无签名）→ 拒绝。
+/// 场景：生产策略下固定扫描目录项（无清单 / 无签名）→ 拒绝。
 #[test]
 fn plugins_unsigned_root_scan_is_rejected_in_production() {
   let dir = tempfile::tempdir().expect("temp dir");
   let (wasm, _) = signed_guest();
-  std::fs::create_dir_all(dir.path().join("wasm")).expect("create dir");
-  std::fs::write(dir.path().join("wasm/a.wasm"), wasm).expect("write wasm");
+  // v3：扫描目录固定为 .ribo/plugins；公钥白名单固定为 .ribo/trusted_keys.json
+  std::fs::create_dir_all(dir.path().join(".ribo").join("plugins"))
+    .expect("create scan dir");
   std::fs::write(
-    dir.path().join("keys.json"),
+    dir.path().join(".ribo").join("plugins").join("a.wasm"),
+    wasm,
+  )
+  .expect("write wasm");
+  std::fs::write(
+    dir.path().join(".ribo").join("trusted_keys.json"),
     r#"{"keys":[{"id":"release","public_key":"0000000000000000000000000000000000000000000000000000000000000000"}]}"#,
   )
   .expect("write keys");
@@ -634,13 +571,10 @@ fn plugins_unsigned_root_scan_is_rejected_in_production() {
     dir.path(),
     PluginsSchema {
       enabled: true,
-      roots: vec![PathBuf::from("wasm")],
       entries: Vec::new(),
       verify: PluginVerifySchema {
         require_signature: true,
-        trusted_keys: Some(PathBuf::from("keys.json")),
       },
-      domains: Vec::new(),
     },
   );
   let err = assemble_err(&outcome);

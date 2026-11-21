@@ -66,7 +66,7 @@ pub fn path_invalid(reason: impl Into<String>, ctx: &str) -> RiboError {
 /// ```
 /// use ra_core::path::{path_escaped, PATH_ESCAPED};
 ///
-/// let err = path_escaped("project.plugins.roots[0]");
+/// let err = path_escaped("plugins.entries[0].path");
 /// assert_eq!(err.code(), PATH_ESCAPED);
 /// ```
 pub fn path_escaped(ctx: &str) -> RiboError {

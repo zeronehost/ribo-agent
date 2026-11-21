@@ -37,11 +37,11 @@ pub use self::{
 pub struct FsRoot {
   /// 规范化后的工作区根目录。
   root: PathBuf,
-  /// 具名域根表（19_ Step 3）：scheme → 独立 FsRoot。每个具名域享有
+  /// 具名根表（v3 fs.mounts）：scheme → 独立 FsRoot（只读）。
   /// 与主根同等的 P1 校验（词法 + canonicalize 归属），域间不渗透。
-  /// 空表 = 无插件域，行为与 Step 2 完全一致（零配置兼容）。
+  /// 空表 = 无挂载点，行为与单根一致。
   named_roots: HashMap<String, FsRoot>,
-  /// 本域是否只读（`kind = "data"` 默认 true）。仅对具名域有意义；
+  /// 本域是否只读（v3 挂载点恒为 true）。仅对具名域有意义；
   /// 主根恒为可写（保持既有 fs 行为）。
   read_only: bool,
   /// 域标识（错误信息用）；主根为 `project`。
@@ -172,6 +172,11 @@ impl FsRoot {
     raw: &str,
     tool_name: &str,
   ) -> RiboResult<PathBuf> {
+    // 自守卫：read_only 是域属性——即使调用方未走 scheme 前缀分派
+    //（直接在具名根实例上操作），写入同样被拒绝（纵深防御）。
+    if self.read_only {
+      return Err(plugin_forbidden(tool_name, &self.domain_id));
+    }
     if let Some((scheme, _)) = split_scheme(raw)
       && let Some(domain) = self.named_roots.get(scheme)
       && domain.is_read_only()
@@ -183,6 +188,31 @@ impl FsRoot {
 
   /// 本地路径解析（不做 scheme 分派）：供主根与具名域共用。
   fn resolve_local(&self, raw: &str) -> RiboResult<PathBuf> {
+    // v3：主沙箱路径禁止访问 .ribo/ 内部目录（签名公钥/会话/插件）；
+    // 具名挂载域（domain_id != "project"）不受此限——它们由用户全局声明。
+    if self.domain_id == "project" {
+      let candidate = Path::new(raw);
+      let effective = if candidate.is_absolute() {
+        candidate.to_path_buf()
+      } else {
+        self.root.join(candidate)
+      };
+      if effective
+        .components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new(".ribo"))
+      {
+        // 安全审计点：内部子树访问尝试留痕（签名公钥/会话/插件等敏感目录）
+        tracing::warn!(
+          path = %raw,
+          "fs path rejected: .ribo internal subtree is forbidden"
+        );
+        return Err(ra_core::error::RiboError::new(
+          "path",
+          "internal_forbidden",
+          ".ribo is internal and not accessible through fs tools",
+        ));
+      }
+    }
     let candidate = Path::new(raw);
     let joined = if candidate.is_absolute() {
       candidate.to_path_buf()
@@ -395,6 +425,33 @@ mod tests {
     let outside = std::env::temp_dir().join("ra-tools-outside-sandbox-target");
     let err = root.resolve(&outside.to_string_lossy()).unwrap_err();
     assert_eq!(err.code(), INVALID_ARGUMENTS);
+  }
+
+  /// 场景（T4b）：主沙箱内 `.ribo/` 内部子树（trusted_keys.json、
+  /// sessions/ 等）读写均被拒——D3 黑名单，签名公钥 / 会话 / 插件
+  /// 对模型不可见。
+  #[test]
+  fn t4b_ribo_internal_subtree_is_forbidden() {
+    let (_tmp, root) = fs_root("ribo-forbidden");
+
+    // 相对路径读
+    let err = root
+      .resolve(".ribo/trusted_keys.json")
+      .expect_err("read .ribo must be denied");
+    assert_eq!(err.code(), "internal_forbidden", "got: {err}");
+
+    // 相对路径写（resolve_for_write 走同一黑名单）
+    let err = root
+      .resolve_for_write(".ribo/sessions/x.jsonl", "write")
+      .expect_err("write .ribo must be denied");
+    assert_eq!(err.code(), "internal_forbidden", "got: {err}");
+
+    // 绝对路径绕不过
+    let abs = root.root().join(".ribo/trusted_keys.json");
+    let err = root
+      .resolve(&abs.to_string_lossy())
+      .expect_err("absolute .ribo must be denied");
+    assert_eq!(err.code(), "internal_forbidden", "got: {err}");
   }
 
   /// 在 link 处建指向 target 的目录链接；返回 false 表示宿主不支持。

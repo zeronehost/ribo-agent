@@ -39,7 +39,7 @@ use ra_provider::{
 };
 use ra_tools::manager::ToolManager;
 
-use super::{ConfigMode, LoadOutcome, PluginAclSchema, PluginDomainKind};
+use super::{ConfigMode, LoadOutcome, PluginAclSchema};
 
 use ra_tools::builtin::FsRoot;
 
@@ -86,6 +86,12 @@ pub struct CliSession {
 /// 解析示例用模型 ID。
 fn mid(raw: &str) -> ModelId {
   ModelId::parse(raw).expect("valid model id")
+}
+
+/// 会话持久化目录（T3：v3 硬切换——只写/只读 `.ribo/sessions/`，
+/// 旧布局 `<root>/sessions/` 不读取、不迁移、不兼容）。
+pub(crate) fn sessions_dir(root: &Path) -> PathBuf {
+  root.join(".ribo/sessions")
 }
 
 /// 解析示例用提供方 ID。
@@ -225,112 +231,80 @@ struct PluginSpec {
 
 /// 路径是否逃逸沙箱基准（词法判定）：绝对路径或含 `..` 逃逸组件。
 ///
-/// 与 `tools.fs_root` / `plugins.entries` 同一沙箱纪律——配置层给出的
+/// 与 `plugins.entries` / fs 工具族同一沙箱纪律——配置层给出的
 /// 相对路径不得脱离 harness.root。注意本判定只看**词法**形态：符号链接
 /// 与目录联接的逃逸由规范化后的归属校验兜底（见 [`collect_plugin_specs`]）。
-/// 判定逻辑复用 [`is_lexically_safe`] 统一原语，避免与 fs_root / 技能路径漂移。
+/// 判定逻辑复用 [`is_lexically_safe`] 统一原语，避免与 fs 沙箱 / 技能路径漂移。
 fn escapes_root(path: &Path) -> bool {
   !is_lexically_safe(path)
 }
 
-/// 插件域选择器校验（19_ Step 3，P3 启动致命）。
+/// 校验 fs 只读挂载点（v3 取代资源域，P3 启动致命）。
 ///
-/// 逐条校验 `[[plugins.domains]]` 的声明：
-/// 1. `id` 匹配 `^[a-z][a-z0-9_]{0,31}$` 且**跨域唯一**；
-/// 2. `root` 必须绝对路径（域选择器，D2：允许绝对但不参与 P1 词法校验）；
-/// 3. `root` 存在且是目录（不创建、不解析相对路径）。
+/// 逐条校验全局 `settings.toml [fs.mounts]` 的声明：
+/// 1. 名字匹配 `^[a-z][a-z0-9_]{0,31}$`（复用 `is_valid_domain_id`）且不在保留字清单；
+/// 2. 路径必须绝对、存在、是目录；
+/// 3. 路径不得落在当前工作目录 `harness.root` 内（尤其 `.ribo/` 子树）——
+///    否则 `internal://trusted_keys.json` 会架空 `.ribo` 黑名单（单次启动校验）。
 ///
-/// 返回已按声明序构造的具名域描述（id / 规范根 / 类型 / 只读），供
-/// [`build_named_roots`] 注入 fs；域 id 冲突 → `config.domain_conflict`。
+/// 返回 `(名字, 规范根)` 列表，供 [`build_named_roots`] 注入 fs（全部只读）。
 ///
 /// # Errors
 ///
-/// id 非法 / 重复 → `config.domain_conflict`；root 非绝对 / 不存在 /
-/// 非目录 → `config.plugin_domain_invalid`。
-fn validate_plugin_domains(
+/// 非法名字 / 保留字 / 路径非绝对 / 不存在 / 在工作目录内 → `config.mount_invalid`。
+const RESERVED_MOUNT_NAMES: &[&str] =
+  &["ribo", "resources", "fs", "http", "https"];
+
+pub(crate) fn validate_fs_mounts(
   outcome: &LoadOutcome,
-) -> RiboResult<Vec<(String, PathBuf, PluginDomainKind, bool)>> {
-  let mut seen: HashSet<&str> = HashSet::new();
-  let mut valid = Vec::with_capacity(outcome.plugins.domains.len());
-  for domain in &outcome.plugins.domains {
-    if !super::schema::is_valid_domain_id(&domain.id) {
-      return Err(ra_core::error::RiboError::new(
-        CONFIG_DOMAIN,
-        "domain_conflict",
-        format!(
-          "plugin domain id `{}` must match ^[a-z][a-z0-9_]{{0,31}}$",
-          domain.id
-        ),
-      ));
-    }
-    if !seen.insert(domain.id.as_str()) {
-      return Err(ra_core::error::RiboError::new(
-        CONFIG_DOMAIN,
-        "domain_conflict",
-        format!("duplicate plugin domain id `{}`", domain.id),
-      ));
-    }
-    // 项目自签 trusted=true 无效（设计§7.3）：只有 Global 域声明才生效。
-    // 用域 id 记录（敏感信息规则：不在 tracing 日志打印绝对路径）。
-    if domain.trusted
-      && !outcome
-        .code_trust
-        .as_ref()
-        .is_some_and(|ctx| ctx.is_global_domain(&domain.id))
+) -> RiboResult<Vec<(String, PathBuf)>> {
+  let work_dir = &outcome.harness.root;
+  let mut valid = Vec::with_capacity(outcome.fs_mounts.mounts.len());
+  for (name, root) in &outcome.fs_mounts.mounts {
+    if !super::schema::is_valid_domain_id(name)
+      || RESERVED_MOUNT_NAMES.contains(&name.as_str())
     {
-      tracing::warn!(
-        domain_id = %domain.id,
-        "plugin domain self-declared trusted ignored (must be declared in global domain)"
-      );
-    }
-    if !domain.root.is_absolute() {
       return Err(ra_core::error::RiboError::new(
         CONFIG_DOMAIN,
-        "plugin_domain_invalid",
+        "mount_invalid",
+        format!("invalid fs mount name `{name}`"),
+      ));
+    }
+    if !root.is_absolute() || !root.is_dir() {
+      return Err(ra_core::error::RiboError::new(
+        CONFIG_DOMAIN,
+        "mount_invalid",
         format!(
-          "plugin domain `{}` root must be absolute: {}",
-          domain.id,
-          domain.root.display()
+          "fs mount `{name}` root must be an existing absolute directory"
         ),
       ));
     }
-    if !domain.root.is_dir() {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let canonical_work =
+      work_dir.canonicalize().unwrap_or_else(|_| work_dir.clone());
+    if canonical_root.starts_with(&canonical_work) {
       return Err(ra_core::error::RiboError::new(
         CONFIG_DOMAIN,
-        "plugin_domain_invalid",
+        "mount_invalid",
         format!(
-          "plugin domain `{}` root missing or not a directory: {}",
-          domain.id,
-          domain.root.display()
+          "fs mount `{name}` root must not be inside work directory {}",
+          work_dir.display()
         ),
       ));
     }
-    valid.push((
-      domain.id.clone(),
-      domain.root.clone(),
-      domain.kind,
-      domain.is_read_only(),
-    ));
+    valid.push((name.clone(), canonical_root));
   }
   Ok(valid)
 }
 
-/// 按声明序构建具名域根表注入 fs（19_ Step 3）。
-///
-/// 空表 → 返回 `FsRoot::default()` 语义之外的主根（无具名域，行为与
-/// Step 2 一致）；非空时每域独立构造 [`FsRoot::named`]，享有完整 P1 校验。
-///
-/// # Errors
-///
-/// 域根 canonicalize 失败（极少见：校验后目录被并发删除）→ 透传
-/// `tool.invalid_arguments`。
+/// 按声明序构建具名根表注入 fs（全部只读）。
 fn build_named_roots(
-  domains: &[(String, PathBuf, PluginDomainKind, bool)],
+  mounts: &[(String, PathBuf)],
   main_root: &Path,
 ) -> RiboResult<FsRoot> {
   let mut fs_root = FsRoot::new(main_root)?;
-  for (id, root, _kind, read_only) in domains {
-    fs_root.add_named_root(id.clone(), FsRoot::named(id, root, *read_only)?);
+  for (name, root) in mounts {
+    fs_root.add_named_root(name.clone(), FsRoot::named(name, root, true)?);
   }
   Ok(fs_root)
 }
@@ -379,13 +353,8 @@ fn build_verify_policy(
   if !verify.require_signature {
     return Ok(VerificationPolicy::development());
   }
-  let Some(keys_path) = verify.trusted_keys.as_ref() else {
-    return Err(ra_core::error::RiboError::new(
-      CONFIG_DOMAIN,
-      "plugin_trusted_keys_missing",
-      "plugins.verify.trusted_keys is required when require_signature is true",
-    ));
-  };
+  // v3：公钥白名单固定为相对 harness.root 的 .ribo/trusted_keys.json
+  let keys_path = Path::new(".ribo/trusted_keys.json");
   if escapes_root(keys_path) {
     return Err(ra_core::error::RiboError::new(
       CONFIG_DOMAIN,
@@ -398,9 +367,16 @@ fn build_verify_policy(
   }
   let full = outcome.harness.root.join(keys_path);
   let canonical = std::fs::canonicalize(&full).map_err(|e| {
+    // 语义区分：文件不存在（尚未配置信任清单）与存在但不可读（权限 /
+    // IO 故障）分别报码，便于运维定位；两者均为启动致命（见函数文档）。
+    let code = if e.kind() == std::io::ErrorKind::NotFound {
+      "plugin_trusted_keys_missing"
+    } else {
+      "plugin_trusted_keys_unreadable"
+    };
     ra_core::error::RiboError::new(
       CONFIG_DOMAIN,
-      "plugin_trusted_keys_unreadable",
+      code,
       format!("trusted keys {} unreadable: {e}", full.display()),
     )
   })?;
@@ -440,18 +416,19 @@ fn build_verify_policy(
   Ok(VerificationPolicy::production(keys))
 }
 
-/// 从 plugins 层配置收集全部插件声明（目录扫描 + 显式清单）。
+/// 从 plugins 层配置收集全部插件声明（固定目录扫描 + 显式清单）。
 ///
 /// 目录扫描项取最小权限（ACL 全关、无注入 config）；需要授予能力 /
 /// 注入 config 的插件应走 `[[plugins.entries]]` 清单。同一文件被
-/// roots 与 entries 同时引用时按规范化路径只保留一份（canonicalize
+/// 固定扫描与 entries 同时引用时按规范化路径只保留一份（canonicalize
 /// 兼做存在性检查，缺失即启动致命）。
 ///
-/// 沙箱纪律（与 `tools.fs_root` 同源）：插件 wasm 恒位于 harness.root
+/// 沙箱纪律（与 fs 工具族同源）：插件 wasm 恒位于 harness.root
 /// 之下，两道防线——
 ///
-/// 1. **词法**：roots 与 entries 的路径必须是 root 下的相对子路径
-///    （绝对路径或 `..` 逃逸组件直接拒绝）。`Path::join` 遇绝对路径会
+/// 1. **词法**：扫描目录（固定 `.ribo/plugins`）与 entries 的路径必须是
+///    root 下的相对子路径（绝对路径或 `..` 逃逸组件直接拒绝）。`Path::join`
+///    遇绝对路径会
 ///    替换基址，故 roots 的校验是扫描目录不越界的必要条件；
 /// 2. **归属**：规范化（canonicalize）后的路径必须仍在规范化后的
 ///    harness.root 之下——堵住词法合法但经符号链接 / 目录联接指向沙箱
@@ -476,49 +453,22 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
   let verify_policy = build_verify_policy(outcome)?;
   let mut specs: Vec<PluginSpec> = Vec::new();
 
-  // ===== roots 路径安全校验：扫描目录恒位于 harness.root 之下 =====
-  // `Path::join` 遇绝对路径会直接替换基址（含 `..` 时同理解析到沙箱
-  // 外），故 roots 必须是 harness.root 下的相对子路径——先于任何文件
-  // 系统访问完成校验，越界的扫描目录连读都不会被读。
-  for root in &cfg.roots {
-    if escapes_root(root) {
-      return Err(ra_core::error::RiboError::new(
-        CONFIG_DOMAIN,
-        "plugin_load_failed",
-        format!("plugin path escapes harness.root: {}", root.display()),
-      ));
-    }
-  }
-
-  // ===== 目录扫描：roots 下全部 *.wasm（按完整路径排序保证确定性）=====
-  for root in &cfg.roots {
+  // ===== 目录扫描：固定 .ribo/plugins 下全部 *.wasm（确定性排序）=====
+  {
+    let root = Path::new(".ribo/plugins");
     let dir = outcome.harness.root.join(root);
     let mut scanned: Vec<PathBuf> = Vec::new();
-    let entries = std::fs::read_dir(&dir).map_err(|e| {
-      ra_core::error::RiboError::new(
-        CONFIG_DOMAIN,
-        "plugin_dir_unreadable",
-        format!("plugin root {} unreadable: {e}", dir.display()),
-      )
-    })?;
-    for entry in entries {
-      let path = entry
-        .map_err(|e| {
-          ra_core::error::RiboError::new(
-            CONFIG_DOMAIN,
-            "plugin_dir_unreadable",
-            format!("plugin root {} entry unreadable: {e}", dir.display()),
-          )
-        })?
-        .path();
-      if path.extension().is_some_and(|ext| ext == "wasm") {
-        scanned.push(path);
+    // 固定路径不存在属正常（项目可只用 entries 清单）——跳过扫描
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+      for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "wasm") {
+          scanned.push(path);
+        }
       }
     }
     scanned.sort();
     for path in scanned {
-      // 扫描项同样做 canonicalize 沙箱归属校验（与显式清单一致）：
-      // 词法合法的符号链接 / 目录联接，规范化后越界即启动致命。
       validate_plugin_path(&path, sandbox.as_deref())?;
       specs.push(PluginSpec {
         full: path,
@@ -531,7 +481,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
     }
   }
 
-  // ===== 显式清单：路径安全校验（与 tools.fs_root 同一沙箱纪律）=====
+  // ===== 显式清单：路径安全校验（与 fs 沙箱纪律同源）=====
   for entry in &cfg.entries {
     if escapes_root(&entry.path) {
       return Err(ra_core::error::RiboError::new(
@@ -855,17 +805,17 @@ fn assemble_impl(
   };
 
   // ===== 阶段 2：持久化 + 技能 =====
-  let store = Arc::new(JsonlSessionStore::new(
-    outcome.harness.root.join("sessions"),
-  ));
+  let store =
+    Arc::new(JsonlSessionStore::new(sessions_dir(&outcome.harness.root)));
   let provider = Arc::new(PersistentSessionProvider::new(store.clone()));
-  // ===== 三域技能汇总（19_ Step 5）=====
-  // 同名优先级 Project > Global > Plugin[*]：SkillsLoader 按 roots 顺序
-  // 首个胜出，故此处按优先级排列。Plugin 域按声明序（先声明优先）。
+  // ===== 两域技能汇总（Project > Global）：SkillsLoader 按 roots 顺序
+  // 首个胜出，故此处按优先级排列。v3 起无插件域技能并入。
   let mut skill_roots: Vec<SkillRoot> = Vec::new();
-  for r in &outcome.harness.skills_roots {
-    skill_roots.push(SkillRoot::new(outcome.harness.root.join(r), "project"));
-  }
+  // v3：项目技能根固定 <harness.root>/.ribo/skills/（有且仅有一个）
+  skill_roots.push(SkillRoot::new(
+    outcome.harness.root.join(".ribo/skills"),
+    "project",
+  ));
   let global_root = outcome
     .code_trust
     .as_ref()
@@ -873,18 +823,6 @@ fn assemble_impl(
     .map(Path::to_path_buf);
   if let Some(groot) = &global_root {
     skill_roots.push(SkillRoot::new(groot.join("skills"), "global"));
-  }
-  for domain in &outcome.plugins.domains {
-    if matches!(
-      domain.kind,
-      super::schema::PluginDomainKind::Skills
-        | super::schema::PluginDomainKind::All
-    ) {
-      skill_roots.push(SkillRoot::new(
-        domain.root.join("skills"),
-        format!("plugin:{}", domain.id),
-      ));
-    }
   }
   let (skills, diagnostics) = SkillsLoader::with_origins(skill_roots).load();
   for d in &diagnostics {
@@ -918,18 +856,6 @@ fn assemble_impl(
     outcome.harness.root.clone(),
     "project",
   ));
-  for domain in &outcome.plugins.domains {
-    if matches!(
-      domain.kind,
-      super::schema::PluginDomainKind::Prompts
-        | super::schema::PluginDomainKind::All
-    ) {
-      instruction_roots.push(InstructionRoot::new(
-        domain.root.clone(),
-        format!("plugin:{}", domain.id),
-      ));
-    }
-  }
   let instructions = load_instructions(&instruction_roots);
   for src in &instructions.sources {
     if src.truncated {
@@ -966,29 +892,21 @@ fn assemble_impl(
   );
 
   // ===== 阶段 4：内置工具 + WASM 插件 =====
-  // 沙箱根：tools.fs_root 相对 root 解析（加载期已校验不含逃逸组件），
-  // 未设置即 root 本身——沙箱恒位于工作空间之下。
+  // 沙箱根：以 harness.root 为主根（v3 挂载点为只读具名根，D4），
+  // 沙箱恒位于工作空间之内。
   // 工具面熔断配置统一走插件感知白名单（18_ §1.3 决策 1）：插件未
   // 启用时白名单多余但无害（内置工具不会产生 plugin.plugin_* 错误码）。
   let manager =
     Arc::new(ToolManager::with_config(plugin_aware_tool_manager_config()));
   if outcome.tools.builtin_enabled {
-    // ===== 插件域具名根表（19_ Step 3）=====
-    // 先校验域声明（id / 绝对 root / 存在 / 是目录 / 唯一），再构建
-    // FsRoot 具名根表注入 fs 六件套；无 [[plugins.domains]] 时等价于
-    // 原单根行为（零配置兼容）。
-    let domains = validate_plugin_domains(outcome)?;
-    // tools.fs_root 相对 harness.root 解析（加载期已校验词法安全）；
-    // 未设置即 root 本身——沙箱恒位于工作空间之下。
-    let main_root = match outcome.tools.fs_root.as_ref() {
-      Some(sub) => outcome.harness.root.join(sub),
-      None => outcome.harness.root.clone(),
-    };
-    let fs_root = build_named_roots(&domains, &main_root)?;
+    // ===== fs 只读挂载点（v3 取代资源域）=====
+    let mounts = validate_fs_mounts(outcome)?;
+    let main_root = outcome.harness.root.clone();
+    let fs_root = build_named_roots(&mounts, &main_root)?;
     if fs_root.named_root_count() > 0 {
       tracing::info!(
-        domains = fs_root.named_root_count(),
-        "plugin domains injected into fs"
+        mounts = fs_root.named_root_count(),
+        "read-only mounts injected into fs"
       );
     }
     ra_tools::builtin::register_builtin_with_root(&manager, fs_root)?;
@@ -1059,4 +977,78 @@ fn assemble_impl(
     plugin_registry,
     loaded_plugins,
   })
+}
+
+/// T3：会话目录硬切换到 `.ribo/sessions/`（D1），旧布局
+/// `<root>/sessions/` 不读取、不迁移、不兼容。
+#[test]
+fn t3_sessions_live_under_ribo_dir() {
+  let root = Path::new("/proj");
+  assert_eq!(sessions_dir(root), Path::new("/proj/.ribo/sessions"));
+  assert_ne!(sessions_dir(root), root.join("sessions"));
+}
+
+#[cfg(test)]
+mod mount_tests {
+  use super::*;
+  use crate::config::LoadOutcome;
+  use std::path::PathBuf;
+
+  fn outcome_with_mounts(
+    mounts: Vec<(String, PathBuf)>,
+  ) -> (LoadOutcome, tempfile::TempDir) {
+    // 临时目录须存活到测试结束——作为 harness.root，挂载路径校验依赖其存在
+    let tmp = tempfile::tempdir().expect("temp");
+    let mut outcome = LoadOutcome::load(None, Some(tmp.path()));
+    outcome.fs_mounts.mounts = mounts.into_iter().collect();
+    (outcome, tmp)
+  }
+
+  #[test]
+  fn t5_valid_mount_is_accepted() {
+    let dir = tempfile::tempdir().expect("temp");
+    let (outcome, _tmp) =
+      outcome_with_mounts(vec![("datasets".into(), dir.path().to_path_buf())]);
+    let mounts = validate_fs_mounts(&outcome).expect("valid mount");
+    assert_eq!(mounts.len(), 1);
+    assert_eq!(mounts[0].0, "datasets");
+  }
+
+  #[test]
+  fn t6_mount_is_always_read_only() {
+    let dir = tempfile::tempdir().expect("temp");
+    let named = FsRoot::named("datasets", dir.path(), true).expect("named");
+    assert!(named.resolve_for_write("x.txt", "write").is_err());
+  }
+
+  #[test]
+  fn t7_mount_inside_work_dir_is_rejected() {
+    let tmp = tempfile::tempdir().expect("temp");
+    let inside = tmp.path().join("data");
+    std::fs::create_dir(&inside).expect("mkdir");
+    // harness.root 与 outcome_with_mounts 的不同——直接手工构造对齐
+    let mut outcome = LoadOutcome::load(None, Some(tmp.path()));
+    outcome.fs_mounts.mounts =
+      [("data".to_string(), inside)].into_iter().collect();
+    let err = validate_fs_mounts(&outcome).expect_err("must reject");
+    assert_eq!(err.code(), "mount_invalid");
+  }
+
+  #[test]
+  fn t8_reserved_mount_name_is_rejected() {
+    let dir = tempfile::tempdir().expect("temp");
+    let (outcome, _tmp) =
+      outcome_with_mounts(vec![("ribo".into(), dir.path().to_path_buf())]);
+    let err = validate_fs_mounts(&outcome).expect_err("reserved");
+    assert_eq!(err.code(), "mount_invalid");
+  }
+
+  #[test]
+  fn t9_invalid_mount_name_is_rejected() {
+    let dir = tempfile::tempdir().expect("temp");
+    let (outcome, _tmp) =
+      outcome_with_mounts(vec![("my-mount".into(), dir.path().to_path_buf())]);
+    let err = validate_fs_mounts(&outcome).expect_err("invalid name");
+    assert_eq!(err.code(), "mount_invalid");
+  }
 }

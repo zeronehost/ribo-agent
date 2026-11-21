@@ -22,9 +22,6 @@
 //! **公钥白名单的两种入口**（见 [`TrustedKeys`]）：
 //!
 //! - JSON（`{"keys":[...]}`）：保留给 provenance 信任材料（18_ §12 原格式）；
-//! - TOML（`[[keys]]` 数组表）：面向三层信任域的 Global 域
-//!   `trusted_keys.toml`（19_ §6.2），`algo` 字段格式约定见
-//!   [`KEY_ALGO_ED25519`]。验签实现零改动（C3）。
 //!
 //! # Examples
 //!
@@ -51,7 +48,7 @@ use crate::error::plugin_signature_invalid;
 /// 签名载荷的域分隔前缀：防止与其它协议的 Ed25519 签名互相重放。
 const DOMAIN_PREFIX: &[u8] = b"ribo-plugin-provenance-v1\0";
 
-/// `trusted_keys.toml` 中 `algo` 字段的唯一合法取值（格式约定）。
+/// `algo` 字段的唯一合法取值（JSON 信任清单格式约定）。
 ///
 /// 验签实现固定为 Ed25519（ring，C3 零改动）：写侧恒输出该值，读侧
 /// 仅校验 `algo` 出现时取值必须命中——缺省视为 `ed25519`（前向兼容），
@@ -86,7 +83,7 @@ fn hex_decode(s: &str, what: &str) -> RiboResult<Vec<u8>> {
     .ok_or_else(|| plugin_signature_invalid(&format!("invalid {what} hex")))
 }
 
-/// 由 ID + hex 公钥构造单条授信记录（JSON / TOML 两入口共用的校验层）。
+/// 由 ID + hex 公钥构造单条授信记录（JSON 入口的校验层）。
 ///
 /// # Errors
 ///
@@ -124,9 +121,6 @@ pub struct TrustedKeys {
 impl TrustedKeys {
   /// 从 JSON 解析信任清单：`{"keys":[{"id":"...","public_key":"<hex>"}]}`。
   ///
-  /// JSON 入口保留给 provenance 信任材料（18_ §12 原格式）；面向
-  /// Global 域 `trusted_keys.toml` 的入口见
-  /// [`from_toml_str`](Self::from_toml_str)。
   ///
   /// # Errors
   ///
@@ -150,102 +144,6 @@ impl TrustedKeys {
       keys.push(key_from_hex(&entry.id, &entry.public_key)?);
     }
     Ok(Self { keys })
-  }
-
-  /// 从 `trusted_keys.toml` 文本解析信任清单（Global 域公钥白名单入口）。
-  ///
-  /// 格式：`[[keys]]` 数组表，字段 `id`（非空）、`public_key`（64 位 hex）
-  /// 与可选 `algo`——出现时必须为 [`KEY_ALGO_ED25519`]，缺省视为
-  /// `ed25519`（前向兼容的格式约定）。
-  ///
-  /// # Errors
-  ///
-  /// TOML 非法、`algo` 取值未知、公钥非 64 位 hex、ID 为空 →
-  /// `plugin.plugin_signature_invalid`。
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use ra_plugins::provenance::TrustedKeys;
-  ///
-  /// let text = r#"
-  /// [[keys]]
-  /// id = "release"
-  /// algo = "ed25519"
-  /// public_key = "1111111111111111111111111111111111111111111111111111111111111111"
-  /// "#;
-  /// let keys = TrustedKeys::from_toml_str(text).expect("valid TOML trust list");
-  /// assert!(!keys.is_empty());
-  /// ```
-  pub fn from_toml_str(text: &str) -> RiboResult<Self> {
-    #[derive(serde::Deserialize)]
-    struct File {
-      #[serde(default)]
-      keys: Vec<Entry>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Entry {
-      id: String,
-      public_key: String,
-      algo: Option<String>,
-    }
-
-    let file: File = toml::from_str(text).map_err(|e| {
-      plugin_signature_invalid(&format!("bad trusted keys TOML: {e}"))
-    })?;
-    let mut keys = Vec::with_capacity(file.keys.len());
-    for entry in file.keys {
-      if let Some(algo) = entry.algo.as_deref()
-        && algo != KEY_ALGO_ED25519
-      {
-        return Err(plugin_signature_invalid(&format!(
-          "unsupported key algo `{algo}` (only `{KEY_ALGO_ED25519}`)"
-        )));
-      }
-      keys.push(key_from_hex(&entry.id, &entry.public_key)?);
-    }
-    Ok(Self { keys })
-  }
-
-  /// 序列化为 `trusted_keys.toml` 文本（Global 域公钥白名单文件）。
-  ///
-  /// 每条记录为 `[[keys]]` 数组表：`id` / `algo`（恒为
-  /// [`KEY_ALGO_ED25519`]）/ `public_key`（64 位小写 hex）。空列表输出
-  /// `keys = []`，与 [`from_toml_str`](Self::from_toml_str) 严格往返。
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use ra_plugins::provenance::TrustedKeys;
-  ///
-  /// let text = TrustedKeys::default().to_toml_string();
-  /// assert_eq!(text.trim(), "keys = []");
-  /// ```
-  pub fn to_toml_string(&self) -> String {
-    #[derive(serde::Serialize)]
-    struct File<'a> {
-      keys: Vec<Entry<'a>>,
-    }
-    #[derive(serde::Serialize)]
-    struct Entry<'a> {
-      id: &'a str,
-      algo: &'static str,
-      public_key: String,
-    }
-    let file = File {
-      keys: self
-        .keys
-        .iter()
-        .map(|k| Entry {
-          id: &k.id,
-          algo: KEY_ALGO_ED25519,
-          public_key: hex_encode(&k.public_key),
-        })
-        .collect(),
-    };
-    // 序列化只涉及 String 与字节数组的 hex 编码，不可能失败
-    toml::to_string(&file)
-      .expect("trusted keys TOML serialization is infallible")
   }
 
   /// 信任列表是否为空（生产策略下空列表等效于拒绝全部签名）。
@@ -601,71 +499,5 @@ mod tests {
       )
       .is_err()
     );
-  }
-
-  /// 场景：TOML 往返（to_toml_string → from_toml_str）保持 ID 与公钥字节，
-  /// 且 `algo` 恒为格式约定值 `ed25519`。
-  #[test]
-  fn toml_roundtrip_preserves_keys() {
-    let keys = TrustedKeys::from_json(&keys_json()).expect("valid keys");
-    let text = keys.to_toml_string();
-    assert!(text.contains("algo = \"ed25519\""), "got: {text}");
-    let back = TrustedKeys::from_toml_str(&text).expect("roundtrip");
-    assert_eq!(back.keys.len(), keys.keys.len());
-    assert_eq!(back.keys[0].id, keys.keys[0].id);
-    assert_eq!(back.keys[0].public_key, keys.keys[0].public_key);
-  }
-
-  /// 场景：空名单 TOML 往返；未知 `algo` / 空 ID / 坏 hex → 解析期拒绝；
-  /// `algo` 缺省视为 ed25519（前向兼容约定）。
-  #[test]
-  fn toml_edge_cases() {
-    assert!(
-      TrustedKeys::from_toml_str("keys = []")
-        .expect("empty list is valid")
-        .is_empty()
-    );
-    assert!(
-      TrustedKeys::from_toml_str("")
-        .expect("missing keys defaults to empty")
-        .is_empty()
-    );
-
-    const PK: &str =
-      "0000000000000000000000000000000000000000000000000000000000000000";
-    let bad_algo = TrustedKeys::from_toml_str(&format!(
-      r#"[[keys]]
-id = "a"
-algo = "rsa"
-public_key = "{PK}""#
-    ))
-    .expect_err("must reject");
-    assert!(bad_algo.message().contains("unsupported key algo"));
-
-    assert!(
-      TrustedKeys::from_toml_str(&format!(
-        r#"[[keys]]
-id = ""
-public_key = "{PK}""#
-      ))
-      .is_err()
-    );
-    assert!(
-      TrustedKeys::from_toml_str(
-        r#"[[keys]]
-id = "a"
-public_key = "zz""#
-      )
-      .is_err()
-    );
-
-    // 缺省 algo：合法
-    let no_algo = TrustedKeys::from_toml_str(&format!(
-      r#"[[keys]]
-id = "a"
-public_key = "{PK}""#
-    ))
-    .expect("missing algo defaults to ed25519");
-    assert_eq!(no_algo.keys.len(), 1);
   }
 }

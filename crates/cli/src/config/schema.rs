@@ -61,9 +61,37 @@ pub struct ProviderEntry {
   /// 基础端点（适配器自动拼接路径）。
   pub base_url: String,
   /// 支持 `$ENV_NAME` 占位（解析期读取环境变量）。
+  /// 缺省为空串（Step 8）：Global 来源从 auth.toml 补、Project 必须显式。
+  #[serde(default)]
   pub api_key: String,
   /// 真实模型名：同时作为网关模型 ID 与请求线 `model` 字段。
   pub model: String,
+}
+
+/// 带来源标记的 provider 声明（Step 8 / D1，内部类型）。
+///
+/// `pub(crate)` 当前足够（只在 `ra-cli::config` 内部使用）；若未来需跨
+/// crate 暴露（如插件系统需知道 provider 来源），再升为 `pub`。
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderWithOrigin {
+  /// provider 声明本体。
+  pub entry: ProviderEntry,
+  /// 来源域（Global / Project）。
+  pub origin: crate::config::origin::ConfigOrigin,
+}
+
+/// 从 TOML 表解析 `[[providers]]` 数组（Step 8 / P1-3，新增辅助函数）。
+///
+/// 单条解析失败的条目静默跳过（与 `load_layer` 的局部降级语义一致）；
+/// `providers` 键缺失或非数组时返回空列表。
+pub(crate) fn providers_from_table(table: &toml::Table) -> Vec<ProviderEntry> {
+  let Some(array) = table.get("providers").and_then(|v| v.as_array()) else {
+    return Vec::new();
+  };
+  array
+    .iter()
+    .filter_map(|v| v.clone().try_into().ok())
+    .collect()
 }
 
 /// 路由段：主提供方 → 候选列表。
@@ -150,19 +178,25 @@ impl Default for SessionSchema {
 pub struct ToolsSchema {
   /// 是否注册内置工具（calculator/echo/time + fs 六件）。
   pub builtin_enabled: bool,
-  /// 内置工具文件沙箱根（fs 六件的读写边界）：**相对 harness 层 `root`
-  /// 解析**，保证沙箱始终位于 root 之下；未设置时回退 `root` 本身。
-  /// 绝对路径或含 `..` 逃逸组件 → 加载期 warning + 回退 `root`。
-  pub fs_root: Option<PathBuf>,
 }
 
 impl Default for ToolsSchema {
   fn default() -> Self {
     Self {
       builtin_enabled: true,
-      fs_root: None,
     }
   }
+}
+
+/// `fs` 层：项目外只读挂载点（v3 取代资源域）。
+///
+/// 仅全局 settings.toml 声明；名字 → 绝对路径。项目配置无权声明
+/// （项目内路径本就可读，项目外路径的暴露决定权只属用户）。
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FsMountsSchema {
+  /// 挂载名 → 绝对路径（校验见 `assemble.rs::validate_fs_mounts`）。
+  pub mounts: std::collections::HashMap<String, PathBuf>,
 }
 
 /// harness 层：存储与技能目录（概设双真值裁决：不含 compaction）。
@@ -172,8 +206,6 @@ pub struct HarnessLayerSchema {
   /// 工作空间根目录（会话存储、日志、技能扫描与内置工具沙箱的统一
   /// 基准；默认 `.`（进程 cwd）；`--root` 参数可覆盖）。
   pub root: PathBuf,
-  /// 技能扫描根（相对 `root` 解析）。
-  pub skills_roots: Vec<PathBuf>,
   /// 环境段注入开关（默认 true，与 `ContextConfig::default()` 对齐）。
   pub include_environment: bool,
 }
@@ -182,7 +214,6 @@ impl Default for HarnessLayerSchema {
   fn default() -> Self {
     Self {
       root: PathBuf::from("."),
-      skills_roots: vec![PathBuf::from("skills")],
       include_environment: true,
     }
   }
@@ -199,22 +230,11 @@ pub struct PluginsSchema {
   /// 是否启用插件装配（默认 false：不扫描、不加载，现有配置与 TUI
   /// 测试零行为变化；也未触碰 `PluginRuntime` 的 wasmtime 初始化）。
   pub enabled: bool,
-  /// `.wasm` 扫描目录（相对 harness.root 解析，可多个）。目录内全部
-  /// `*.wasm` 按文件名排序加载，能力取最小权限（ACL 全关、无注入
-  /// config）；需要授予能力时改用 `entries` 显式清单。
-  pub roots: Vec<PathBuf>,
   /// 显式插件清单（相对 harness.root 解析），可逐插件声明 ACL 与 config。
   pub entries: Vec<PluginEntrySchema>,
   /// 来源校验策略（Step C 签名校验）：生产须 `require_signature = true`
   /// 并提供非空公钥白名单；默认关闭，保持既有配置零行为变化。
   pub verify: PluginVerifySchema,
-  /// 插件域声明（`[[plugins.domains]]`）：外部资源根，默认空。
-  ///
-  /// 与 `entries`（插件条目）是**两个概念**：entries 描述"加载哪些
-  /// wasm"，domains 描述"可用哪些具名资源根"（供 `dataset://` 等前缀
-  /// 寻址）。域 id 跨域唯一，root 必须绝对且存在——校验在装配期完成。
-  #[serde(default)]
-  pub domains: Vec<PluginDomainSchema>,
 }
 
 impl Default for PluginsSchema {
@@ -222,73 +242,14 @@ impl Default for PluginsSchema {
   fn default() -> Self {
     Self {
       enabled: false,
-      roots: Vec::new(),
       entries: Vec::new(),
       verify: PluginVerifySchema::default(),
-      domains: Vec::new(),
     }
   }
 }
 
-/// 插件域类型（设计§7.3）：决定该域提供什么资源、是否参与提示词加载。
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum PluginDomainKind {
-  /// 插件仓库（`.wasm` 资源）。
-  Plugins,
-  /// 技能目录。
-  Skills,
-  /// 提示词 / 指令目录（`AGENTS.md` 仅此类域加载，Step 5）。
-  Prompts,
-  /// 数据目录（默认只读，`dataset://` 前缀默认指向此类域）。
-  Data,
-  /// 全部类型。
-  All,
-}
-
-impl PluginDomainKind {
-  /// 配置与错误信息中的规范化小写名。
-  pub fn as_str(&self) -> &'static str {
-    match self {
-      Self::Plugins => "plugins",
-      Self::Skills => "skills",
-      Self::Prompts => "prompts",
-      Self::Data => "data",
-      Self::All => "all",
-    }
-  }
-}
-
-/// `[[plugins.domains]]` 单条目：插件域（Plugin Domain）的声明。
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct PluginDomainSchema {
-  /// 域 id：匹配 `^[a-z][a-z0-9_]{0,31}$` 且跨域唯一；也是 fs 前缀名
-  ///（`dataset://` 的 `dataset` 即某域的 id）。
-  pub id: String,
-  /// 域根：必须为绝对路径，且存在、是目录（域选择器校验，装配期执行）。
-  pub root: PathBuf,
-  /// 域类型。
-  pub kind: PluginDomainKind,
-  /// 只读覆盖：`kind = "data"` 缺省 `true`，其余缺省 `false`；显式值优先。
-  #[serde(default)]
-  pub read_only: Option<bool>,
-  /// 代码信任标记（Step 4 消费）：项目自签无效，只认 Global 域或
-  /// `trusted_projects.toml` 的 `[plugin_domains.<id>]` 记录。
-  #[serde(default)]
-  pub trusted: bool,
-}
-
-impl PluginDomainSchema {
-  /// 生效的只读语义：显式 `read_only` 优先，否则按类型取默认
-  ///（`data` 只读，其余可写）。
-  pub fn is_read_only(&self) -> bool {
-    self
-      .read_only
-      .unwrap_or(self.kind == PluginDomainKind::Data)
-  }
-}
-
-/// 校验域 id 是否匹配 `^[a-z][a-z0-9_]{0,31}$`（纯 std，无需 regex 依赖）。
+/// 校验 fs 挂载名 / 域 id 是否匹配 `^[a-z][a-z0-9_]{0,31}$`（纯 std，无需 regex 依赖）。
+/// 资源域已移除，本函数由 `[fs.mounts]` 挂载名校验复用。
 pub fn is_valid_domain_id(id: &str) -> bool {
   let mut chars = id.chars();
   if !chars.next().is_some_and(|c| c.is_ascii_lowercase()) {
@@ -306,17 +267,13 @@ pub fn is_valid_domain_id(id: &str) -> bool {
 pub struct PluginVerifySchema {
   /// 是否强制每条插件声明提供有效 Ed25519 签名与权威清单。
   pub require_signature: bool,
-  /// 授信公钥清单 JSON（相对 harness.root）：
-  /// `{"keys":[{"id":"...","public_key":"<64 hex>"}]}`。
-  /// `require_signature = true` 时缺失即启动致命。
-  pub trusted_keys: Option<PathBuf>,
 }
 
 /// `[[plugins.entries]]` 显式清单单条目。
 #[derive(Debug, Clone, Deserialize)]
 pub struct PluginEntrySchema {
   /// wasm 模块文件路径（相对 harness.root 解析；绝对路径与含 `..`
-  /// 逃逸组件的取值在装配期直接拒绝——与 `tools.fs_root` 同一沙箱纪律）。
+  /// 逃逸组件的取值在装配期直接拒绝——与 fs 工具同一沙箱纪律）。
   pub path: PathBuf,
   /// 注入插件的 config（经 args 信封在每次 `execute` 生效，18_ §9）。
   pub config: Option<serde_json::Value>,
@@ -421,42 +378,32 @@ pub fn expand_api_key(
 mod tests {
   use super::*;
 
-  /// 场景：`[plugins]` 条目与 `[[plugins.domains]]` 域共存解析（TOML 合法层级），
-  /// 且 `domains` 默认空、`kind` 小写枚举、`data` 默认只读。
+  /// 场景：`[plugins]` 条目与 `[fs.mounts]` 只读挂载点共存解析。
   #[test]
-  fn plugins_domains_coexist_and_defaults_hold() {
+  fn plugins_and_fs_mounts_coexist() {
     let text = r#"
 [plugins]
 enabled = true
 [[plugins.entries]]
 path = "foo.wasm"
-[[plugins.domains]]
-id = "dataset"
-root = "/mnt/datasets"
-kind = "data"
-[[plugins.domains]]
-id = "company"
-root = "/opt/company"
-kind = "plugins"
-read_only = false
-trusted = true
+[fs.mounts]
+datasets = "/mnt/datasets"
+refs = "/opt/refs"
 "#;
     let table: toml::Table = toml::from_str(text).expect("valid TOML");
     let parsed: PluginsSchema = table["plugins"]
       .clone()
       .try_into()
       .expect("plugins table is valid");
+    let mounts: FsMountsSchema =
+      table["fs"].clone().try_into().expect("fs table is valid");
     assert!(parsed.enabled);
     assert_eq!(parsed.entries.len(), 1);
-    assert_eq!(parsed.domains.len(), 2);
-    // data 默认只读；显式 read_only=false 覆盖
-    assert!(parsed.domains[0].is_read_only());
-    assert!(!parsed.domains[0].trusted);
-    assert_eq!(parsed.domains[0].kind, PluginDomainKind::Data);
-    assert!(!parsed.domains[1].is_read_only());
-    assert!(parsed.domains[1].trusted);
-    // 默认空
-    assert!(PluginsSchema::default().domains.is_empty());
+    assert_eq!(mounts.mounts.len(), 2);
+    assert_eq!(
+      mounts.mounts["datasets"],
+      std::path::PathBuf::from("/mnt/datasets")
+    );
   }
 
   /// 场景：域 id 正则 `^[a-z][a-z0-9_]{0,31}$`。

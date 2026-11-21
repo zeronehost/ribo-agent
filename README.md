@@ -17,7 +17,7 @@ Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端
 - **网关韧性**：请求重试（指数退避 + 抖动）、首 token 超时、跨提供方降级、熔断与准入控制。
 - **会话与上下文**：会话持久化、可配置的上下文压缩（摘要 / 滑窗）、系统提示与环境注入。
 - **技能系统**：从扫描根加载 `SKILL.md` 技能，加载诊断不致命。
-- **分层配置**：provider / retry / compression / session / tools / harness 六层相互独立，未配置时整体回退 Mock 模式；另有 Project / Global / Plugin 三层信任域与两档信任（文档默认信任、代码须显式授权）。
+- **分层配置**：provider / retry / compression / session / tools / harness 六层相互独立，未配置时整体回退 Mock 模式；另有 Project / Global 两级信任域与两档信任（文档默认信任、代码须显式授权），项目外数据经全局 `[fs.mounts]` 只读挂载。
 
 ---
 
@@ -134,15 +134,15 @@ model        = "your-model-name"
 
 ---
 
-## 三层信任域与两档信任
+## 两级信任域与两档信任
 
-Ribo 把配置与资源划分为三个**信任域**，并区分两档信任：
+Ribo 把配置与资源划分为两个**信任域**（Project / Global）与只读挂载点，并区分两档信任：
 
 | 域 | 位置 | 内容 |
 | :--- | :--- | :--- |
 | **Project（项目域）** | `harness.root` | 项目自身的 `ribo.toml`、`skills/`、`AGENTS.md`、`.wasm` 插件 |
 | **Global（全局域）** | 平台配置目录 + `/ribo`（可用 `--global-dir` 覆盖） | `settings.toml`、`auth.toml`、`trusted_projects.toml`、跨项目共享资源 |
-| **Plugin Domain（插件域）** | `[[plugins.domains]]` 声明的绝对路径 | 企业共享的技能 / 提示词 / 数据 / 插件仓库 |
+| **只读挂载点** | 全局 `[fs.mounts]` 声明的绝对路径 | 模型读项目外共享数据（只读） |
 
 **两档信任**（设计上刻意区分）：
 
@@ -157,28 +157,24 @@ Ribo 把配置与资源划分为三个**信任域**，并区分两档信任：
 
   审阅插件后运行 `ribo trust add <项目路径>` 授予信任；`ribo trust list` 查看、`ribo trust remove <项目路径>` 撤销。信任记录保存在全局域的 `trusted_projects.toml`（保留手写注释）。TUI 启动时若检测到未信任项目含插件，会弹出 y/n 确认框。
 
-### 插件域与外部资源
+### 只读挂载点与外部资源
 
-`[[plugins.domains]]` 声明外部资源根，与 `[plugins]`（插件加载条目）是两个不同概念：
+全局 `settings.toml` 的 `[fs.mounts]` 声明只读路径别名，模型用
+`read("datasets://x.jpg")` 读项目外数据：
 
 ```toml
-[[plugins.domains]]
-id = "dataset"              # 也是 fs 工具的前缀名，须跨域唯一
-root = "/mnt/datasets"      # 必须绝对路径且存在
-kind = "data"               # plugins | skills | prompts | data | all
-read_only = true            # data 默认只读
+[fs.mounts]
+datasets = "/mnt/company-data"
 ```
 
-fs 六件套通过 `scheme://相对路径` 访问域内资源，例如 `read("dataset://train/img001.jpg")`；无前缀路径仍走项目主沙箱根。`data` 类域默认只读，写入返回 `plugin.plugin_forbidden`。
-
-`trusted = true` 声明**只在全局域生效**：项目自己在 `ribo.toml` 里声明 `trusted = true` 无效（防止项目自签信任），会被忽略并打印 warning。插件域的 `skills/` 与 `AGENTS.md` 按其 `kind` 决定是否纳入合并。
+仅全局可声明，路径必须绝对、在工作目录外，写入被拒绝。详见[配置说明](docs/src/configuration.md)。
 
 ### 一次性子命令
 
 在装配 REPL 之前执行、打印后退出；无子命令时行为完全不变（直接进入 REPL）：
 
 ```bash
-ribo auth login <provider> [--api-key KEY]   # 设置凭证（KEY 省略时从 stdin 读）
+ribo auth login <provider> [--api-key KEY]   # 设置凭证（KEY 省略时 TTY 无回显输入）
 ribo auth status                             # 列出已配置 provider（不显示密钥）
 ribo auth logout <provider>                  # 删除凭证
 ribo trust add <path> [--note NOTE]          # 授予项目代码信任
@@ -186,7 +182,7 @@ ribo trust remove <path>                     # 撤销代码信任
 ribo trust list                              # 列出信任记录
 ribo config --show-origin                    # 显示每个配置字段的来源域
 ribo config --explain                        # 同上（含冲突解释）
-ribo plugins list                            # 两栏列出插件条目与插件域
+ribo plugins list                            # 列出插件条目（含只读挂载点）
 ```
 
 凭证与信任文件在首次使用时自动创建，无需手动迁移。

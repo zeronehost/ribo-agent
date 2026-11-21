@@ -1,10 +1,10 @@
 //! 项目信任记录 `trusted_projects.toml` 的读写（首次使用即创建）。
 //!
-//! 对应设计§7.2：记录两类信任——项目代码信任（`code_trust`）与插件域信任
-//! （`trusted`）。本模块用 [`toml_edit::DocumentMut`] 承载，保留用户手写
-//! 注释；`ribo trust add/remove/list` 只改目标条目（命令在 Step 6 挂载）。
+//! v3（文档 22）：插件域信任已随资源域移除，本模块仅承载**项目代码信任**
+//! （`code_trust`）一种。用 [`toml_edit::DocumentMut`] 承载，保留用户手写
+//! 注释；`ribo trust add/remove/list` 只改目标条目。
 //!
-//! 信任记录默认不存在；所有域默认未信任（`false`），只有显式记录才放行。
+//! 信任记录默认不存在；项目默认未信任（`false`），只有显式记录才放行。
 
 use std::path::Path;
 
@@ -32,17 +32,6 @@ pub struct ProjectTrust {
   pub trusted_by: Option<String>,
   /// 用户备注。
   pub note: Option<String>,
-}
-
-/// 插件域信任条目（读视图）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginDomainTrust {
-  /// 域 id（表键）。
-  pub id: String,
-  /// 是否信任该域的插件。
-  pub trusted: bool,
-  /// 授予时间（RFC3339 字符串）。
-  pub trusted_at: Option<String>,
 }
 
 /// `trusted_projects.toml` 的读写句柄。
@@ -134,18 +123,6 @@ impl TrustedProjects {
       .unwrap_or(false)
   }
 
-  /// 查询插件域是否被信任（缺省 false）。
-  pub fn is_plugin_domain_trusted(&self, id: &str) -> bool {
-    self
-      .domains_table()
-      .and_then(|t| t.get(id))
-      .and_then(Item::as_table)
-      .and_then(|t| t.get("trusted"))
-      .and_then(Item::as_value)
-      .and_then(Value::as_bool)
-      .unwrap_or(false)
-  }
-
   /// 列出所有项目信任条目（按路径字典序）。
   pub fn projects(&self) -> Vec<ProjectTrust> {
     self
@@ -169,32 +146,6 @@ impl TrustedProjects {
           })
           .collect();
         out.sort_by(|a, b| a.path.cmp(&b.path));
-        out
-      })
-      .unwrap_or_default()
-  }
-
-  /// 列出所有插件域信任条目（按 id 字典序）。
-  pub fn plugin_domains(&self) -> Vec<PluginDomainTrust> {
-    self
-      .domains_table()
-      .map(|t| {
-        let mut out: Vec<_> = t
-          .iter()
-          .filter_map(|(id, item)| {
-            let table = item.as_table()?;
-            Some(PluginDomainTrust {
-              id: id.to_owned(),
-              trusted: table
-                .get("trusted")
-                .and_then(Item::as_value)
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-              trusted_at: get_string(table, "trusted_at"),
-            })
-          })
-          .collect();
-        out.sort_by(|a, b| a.id.cmp(&b.id));
         out
       })
       .unwrap_or_default()
@@ -236,37 +187,6 @@ impl TrustedProjects {
       .unwrap_or(false)
   }
 
-  /// 授予 / 更新插件域信任（只动目标条目）。
-  pub fn add_plugin_domain(&mut self, id: &str) {
-    let table = self.ensure_domain(id);
-    insert_bool(table, "trusted", true);
-    insert_string(table, "trusted_at", &now_rfc3339());
-    tracing::info!(domain = %id, "plugin domain trust granted");
-  }
-
-  /// 撤销插件域信任。
-  pub fn revoke_plugin_domain(&mut self, id: &str) -> bool {
-    match self
-      .domains_table_mut()
-      .and_then(|t| t.get_mut(id))
-      .and_then(Item::as_table_mut)
-    {
-      Some(table) => {
-        insert_bool(table, "trusted", false);
-        true
-      }
-      None => false,
-    }
-  }
-
-  /// 删除插件域条目。
-  pub fn remove_plugin_domain(&mut self, id: &str) -> bool {
-    self
-      .domains_table_mut()
-      .map(|t| t.remove(id).is_some())
-      .unwrap_or(false)
-  }
-
   /// 确保 `[projects."<path>"]` 存在（引用引号由 toml_edit 处理）。
   fn ensure_project(&mut self, path: &str) -> &mut Table {
     if self.doc.get("projects").and_then(Item::as_table).is_none() {
@@ -291,48 +211,12 @@ impl TrustedProjects {
       .expect("project table ensured")
   }
 
-  /// 确保 `[plugin_domains.<id>]` 存在。
-  fn ensure_domain(&mut self, id: &str) -> &mut Table {
-    if self
-      .doc
-      .get("plugin_domains")
-      .and_then(Item::as_table)
-      .is_none()
-    {
-      let mut table = Table::new();
-      table.set_implicit(false);
-      self.doc.insert("plugin_domains", Item::Table(table));
-    }
-    let domains = self
-      .doc
-      .get_mut("plugin_domains")
-      .and_then(Item::as_table_mut)
-      .expect("plugin_domains table ensured");
-    if domains.get(id).and_then(Item::as_table).is_none() {
-      let mut table = Table::new();
-      table.set_implicit(false);
-      domains.insert(id, Item::Table(table));
-    }
-    domains
-      .get_mut(id)
-      .and_then(Item::as_table_mut)
-      .expect("domain table ensured")
-  }
-
   fn projects_table(&self) -> Option<&Table> {
     self.doc.get("projects")?.as_table()
   }
 
   fn projects_table_mut(&mut self) -> Option<&mut Table> {
     self.doc.get_mut("projects")?.as_table_mut()
-  }
-
-  fn domains_table(&self) -> Option<&Table> {
-    self.doc.get("plugin_domains")?.as_table()
-  }
-
-  fn domains_table_mut(&mut self) -> Option<&mut Table> {
-    self.doc.get_mut("plugin_domains")?.as_table_mut()
   }
 }
 
@@ -472,35 +356,12 @@ mod tests {
     assert_eq!(loaded.projects().len(), 1);
   }
 
-  /// 场景：插件域信任记录。
-  /// 预期：add_plugin_domain 后 is_plugin_domain_trusted=true。
-  #[test]
-  fn trust_plugin_domain_roundtrip() {
-    let dir = TempDir::new("domain");
-    let path = dir.path().join("trusted_projects.toml");
-    let mut cfg = TrustedProjects::empty();
-    cfg.add_plugin_domain("company");
-    cfg.save(&path).expect("save");
-
-    let loaded = TrustedProjects::load(&path).expect("load");
-    assert!(loaded.is_plugin_domain_trusted("company"));
-    assert!(!loaded.is_plugin_domain_trusted("unknown"));
-    assert_eq!(loaded.plugin_domains()[0].id, "company");
-
-    let mut cfg = TrustedProjects::load(&path).expect("load");
-    assert!(cfg.remove_plugin_domain("company"));
-    cfg.save(&path).expect("save");
-    let loaded = TrustedProjects::load(&path).expect("reload");
-    assert!(!loaded.is_plugin_domain_trusted("company"));
-  }
-
   /// 场景：默认未信任。
   /// 预期：空记录下所有查询返回 false。
   #[test]
   fn trust_defaults_to_untrusted() {
     let cfg = TrustedProjects::empty();
     assert!(!cfg.is_code_trusted("/any"));
-    assert!(!cfg.is_plugin_domain_trusted("any"));
     assert!(cfg.projects().is_empty());
   }
 }

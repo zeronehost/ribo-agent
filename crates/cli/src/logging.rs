@@ -27,3 +27,30 @@ pub fn init_file_logging(
     .try_init(); // 全局订阅器仅首个成功；E2E 用 rolling::never 按用例注入
   Ok(guard)
 }
+
+/// 按「全局优先、项目兜底」初始化日志（19_ 全局域语义）。
+///
+/// `preferred` 为全局域目录（Global 域启用时），`fallback` 为项目根。
+/// 全局目录不可创建/不可写时（如只读共享目录、权限不足）不阻断启动，
+/// 回退到 `fallback` 并在 stderr 提示；两者都失败才返回错误。
+///
+/// # Errors
+///
+/// `preferred` 与 `fallback` 均无法创建日志目录时返回 IO 错误。
+pub fn init_file_logging_with_fallback(
+  preferred: &Path,
+  fallback: &Path,
+) -> std::io::Result<tracing_appender::non_blocking::WorkerGuard> {
+  match init_file_logging(preferred) {
+    Ok(guard) => Ok(guard),
+    Err(err) if preferred != fallback => {
+      eprintln!(
+        "日志目录 {} 不可用（{err}），回退到项目目录 {}",
+        preferred.display(),
+        fallback.display()
+      );
+      init_file_logging(fallback)
+    }
+    Err(err) => Err(err),
+  }
+}

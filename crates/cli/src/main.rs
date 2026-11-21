@@ -10,7 +10,7 @@ use ra_cli::cli_commands::{SubCommand, execute};
 
 use ra_cli::app::{Repl, StdinLineSource};
 use ra_cli::config::{LoadOutcome, resolve_config_path};
-use ra_cli::logging::init_file_logging;
+use ra_cli::logging::init_file_logging_with_fallback;
 use ra_cli::render::TerminalRenderer;
 
 /// ra-cli 启动参数。
@@ -42,8 +42,14 @@ pub struct CliArgs {
 async fn main() -> ExitCode {
   // ===== 阶段 1：参数与配置加载 =====
   let args = CliArgs::parse();
-  // 未指定 --config 时探测默认文件；探测不到则传 None 走全默认 mock
-  let config_path = resolve_config_path(args.config.as_deref());
+  // 未指定 --config 时向上探测；显式指定但文件不存在 → 报错退出（v3.4）
+  let config_path = match resolve_config_path(args.config.as_deref()) {
+    Ok(p) => p,
+    Err(e) => {
+      eprintln!("配置路径错误：{e}");
+      return ExitCode::FAILURE;
+    }
+  };
 
   // ===== 阶段 1.5：一次性子命令（装配前执行、打印后退出）=====
   if let Some(command) = &args.command {
@@ -69,17 +75,37 @@ async fn main() -> ExitCode {
     args.root.as_deref(),
     args.global_dir.as_deref(),
   );
+  // D7：release 构建下三类配置异常为致命错误
+  if let Some(err) = &outcome.fatal_error {
+    eprintln!("配置错误：{err}");
+    return ExitCode::FAILURE;
+  }
 
   // ===== 阶段 2：日志落文件（stdout 只留对话渲染）=====
   // guard 持有到进程结束：非阻塞写入线程随 guard drop 停止，
   // 提前 drop 会丢尾部日志
-  let _log_guard = match init_file_logging(&outcome.harness.root) {
+  // 全局域启用 → 日志写全局目录；否则写项目目录（失败自动回退）
+  let _log_guard = match init_file_logging_with_fallback(
+    &outcome.log_root(),
+    &outcome.harness.root,
+  ) {
     Ok(guard) => guard,
     Err(e) => {
       eprintln!("日志初始化失败：{e}");
       return ExitCode::FAILURE;
     }
   };
+  // 启动摘要补记到日志文件：订阅器此刻才就绪，配置加载阶段（阶段 1）
+  // 产生的 tracing 记录不会落盘，故 mode / warnings 在此集中补记。
+  tracing::info!(
+    mode = ?outcome.mode,
+    providers = outcome.provider.providers.len(),
+    warnings = outcome.warnings.len(),
+    "config loaded"
+  );
+  for w in &outcome.warnings {
+    tracing::warn!(warning = %w, "config warning");
+  }
 
   // ===== 阶段 3：装配 =====
   let options = ra_cli::config::assemble::AssembleOptions {
@@ -92,6 +118,7 @@ async fn main() -> ExitCode {
   ) {
     Ok(session) => session,
     Err(e) => {
+      tracing::error!(code = %e.code(), "assemble failed");
       eprintln!("装配失败：{e}");
       return ExitCode::FAILURE;
     }

@@ -17,7 +17,7 @@ Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ri
 - **Gateway resilience**: request retries (exponential backoff + jitter), first-token timeout, cross-provider fallback, circuit breaking, and admission control.
 - **Sessions & context**: session persistence, configurable context compaction (summary / sliding window), system prompt and environment injection.
 - **Skill system**: loads `SKILL.md` skills from scan roots; load diagnostics are non-fatal.
-- **Layered configuration**: six independent layers (provider / retry / compression / session / tools / harness); falls back to Mock mode when unconfigured. Also supports three trust domains (Project / Global / Plugin) and two trust tiers (documents trusted by default, code requires explicit grant).
+- **Layered configuration**: six independent layers (provider / retry / compression / session / tools / harness); falls back to Mock mode when unconfigured. Also supports two trust domains (Project / Global) and two trust tiers (documents trusted by default, code requires explicit grant); data outside the project is exposed read-only via global `[fs.mounts]`.
 
 ---
 
@@ -134,15 +134,15 @@ model        = "your-model-name"
 
 ---
 
-## Three Trust Domains and Two Trust Tiers
+## Two Trust Domains and Two Trust Tiers
 
-Ribo separates configuration and resources into three **trust domains**, with two distinct trust tiers:
+Ribo separates configuration and resources into two **trust domains** (Project / Global) plus read-only mounts, with two distinct trust tiers:
 
 | Domain | Location | Contents |
 | :--- | :--- | :--- |
 | **Project** | `harness.root` | The project's own `ribo.toml`, `skills/`, `AGENTS.md`, `.wasm` plugins |
 | **Global** | Platform config dir + `/ribo` (override with `--global-dir`) | `settings.toml`, `auth.toml`, `trusted_projects.toml`, cross-project resources |
-| **Plugin Domain** | Absolute paths declared in `[[plugins.domains]]` | Shared enterprise skills / prompts / data / plugin repositories |
+| **Read-only mounts** | Absolute paths in global `[fs.mounts]` | Read shared data outside the project (read-only) |
 
 **Two trust tiers** (deliberately kept separate):
 
@@ -157,28 +157,19 @@ Ribo separates configuration and resources into three **trust domains**, with tw
 
   After reviewing the plugins, run `ribo trust add <path>` to grant trust; use `ribo trust list` to inspect and `ribo trust remove <path>` to revoke. Trust records live in the global domain's `trusted_projects.toml` (hand-written comments preserved). The TUI shows a y/n confirmation at startup when an untrusted project declares plugins.
 
-### Plugin Domains and External Resources
+### Read-only mounts and external resources
 
-`[[plugins.domains]]` declares external resource roots — a separate concept from `[plugins]` (plugin load entries):
-
-```toml
-[[plugins.domains]]
-id = "dataset"              # also the fs tool prefix; must be unique across domains
-root = "/mnt/datasets"      # must be an existing absolute path
-kind = "data"               # plugins | skills | prompts | data | all
-read_only = true            # data defaults to read-only
-```
-
-The six fs tools access in-domain resources via `scheme://relative/path`, e.g. `read("dataset://train/img001.jpg")`; prefix-free paths still resolve against the project's main sandbox root. `data` domains are read-only by default and return `plugin.plugin_forbidden` on writes.
-
-A `trusted = true` declaration **only takes effect in the Global domain**: a project declaring `trusted = true` in its own `ribo.toml` is ignored (preventing self-signed trust) and produces a warning. A domain's `skills/` and `AGENTS.md` are merged according to its `kind`.
+Global `settings.toml [fs.mounts]` declares read-only path aliases;
+models read outside data via `read("datasets://x.jpg")`.
+Global-only, absolute paths outside the work directory, writes rejected.
+See [configuration](docs/src/configuration.md).
 
 ### One-shot Subcommands
 
 These run before REPL assembly, print their output, and exit; with no subcommand, behavior is unchanged (the REPL starts directly):
 
 ```bash
-ribo auth login <provider> [--api-key KEY]   # set a credential (KEY omitted → read from stdin)
+ribo auth login <provider> [--api-key KEY]   # set a credential (KEY omitted → hidden TTY input)
 ribo auth status                             # list configured providers (keys hidden)
 ribo auth logout <provider>                  # remove a credential
 ribo trust add <path> [--note NOTE]          # grant project code trust

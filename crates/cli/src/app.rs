@@ -292,7 +292,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
         "project" => "来自项目".to_string(),
         "global" => "来自全局".to_string(),
         other if other.starts_with("plugin:") => {
-          format!("来自插件域 {}", &other["plugin:".len()..])
+          format!("来自插件 {}", &other["plugin:".len()..])
         }
         other => other.to_string(),
       };

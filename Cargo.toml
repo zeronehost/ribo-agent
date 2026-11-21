@@ -67,6 +67,8 @@ toml = "1.2"
 toml_edit = "0.23"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
+# 密钥无回显输入（auth login 交互提示）
+rpassword = "7"
 
 # TUI（阶段 5b，ra-tui 专用）
 # crossterm 固定 0.28：tui-textarea 0.7 的 From<KeyEvent> 绑定 0.28

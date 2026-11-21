@@ -15,7 +15,6 @@ use ra_cli::config::{
 fn plugins_with_missing_wasm() -> PluginsSchema {
   PluginsSchema {
     enabled: true,
-    roots: Vec::new(),
     entries: vec![PluginEntrySchema {
       path: PathBuf::from("missing.wasm"),
       config: None,
@@ -24,7 +23,6 @@ fn plugins_with_missing_wasm() -> PluginsSchema {
       provenance: None,
     }],
     verify: PluginVerifySchema::default(),
-    domains: Vec::new(),
   }
 }
 
@@ -48,6 +46,8 @@ fn outcome(
     warnings: Vec::new(),
     origins: Default::default(),
     code_trust: trust,
+    fs_mounts: Default::default(),
+    fatal_error: None,
   }
 }
 
@@ -57,10 +57,7 @@ fn outcome(
 fn untrusted_project_skips_plugins_with_warning() {
   let dir = tempfile::tempdir().expect("temp dir");
   // 空信任记录 = 项目未信任
-  let ctx = CodeTrustContext::new(
-    TrustedProjects::empty(),
-    std::iter::empty::<String>(),
-  );
+  let ctx = CodeTrustContext::new(TrustedProjects::empty());
   let outcome = outcome(dir.path(), plugins_with_missing_wasm(), Some(ctx));
   let session =
     assemble_with_steps(&outcome, Vec::new()).expect("assemble succeeds");
@@ -82,7 +79,7 @@ fn trusted_project_attempts_load_and_stays_fatal_on_missing_wasm() {
   let dir = tempfile::tempdir().expect("temp dir");
   let mut trust = TrustedProjects::empty();
   trust.add_project(&dir.path().to_string_lossy(), None);
-  let ctx = CodeTrustContext::new(trust, std::iter::empty::<String>());
+  let ctx = CodeTrustContext::new(trust);
   let outcome = outcome(dir.path(), plugins_with_missing_wasm(), Some(ctx));
   let err = match assemble_with_steps(&outcome, Vec::new()) {
     Ok(_) => {
