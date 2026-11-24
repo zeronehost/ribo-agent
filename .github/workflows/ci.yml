@@ -1,5 +1,5 @@
 # 主质量门禁 CI：PR 必过四门禁。
-# Rust 工具链在本文件显式固定为 1.99.1（本仓库无 rust-toolchain.toml）。
+# Rust 工具链在本文件显式固定为 1.100.0（本仓库无 rust-toolchain.toml）。
 # plugin-demo 已为 workspace 成员，cargo test --workspace 会执行其 e2e
 # （内部 cargo build --target wasm32），故必须安装 wasm32 target。
 name: ci
@@ -7,7 +7,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main, dev]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,8 +21,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
           targets: wasm32-unknown-unknown
+          # dtolnay 默认 minimal profile 不含 rustfmt/clippy，必须显式安装
+          components: rustfmt, clippy
 
       - name: Cache cargo registry
         uses: actions/cache@v4

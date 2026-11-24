@@ -154,6 +154,36 @@ fn drive_tui(
   SessionOutput { exit_code, output }
 }
 
+/// 剥离 ANSI CSI 序列与控制字符，重建可读文本供断言使用。
+///
+/// ratatui 在真 PTY（Linux）下是 diff 渲染——每个字符用 `[row;colH` 单独
+/// 定位，中文字符在原始字节流中被 ANSI 序列隔开；Windows conPTY 则整行
+/// 重绘、字符连续。断言必须在剥离后的纯文本上进行，两个平台才等价。
+fn plain(output: &[u8]) -> String {
+  let s = String::from_utf8_lossy(output);
+  let mut out = String::with_capacity(s.len());
+  let mut chars = s.chars().peekable();
+  while let Some(c) = chars.next() {
+    match c {
+      '\x1b' => {
+        if chars.peek() == Some(&'[') {
+          chars.next();
+          for c2 in chars.by_ref() {
+            if c2.is_ascii_alphabetic() {
+              break; // CSI 终止符（H / m / J 等）
+            }
+          }
+        } else {
+          chars.next(); // 两字符转义序列
+        }
+      }
+      c if c.is_control() => {}
+      c => out.push(c),
+    }
+  }
+  out
+}
+
 // 场景（Step B 验收）：启动 → 输入英文消息 → Ctrl-C 退出。
 // 预期：退出码 0（优雅退出）；输出含备用屏进入/退出序列（终端已恢复）
 // 与对话区标题（界面已渲染）。
@@ -178,7 +208,7 @@ fn pty_exit_restores_terminal() {
     output.contains("\x1b[?1049l"),
     "退出应恢复终端（LeaveAlternateScreen）"
   );
-  assert!(output.contains("对话"), "对话区应渲染（标题出现）");
+  assert!(plain(&session.output).contains("对话"), "对话区应渲染（标题出现）");
 }
 
 // 场景（Step B 验收）：中文 / Emoji 输入经 PTY 全链路。
@@ -199,12 +229,8 @@ fn pty_cjk_and_emoji_input() {
     output.chars().take(600).collect::<String>()
   );
   assert!(
-    output.contains("你好"),
+    plain(&session.output).contains("你好"),
     "中文应经编辑器进入对话气泡（mock 回合 MessageStart 回显），实际含：{}",
-    output
-      .chars()
-      .filter(|c| !c.is_control())
-      .take(300)
-      .collect::<String>()
+    plain(&session.output).chars().take(300).collect::<String>()
   );
 }
