@@ -5,11 +5,14 @@ name: release
 #
 # Linux 采用 musl 静态链接：单一二进制不依赖系统 glibc，可直接运行于
 # 全部主流发行版（Debian / Ubuntu / RHEL / Alpine 等），x64 与 arm64 双架构。
-#   Linux  x64    x86_64-unknown-linux-musl   （ubuntu-22.04 + musl-tools）
-#   Linux  arm64  aarch64-unknown-linux-musl  （ubuntu-24.04-arm + musl-tools）
-#   macOS  x64    x86_64-apple-darwin         （macos-15-intel）
-#   macOS  arm64  aarch64-apple-darwin        （macos-14，Apple Silicon）
+#   Linux  x64    x86_64-unknown-linux-musl   （ubuntu-latest）
+#   Linux  arm64  aarch64-unknown-linux-musl  （ubuntu-24.04-arm 原生）
+#   macOS  x64    x86_64-apple-darwin         （macos-latest 交叉编译）
+#   macOS  arm64  aarch64-apple-darwin        （macos-latest 原生）
 #   Windows x64   x86_64-pc-windows-msvc      （windows-latest）
+#
+# 注：macOS 双架构共用 macos-latest（ARM host）——macOS host 可直接交叉
+# 编译 x86_64-apple-darwin，规避即将退休的 Intel runner 标签。
 #
 # 依赖为纯 Rust TLS（rustls），无 OpenSSL 等系统库依赖；
 # wasmtime cranelift 与 ring 均支持上述全部 target（含 musl）。
@@ -33,14 +36,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
@@ -51,8 +54,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          # 必须与 rust-toolchain.toml 的 channel 一致：cargo 会按
+          # rust-toolchain.toml 强制选用工具链，target 必须装在它上面
+          toolchain: "1.100.0"
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
