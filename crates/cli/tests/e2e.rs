@@ -1,4 +1,4 @@
-//! REPL 集成测试（14 详细设计 §12.4，APP-01..04）。
+//! REPL 集成测试（APP-01..04）。
 //!
 //! 驱动方式：`Repl::run` spawn 为后台任务；输入经 `mpsc` 通道精确
 //! 供给（`RecordingLineSource`），渲染经录制实现断言；会话真相经
@@ -260,7 +260,7 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
 
   // ===== 阶段 1：挂起回合期间的重入拒绝 =====
   fx.tx.send("hi".into()).expect("send");
-  // MessageStart = Silent 步骤已消费（/stop 必为流中取消，确定性收敛）
+  // MessageStart = Silent 步骤已消费（stop 必为流中取消，确定性收敛）
   wait_until(&fx.renderer, |r| r.starts >= 1).await;
   fx.tx.send("hi2".into()).expect("send"); // 在途 Chat → 拒绝
   fx.tx.send("/sessions x".into()).expect("send"); // 在途切换 → 拒绝
@@ -311,7 +311,7 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
     .unwrap_or_else(|| panic!("最后助手消息无文本，转录：\n{messages:#?}"));
   assert_eq!(final_text, "mock-ok");
 
-  // work 键真相：第三回合落在新键下（/sessions 切换生效）
+  // work 键真相：第三回合落在新键下（sessions 切换生效）
   let work_messages = fx
     .harness
     .session_messages("work")

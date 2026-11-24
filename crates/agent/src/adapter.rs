@@ -1,6 +1,6 @@
 //! 工具边界适配：ra-tools `ToolManager` 到 `ToolProvider` 的桥接。
 //!
-//! ra-tools 不反向依赖 ra-agent，故适配器放在本 crate（07 §7.3 决策 4）：
+//! ra-tools 不反向依赖 ra-agent，故适配器放在本 crate：
 //! 循环只认 [`ToolProvider`](crate::traits::ToolProvider) trait，
 //! 生产实现由此处包装 `ToolManager` 提供。
 

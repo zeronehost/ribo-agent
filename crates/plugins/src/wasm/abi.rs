@@ -1,7 +1,7 @@
-//! ABI v0：JSON over linear memory 的 manifest 解析与 `list_tools` 调用
-//! （设计文档 18_ §8）。
+//! ABI v0：JSON over linear memory 的 manifest 解析与 `list_tools` 调用。
 //!
-//! guest 导出符号（§8.1，均为必选）：
+//!
+//! guest 导出符号（均为必选）：
 //!
 //! | 符号 | 签名 |
 //! | :-- | :-- |
@@ -11,7 +11,7 @@
 //! | `list_tools` | `() -> (ptr, len)`，manifest JSON，加载期一次 |
 //! | `execute` | `(name_ptr, name_len, args_ptr, args_len) -> (ptr, len)` |
 //!
-//! 配置注入走 **args 信封**（v0.6 P0-1，§9）：config 经
+//! 配置注入走 **args 信封**：config 经
 //! `{"config": cfg, "args": args}` 随业务参数一并写入 guest 内存，
 //! 与 Stateless Store 完全一致（加载期写 globals 会在实例重置后丢失）。
 
@@ -30,7 +30,7 @@ use crate::wasm::runtime::{
   epoch_ticks_for,
 };
 
-/// `list_tools` 返回的插件清单（v0.4 P0-4）。
+/// `list_tools` 返回的插件清单。
 ///
 /// 顶层含 `plugin_id`（即 `Plugin::id()` 与工具名前缀的来源，不从
 /// 文件名 / 哈希推导）；`ToolManifest` 本身不含 `plugin_id`。
@@ -41,7 +41,7 @@ pub struct PluginManifest {
   pub tools: Vec<ToolManifest>,
 }
 
-/// manifest JSON 的中间反序列化结构（方案 A，§8.1 v0.8.3 P2-10）。
+/// manifest JSON 的中间反序列化结构。
 ///
 /// `ToolManifest.timeout_hint` 是 `Option<Duration>`，JSON 里是
 /// `timeout_hint_ms: Option<u64>`——serde 不会自动转换，必须显式 `From`。
@@ -59,10 +59,9 @@ struct RawToolManifest {
 }
 
 /// `timeout_hint_ms` 下界（毫秒）：低于此值按此值生效——自述 0 会被
-/// `epoch_ticks_for` 向上取整成 1 tick（10ms）立即杀死工具
-///（ai_0018 §4.4 / B2.5）。
+/// `epoch_ticks_for` 向上取整成 1 tick 立即杀死工具。
 const MIN_TIMEOUT_HINT_MS: u64 = 100;
-/// `timeout_hint_ms` 上界（毫秒）：guest 自述超时不可信（§8.1 信任链）。
+/// `timeout_hint_ms` 上界（毫秒）：guest 自述超时不可信（信任链）。
 const MAX_TIMEOUT_HINT_MS: u64 = 60_000;
 
 impl From<RawToolManifest> for ToolManifest {
@@ -71,7 +70,7 @@ impl From<RawToolManifest> for ToolManifest {
       name: r.name,
       description: r.description,
       parameters: r.parameters,
-      // 双向钳制（§8.1 信任链 + ai_0018 §4.4）：guest 自述超时不可信
+      // 双向钳制（信任链）：guest 自述超时不可信
       // ——上界防自述 10 小时；下界防自述 0 被 1 tick 立即杀死
       timeout_hint: r.timeout_hint_ms.map(|ms| {
         Duration::from_millis(
@@ -91,7 +90,7 @@ struct RawPluginManifest {
   tools: Vec<RawToolManifest>,
 }
 
-/// 解析 `list_tools()` 返回的 manifest JSON（§8.1 v0.4 / v0.8.3）。
+/// 解析 `list_tools()` 返回的 manifest JSON。
 ///
 /// # Errors
 ///
@@ -115,13 +114,13 @@ pub fn parse_manifest(json: &[u8]) -> RiboResult<PluginManifest> {
 /// 调 guest 的 `list_tools()` 导出，返回 manifest JSON 字节
 /// （经 `Linker` 实例化——host import 在此注入，供 `WasmPluginHost::load`）。
 ///
-/// 加载期**仅调用一次**（结果随后被缓存到 `WasmPlugin.manifests`，
-/// §4.2）。执行预算固定 2s（epoch deadline + 内存 limiter），防止
+/// 加载期**仅调用一次**（结果随后被缓存到 `WasmPlugin.manifests`）。
+/// 执行预算固定 2s（epoch deadline + 内存 limiter），防止
 /// 恶意 guest 在加载期死循环 / 巨量分配。
 ///
 /// # Errors
 ///
-/// - 导出缺失 / 实例化失败 → 按 §5.3 映射（缺 memory 等宿主内部错 →
+/// - 导出缺失 / 实例化失败 → 按下述规则映射（缺 memory 等宿主内部错 →
 ///   `plugin.plugin_internal`；start 段 trap → `classify_wasmtime_error`）；
 /// - 读回 / dealloc 失败 → 对应错误码。
 pub(crate) fn call_list_tools(
@@ -143,7 +142,7 @@ pub(crate) fn call_list_tools(
   store.set_epoch_deadline(epoch_ticks_for(Duration::from_secs(2)));
   store.limiter(|s| &mut s.limits);
   // consume_fuel 开启的 Engine 下，未设置 fuel 的 Store 会在首条指令
-  // 立刻 OutOfFuel；加载期必须与执行期用同一进程预算（v0.8.8 fuel 收口）
+  // 立刻 OutOfFuel；加载期必须与执行期用同一进程预算（fuel 收口）
   if shared.config.enable_fuel {
     store
       .set_fuel(shared.config.fuel_limit)

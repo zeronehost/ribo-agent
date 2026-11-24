@@ -1,6 +1,6 @@
 //! 插件 ACL：URL 访问策略与插件能力声明。
 //!
-//! 代码库中原不存在 `UrlPolicy` / `SecurityConfig`（设计文档 18_ §1.5），
+//! 代码库中原不存在 `UrlPolicy` / `SecurityConfig`，
 //! 本模块为阶段 6 **新建**：
 //!
 //! - [`UrlPolicy`]：`http-proxy` host function 的出站 URL 裁决器——
@@ -27,13 +27,13 @@ pub enum UrlPolicyError {
   HostNotAllowed(String),
 }
 
-/// 出站 URL 访问策略（设计文档 18_ §1.5，本阶段新建组件）。
+/// 出站 URL 访问策略。
 ///
 /// 裁决规则（`check_url` 按序执行）：
 ///
 /// 1. **scheme 白名单**：仅允许 `http` / `https`；
 /// 2. **字面 IP 拦截**：IPv4 命中 RFC 1918（私网）/ RFC 3927（169.254/16，
-///    含元数据端点 169.254.169.254）/ RFC 6598（100.64/10）/ RFC 5735
+///    含元数据端点 169.254.169.254）/ RFC 6598/ RFC 5735
 ///    （0/8、127/8、240/4、255.255.255.255），IPv6 命中 `::1` / `::` /
 ///    `fc00::/7` / `fe80::/10` 一律拒绝——**该检查先于白名单**，白名单
 ///    无法放行被拦截的保留段；
@@ -63,8 +63,8 @@ pub enum UrlPolicyError {
 #[derive(Debug, Clone, Default)]
 pub struct UrlPolicy {
   allowed_hosts: HashSet<String>,
-  /// 是否显式放行 loopback（127/8、`::1`）。仅限 CI 本地 mock server
-  /// 场景（B1.1，18_ §14「受控 URL」的 CI 层实现）；默认 `false`，
+  /// 是否显式放行 loopback。仅限 CI 本地 mock server
+  /// 场景（B1.1，「受控 URL」的 CI 层实现）；默认 `false`，
   /// 且**只豁免 loopback**——RFC1918 / 链路本地 / 元数据端点无条件拒绝。
   allow_loopback: bool,
 }
@@ -87,9 +87,9 @@ impl UrlPolicy {
   /// 显式放行 loopback 的构造器（仅限 CI 本地 mock server 场景，B1.1）。
   ///
   /// 与 [`Self::new`] 的唯一差异：字面 IP 保留段拦截对 **loopback 段**
-  /// （127/8、`::1`）豁免——CI 里本地 mock server 绑定 127.0.0.1，
+  /// 豁免——CI 里本地 mock server 绑定 127.0.0.1，
   /// 白名单显式声明它是宿主可审计的显式配置。RFC1918 / 链路本地 /
-  /// 元数据端点（169.254.169.254）无论何种构造都无条件拒绝。
+  /// 元数据端点无论何种构造都无条件拒绝。
   pub fn allowing_loopback<I: Into<String>>(
     allowed_hosts: impl IntoIterator<Item = I>,
   ) -> Self {
@@ -172,9 +172,9 @@ fn is_blocked_ipv6(ip: core::net::Ipv6Addr) -> bool {
     || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 链路本地地址
 }
 
-/// 插件能力声明：宿主在加载期授予插件的能力集合（设计文档 18_ §4.1）。
+/// 插件能力声明：宿主在加载期授予插件的能力集合。
 ///
-/// - **信任链约束**：ACL 由宿主注入，不由插件自述（17_ §5.2）；
+/// - **信任链约束**：ACL 由宿主注入，不由插件自述；
 /// - **最小权限**：[`Default`] 全部关闭，能力按需显式开启；
 /// - **配额覆写**：`memory_limit_bytes` / `storage_quota_bytes` 为插件级
 ///   覆写，宿主在 Step B 用 `min(覆写, 进程默认)` 收紧（**只能收紧不能放大**）。
@@ -194,7 +194,7 @@ pub struct PluginAcl {
   pub storage_quota_bytes: Option<usize>,
   /// 单工具执行超时上限覆写（毫秒；仅收紧，与进程
   /// [`crate::config::PluginRuntimeConfig::tool_timeout_ceiling`] 取
-  /// min）——与内存 / storage 配额覆写对称（ai_0018 §4.4 / B2.5）。
+  /// min）——与内存 / storage 配额覆写对称（ai_0018 / B2.5）。
   pub timeout_ceiling_ms: Option<u64>,
 }
 

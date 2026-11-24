@@ -1,4 +1,4 @@
-//! `.wasm` 签名与来源校验（Step C，18_ §12「来源校验」）。
+//! `.wasm` 签名与来源校验（Step C，「来源校验」）。
 //!
 //! **信任链的最后一项**：B3.2 的 [`AuthorityManifest`](crate::authority::AuthorityManifest)
 //! 保证「guest 自述与宿主侧载清单一致」，但不保证清单与 wasm 字节本身
@@ -19,9 +19,9 @@
 //! 与 wasm 摘要，不含 manifest 摘要——后者由宿主对原始 manifest 字节
 //! 现场计算。
 //!
-//! **公钥白名单的两种入口**（见 [`TrustedKeys`]）：
+//! **公钥白名单的入口**（见 [`TrustedKeys`]）：
 //!
-//! - JSON（`{"keys":[...]}`）：保留给 provenance 信任材料（18_ §12 原格式）；
+//! - JSON（`{"keys":[...]}`）：保留给 provenance 信任材料；
 //!
 //! # Examples
 //!
@@ -103,12 +103,12 @@ fn key_from_hex(id: &str, public_key_hex: &str) -> RiboResult<TrustedKey> {
   })
 }
 
-/// 单个授信公钥：签名者 ID → Ed25519 公钥（32 字节）。
+/// 单个授信公钥：签名者 ID → Ed25519 公钥。
 #[derive(Debug, Clone)]
 pub struct TrustedKey {
   /// 签名者标识，与 provenance.json 的 `signer_id` 精确匹配。
   pub id: String,
-  /// Ed25519 公钥原始字节（32 字节）。
+  /// Ed25519 公钥原始字节。
   pub public_key: [u8; 32],
 }
 
@@ -190,7 +190,7 @@ impl VerificationPolicy {
 pub struct Provenance {
   /// 签名者 ID，必须在 [`TrustedKeys`] 白名单中。
   pub signer_id: String,
-  /// Ed25519 签名原始字节（64 字节）。
+  /// Ed25519 签名原始字节。
   pub signature: [u8; 64],
   /// 被签名的 wasm 内容摘要（blake3，32 字节）。
   pub wasm_digest: [u8; 32],

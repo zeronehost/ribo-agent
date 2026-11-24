@@ -2,10 +2,10 @@
 
 以下是与 schema 逐字段对应的完整配置模板，与仓库根目录的
 `ribo_example.toml` 同源（该文件始终是权威版本，
-本页为其快照）。复制为 `ribo.toml` 并填入真实端点与密钥即可使用；
+本页为其快照，可能存在不一致的，以 `ribo_example.toml` 为准）。复制为 `ribo.toml` 并填入真实端点与密钥即可使用；
 密钥一律走 `$ENV_NAME` 占位，不落盘。
 
-各层相互独立、层间零交叉；示例中的值与代码 `Default` 一致。
+示例中的值与代码 `Default` 一致。
 
 ```toml
 # ── provider 层 ─────────────────────────────────────────────
@@ -70,7 +70,7 @@ incremental_rebuild_every = 8  # 默认 8，每 N 次增量强制全量重建（
 # ── session 层 ──────────────────────────────────────────────
 [session]
 default_key = "default"        # 默认 "default"，REPL 启动会话键（/sessions <名称> 切换）
-history_lines = 10             # 默认 10，CLI `/history` 未带参数时的条数（TUI 无此命令）
+history_lines = 10             # 默认 10；/history 缺省条数当前固定为 10，不读取此配置（字段保留备用，TUI 无 /history 命令）
 
 # ── tools 层 ────────────────────────────────────────────────
 # fs 沙箱 = harness.root（v3：无独立 fs_root 配置；项目外数据走挂载点）。
@@ -120,7 +120,7 @@ include_environment = true     # 默认 true，系统提示注入 <environment> 
 # storage_quota_bytes = 262144      # 可选：storage 配额覆写（只能收紧 1MB）
 # timeout_ceiling_ms = 5000         # 可选：单工具超时上限覆写（只能收紧 60s）
 #
-# [plugins.entries.config]       # 注入插件的 config（args 信封，18_ §9）
+# [plugins.entries.config]       # 注入插件的 config（args 信封）
 # greeting_prefix = "你好"
 #
 # ── 只读挂载点（[fs.mounts]，仅全局 settings.toml）────────
@@ -157,9 +157,7 @@ include_environment = true     # 默认 true，系统提示注入 <environment> 
 
 ## TOML 配置文件清单与维护方式
 
-系统中全部 TOML 配置文件及其维护方式——**手动维护**的文件可直接编辑；
-**命令维护**的文件建议走对应子命令（直接手改会保留注释，但不做校验）；
-**自动生成**的产物由程序写入，无需也不要手动维护。
+TOML 配置文件分三类维护：**手动维护**（可直接编辑）、**命令维护**（走对应子命令；直接手改会保留注释但不做校验）、**自动生成**（由程序写入，勿手动维护）。
 
 ### ① `ribo.toml`（项目配置）— 手动维护
 
@@ -195,11 +193,12 @@ datasets = "/mnt/company-data"
 
 由 `ribo auth login <provider_id>` / `ribo auth logout <provider_id>` 维护；
 文件不存在时首次使用自动创建（权限 0600）。仅对 **Global 来源且 api_key
-为空** 的 provider 生效（G2：项目配置显式填写的 key 优先）。
+为空** 的 provider 生效（项目配置显式填写的 key 优先）。
 
 ```toml
 [providers.chat-primary]
 api_key = "sk-..."               # ribo auth login 写入
+# created_at = 2026-11-20T10:00:00Z
 # oauth_access_token = "..."
 # oauth_refresh_token = "..."
 # expires_at = 2026-12-01T00:00:00Z
@@ -216,7 +215,7 @@ version = 1
 
 [projects."/home/user/proj-a"]
 code_trust = true
-trusted_at = 2026-11-17T10:00:00Z
+trusted_at = "2026-11-17T10:00:00Z"
 trusted_by = "user"
 note = "reviewed by reading plugins/*.wasm"
 ```
@@ -236,7 +235,7 @@ note = "reviewed by reading plugins/*.wasm"
 | 产物 | 位置 | 说明 |
 | :--- | :--- | :--- |
 | 会话存储 | `<root>/.ribo/sessions/*.jsonl` | JSONL 会话流，程序自动读写 |
-| 日志 | `<root>/.ribo/logs/cli.log`（或全局域 logs/） | 按日滚动，非阻塞写入线程持有 |
+| 日志 | `<root>/.ribo/logs/cli.log.<日期>`（或全局域 logs/） | 按日滚动，非阻塞写入线程持有 |
 
 ## 相关章节
 

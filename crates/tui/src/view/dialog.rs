@@ -1,5 +1,5 @@
 //! 对话区视图：气泡渲染（自折行）+ Markdown 栅栏高亮 + 粘底滚动
-//!（16 §3.2 / §6；2026-11-22 渲染架构重设计）。
+//!（渲染架构：按视口裁剪）。
 //!
 //! **渲染与滚动共用同一折行真值**：所有文本经 [`hard_wrap`] 折成视觉行
 //! 后交给 `Paragraph`（不再启用 WordWrapper），行数缓存 / 滚动偏移与
@@ -84,7 +84,7 @@ impl DialogView {
         push_prefix(&mut lines, &format!("tool {marker} {tool} › "), color, w);
         push_text(&mut lines, text, Style::default().fg(color), w);
       }
-      // D8：压缩痕迹——持久系统行，不显示摘要内容 / 截断条数；
+      // 压缩痕迹——持久系统行，不显示摘要内容 / 截断条数；
       // 失败回退用黄色（降级告警）与成功暗色区分
       ChatBubbleBody::Compaction { failed } => {
         let (text, color) = if *failed {
@@ -134,7 +134,7 @@ fn push_text(
   }
 }
 
-/// Markdown 渲染：代码栅栏体着黄色、语言标记着暗色（16 §15 C2 一期口径），
+/// Markdown 渲染：代码栅栏体着黄色、语言标记着暗色，
 /// 全部经折行。与估算端 `markdown_row_count` 口径严格对应。
 fn push_markdown(lines: &mut Vec<Line<'static>>, text: &str, w: usize) {
   let (rendered, _) = ensure_closed_fence(text);

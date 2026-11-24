@@ -1,8 +1,8 @@
-//! `ra-plug-pdk`：Ribo Agent 插件 guest 侧 Rust SDK（设计文档 18_ §11）。
+//! `ra-plug-pdk`：Ribo Agent 插件 guest 侧 Rust SDK。
 //!
 //! 让 Rust guest 以接近原生 [`AgentTool`](https://docs.rs/ra-tools) 的写法
 //! 暴露工具，封装 ABI v0 的全部胶水：线性内存分配、args 配置信封、
-//! host import 与长度上限。用法（§11.1）：
+//! host import 与长度上限。用法：
 //!
 //! ```ignore
 //! // 编译目标为 wasm32-unknown-unknown（host 上仅用于逻辑测试）
@@ -37,12 +37,12 @@
 //! - **帧化 host 返回**：`storage_get` / `http_proxy` 的 import 只能
 //!   返回单 i32，无法同时携带长度 → 宿主写入 `[len: u32 LE][payload]`，
 //!   本 SDK 读首 4 字节取长度后读载荷；
-//! - **args 信封**（§9）：宿主在 `config = Some(cfg)` 时传入
+//! - **args 信封**：宿主在 `config = Some(cfg)` 时传入
 //!   `{"config": cfg, "args": args}`，本 SDK 透明解包——插件作者仍以
 //!   `args["url"]` 读业务参数，配置经 [`config`] 读取；
 //! - **错误信封**：工具返回 `Err(String)` 时 SDK 生成
-//!   `{"ok":false,"error":...}`（4KB 截断），宿主据此回灌业务错误；
-//! - **长度上限**（§8.1 DoS 边界）：与宿主侧同值，PDK 在发请求**前**
+//!   `{"ok":false,"error":...}`，宿主据此回灌业务错误；
+//! - **长度上限**（DoS 边界）：与宿主侧同值，PDK 在发请求**前**
 //!   检查（协作），宿主兜底拒绝（防恶意 guest）。
 //!
 //! # 注意
@@ -67,7 +67,7 @@ pub mod runtime;
 #[cfg(target_arch = "wasm32")]
 pub mod io;
 
-/// PDK 门面：插件作者的主要入口命名空间（§11.1 示例用法）。
+/// PDK 门面：插件作者的主要入口命名空间（示例用法）。
 ///
 /// - [`ribo::config`]：读取当前调用上下文的插件配置（纯逻辑，宿主
 ///   target 也可用——供单测）；
@@ -109,7 +109,7 @@ pub struct ToolEntry {
   pub call: fn(serde_json::Value) -> Result<serde_json::Value, String>,
 }
 
-// ===== 长度上限（与宿主侧 crates/plugins/src/wasm 同值，§8.1 契约） =====
+// ===== 长度上限（与宿主侧 crates/plugins/src/wasm 同值，契约） =====
 
 /// storage key 长度上限（字节）。
 pub const MAX_KEY_LEN: usize = 256;
@@ -130,7 +130,7 @@ thread_local! {
 /// 读取当前调用上下文的插件配置（args 信封顶层 `config`）。
 ///
 /// 每次工具调用开始时由 `execute` 入口写入、结束后恢复（支持同一
-/// wasm 实例内连续多次 execute，v0.8.3 P2-5）；未配置时返回 `None`。
+/// wasm 实例内连续多次 execute）；未配置时返回 `None`。
 pub fn config() -> Option<serde_json::Value> {
   CURRENT_CONFIG.with(|c| c.borrow().clone())
 }
@@ -150,7 +150,7 @@ pub(crate) fn with_config<R>(
   })
 }
 
-/// 解包 args 信封（§9）：顶层为 `{"config": cfg, "args": args}` 时拆出
+/// 解包 args 信封：顶层为 `{"config": cfg, "args": args}` 时拆出
 /// 配置与业务参数；否则原样透传（配置为 `None`）。
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn unwrap_envelope(
@@ -182,7 +182,7 @@ pub(crate) fn truncate_error(s: &str, max_bytes: usize) -> String {
   out
 }
 
-/// 构建插件 manifest JSON（`list_tools` 载荷，§8.1 顶层格式）。
+/// 构建插件 manifest JSON（`list_tools` 载荷，顶层格式）。
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn build_manifest(
   plugin_id: &str,
@@ -258,7 +258,7 @@ mod tests {
     assert_eq!(truncate_error("short", 4096), "short");
   }
 
-  /// 场景：`build_manifest` 产出 §8.1 顶层格式（plugin_id + tools，
+  /// 场景：`build_manifest` 产出顶层格式（plugin_id + tools，
   /// 含 timeout_hint_ms / idempotent / memory_limit_bytes 字段名）。
   #[test]
   fn build_manifest_matches_host_contract() {

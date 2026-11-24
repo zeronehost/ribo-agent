@@ -1,8 +1,8 @@
-//! Step B 单元测试（§13.1）：以 §13.4「方式 A 内联 WAT」构造测试 guest，
+//! Step B 单元测试：以 「方式 A 内联 WAT」构造测试 guest，
 //! 覆盖 echo 全链路、死循环 epoch 中断、内存超限、guest trap、
 //! DoS 边界与 storage 三态契约。
 //!
-//! 测试 guest 约定（§13.4 修正版）：
+//! 测试 guest 约定（修正版）：
 //! - `alloc` 必须返回**非 0** 有效指针（返回 0 = 分配失败，host 直接报错）；
 //! - 必须导出 `execute`（而非 WASI 的 `_start`）与 `memory`。
 
@@ -84,7 +84,7 @@ async fn run_guest_with_shared(
 
 /// 正常 echo guest：execute 把 host 写入的 args 原样返回（返回值即
 /// `(args_ptr, args_len)`）。alloc 用自增偏移的 bump 分配器（固定偏移
-/// 会让多次分配互相覆盖——§13.4 注意事项）。
+/// 会让多次分配互相覆盖）。
 fn echo_guest() -> Vec<u8> {
   wat::parse_str(
     r#"(module
@@ -103,7 +103,7 @@ fn echo_guest() -> Vec<u8> {
 }
 
 /// 死循环 guest：`execute` 体内无限循环，靠 Store 自身 epoch 预算收尾
-/// （§13.4：死循环体必须在 execute 内，alloc 必须返回非 0）。
+/// （死循环体必须在 execute 内，alloc 必须返回非 0）。
 fn deadloop_guest() -> Vec<u8> {
   wat::parse_str(
     r#"(module
@@ -130,7 +130,7 @@ fn unreachable_guest() -> Vec<u8> {
   .expect("valid unreachable wat")
 }
 
-/// 缺失 memory 导出的 guest（§8.1：memory 必须显式导出）。
+/// 缺失 memory 导出的 guest（memory 必须显式导出）。
 fn missing_memory_guest() -> Vec<u8> {
   wat::parse_str(
     r#"(module
@@ -171,7 +171,7 @@ fn full_acl() -> PluginAcl {
 
 // ===== 用例 =====
 
-/// 场景（§13.4 前置用例 + §4.2 全链路）：echo guest 端到端跑通——
+/// 场景（前置用例 + 全链路）：echo guest 端到端跑通——
 /// args 写入 guest 内存 → execute 回传 → host 读回 JSON。
 #[tokio::test]
 async fn echo_guest_roundtrip() {
@@ -188,7 +188,7 @@ async fn echo_guest_roundtrip() {
   assert_eq!(out, args);
 }
 
-/// 场景（§13.1）：纯 CPU 死循环被 epoch **确定性中断** →
+/// 场景：纯 CPU 死循环被 epoch **确定性中断** →
 /// `plugin.plugin_timeout`（不计熔断；预算 100ms，实际中断
 /// T ∈ [100ms, 100ms + EPOCH_TICK]）。
 #[tokio::test]
@@ -210,7 +210,7 @@ async fn deadloop_guest_is_interrupted_by_epoch() {
   assert!(elapsed < Duration::from_secs(3), "elapsed {elapsed:?}");
 }
 
-/// 场景（§13.1 两类超限之一）：线性内存超限（64MiB > 32MiB）在
+/// 场景（两类超限之一）：线性内存超限在
 /// instantiate 期被 `StoreLimits` 拦截 → `plugin.plugin_timeout`
 /// （不计熔断；**不是** plugin_internal）。
 #[tokio::test]
@@ -227,7 +227,7 @@ async fn memory_hog_guest_hits_store_limits() {
   assert_eq!(err.code(), PLUGIN_TIMEOUT, "got: {err}");
 }
 
-/// 场景（§13.1）：guest 自身 trap（unreachable）→ 业务级
+/// 场景：guest 自身 trap（unreachable）→ 业务级
 /// `plugin.plugin_exec_failed`（可回灌 LLM），**不是** plugin_internal。
 #[tokio::test]
 async fn guest_trap_maps_to_exec_failed() {
@@ -243,7 +243,7 @@ async fn guest_trap_maps_to_exec_failed() {
   assert_eq!(err.code(), PLUGIN_EXEC_FAILED, "got: {err}");
 }
 
-/// 场景（§8.1 / §13.1）：guest 未显式导出 `memory` →
+/// 场景：guest 未显式导出 `memory` →
 /// `plugin.plugin_internal`（宿主内部错误，计入熔断）。
 #[tokio::test]
 async fn missing_memory_export_maps_to_internal() {
@@ -267,7 +267,7 @@ async fn missing_memory_export_maps_to_internal() {
   );
 }
 
-/// 场景（v0.8.2 P0-1 三态契约）：guest 首次 `storage_get` 未命中的 key
+/// 场景（三态契约）：guest 首次 `storage_get` 未命中的 key
 /// 收到 **0 哨兵**（不是错误）→ `Ok(())`；`storage_put` 后 host 侧
 /// `Storage::get` 可读回。守住「greet 首次调用必挂」的跨层矛盾。
 #[tokio::test]
@@ -309,7 +309,7 @@ async fn storage_three_state_contract_via_guest() {
   );
 }
 
-/// 场景（§13.1 DoS 边界 · 超大 key）：key_len = 257 > MAX_KEY_LEN(256)
+/// 场景（DoS 边界 · 超大 key）：key_len = 257 > MAX_KEY_LEN(256)
 /// 在读取点被拒（先判后分配）→ `plugin.plugin_exec_failed`，错误信息含
 /// `exceeds limit`；且**未触达存储层**（host 侧 get 计数为 0，经
 /// 「值未写入」间接断言）。
@@ -339,7 +339,7 @@ async fn oversized_storage_key_is_rejected_at_read_point() {
   assert!(matches!(shared.storage.get("seen"), Ok(None)));
 }
 
-/// 场景（§13.1 DoS 边界 · 超大日志）：log 长度 16KB+1 在读取点被拒。
+/// 场景（DoS 边界 · 超大日志）：log 长度 16KB+1 在读取点被拒。
 #[tokio::test]
 async fn oversized_log_is_rejected() {
   let acl = full_acl();
@@ -362,7 +362,7 @@ async fn oversized_log_is_rejected() {
   assert!(err.message().contains("exceeds limit"), "got: {err}");
 }
 
-/// 场景（§13.1 DoS 边界 · 超大 http 请求）：请求 JSON 长度 64KB+1 在
+/// 场景（DoS 边界 · 超大 http 请求）：请求 JSON 长度 64KB+1 在
 /// 读取点被拒——**未触网**（mock/外层无从发起）。
 #[tokio::test]
 async fn oversized_http_request_is_rejected() {
@@ -386,7 +386,7 @@ async fn oversized_http_request_is_rejected() {
   assert!(err.message().contains("exceeds limit"), "got: {err}");
 }
 
-/// 场景（§13.1 越权）：ACL 未声明 storage 能力 →
+/// 场景（越权）：ACL 未声明 storage 能力 →
 /// `plugin.plugin_forbidden` 且 capability 为**纯能力名** `storage`。
 #[tokio::test]
 async fn storage_denied_by_acl_maps_to_forbidden() {
@@ -415,9 +415,9 @@ async fn storage_denied_by_acl_maps_to_forbidden() {
   );
 }
 
-/// 场景（§4.1 / §4.2 / §13.1）：`WasmPluginHost::load` 全链路——
+/// 场景：`WasmPluginHost::load` 全链路——
 /// manifest 解析、plugin_id 校验与来源（`Plugin::id()` 来自 list_tools
-/// 顶层，§8.1）。加载期 `tools()` 直接读缓存。
+/// 顶层）。加载期 `tools()` 直接读缓存。
 #[tokio::test]
 async fn wasm_plugin_host_loads_manifest_guest() {
   // manifest JSON 恰 28 字节：{"plugin_id":"t","tools":[]}
@@ -445,7 +445,7 @@ async fn wasm_plugin_host_loads_manifest_guest() {
   assert!(manager.get_tool_schemas().is_empty());
 }
 
-/// 场景（§13.1 P2-23）：Stateless Store——同一 guest 并发执行互不串台
+/// 场景：Stateless Store——同一 guest 并发执行互不串台
 /// （echo 各自返回各自的 args）。
 #[tokio::test]
 async fn concurrent_executes_are_isolated() {
@@ -478,7 +478,7 @@ async fn concurrent_executes_are_isolated() {
   let _ = CancellationToken::new(); // 保持 tokio_util 引用（编译期依赖）
 }
 
-/// 场景（防御性分类，v0.8.5 后续）：工具短名超注册期上限（> 64 字节）
+/// 场景（防御性分类，后续）：工具短名超注册期上限（> 64 字节）
 /// → `GuestError` → `plugin.plugin_exec_failed`（业务级、可回灌），
 /// **不得**归 `Internal`——`plugin.plugin_internal` 计入熔断，会把
 /// 「输入形状违约」当宿主故障、误熔断整个工具面。注册期
@@ -503,12 +503,12 @@ async fn oversized_tool_name_maps_to_guest_error() {
   );
 }
 
-// ===== B1 验收补齐（2026-11-16，18_ §13.1 核对表缺口）=====
+// ===== B1 验收补齐（2026-11-16，核对表缺口）=====
 
 // B1.4 说明：`instantiate` / start 段 trap 分类由既有
 // `memory_hog_guest_hits_store_limits` 覆盖——`(memory 64)` 在模块顶层
 // 声明即实例化期分配，`StoreLimits` 在 `linker.instantiate` 阶段拦截，
-// 经 §5.2 分类映射 `plugin.plugin_timeout`（白名单不计熔断，配套
+// 经分类映射 `plugin.plugin_timeout`（白名单不计熔断，配套
 // registry.rs `plugin_timeout_and_forbidden_do_not_open_circuit`）。
 
 /// 计数 guest：`alloc` 累加 leaked、`dealloc` 扣减、导出 `leaked()`
@@ -528,7 +528,7 @@ fn leak_counter_guest() -> Vec<u8> {
   .expect("valid leak counter wat")
 }
 
-/// 场景（B1.3，§13.1「中途 trap 不泄漏」防回归）：`GuestBufs` RAII
+/// 场景（B1.3，「中途 trap 不泄漏」防回归）：`GuestBufs` RAII
 /// 守卫的 `release_all` 对每个已登记缓冲区调用 guest `dealloc`——
 /// 计数 guest 的 leaked 全局归零；释放前 leaked = 8 + 16 = 24（守卫
 /// 确实必要的反证）。
@@ -602,8 +602,8 @@ async fn guest_bufs_release_calls_guest_dealloc() {
   );
 }
 
-/// B1.2 场景（§13.1 DoS 表「超大 value」）：`storage_put` 的 value
-/// 长度越 `MAX_VALUE_LEN`（256KB）→ 读取点拦截（`value exceeds limit`），
+/// B1.2 场景（DoS 表「超大 value」）：`storage_put` 的 value
+/// 长度超 `MAX_VALUE_LEN` → 读取点拦截（`value exceeds limit`），
 /// 不触达 storage 层。
 fn oversized_value_guest() -> Vec<u8> {
   wat::parse_str(
@@ -619,7 +619,7 @@ fn oversized_value_guest() -> Vec<u8> {
   .expect("valid oversized value wat")
 }
 
-/// 断言（v0.8.4 可验证化）：错误码正确 + 错误信息含超限文案。
+/// 断言（可验证化）：错误码正确 + 错误信息含超限文案。
 #[tokio::test]
 async fn oversized_value_is_rejected_at_read_point() {
   let wasm = oversized_value_guest();
@@ -635,9 +635,9 @@ async fn oversized_value_is_rejected_at_read_point() {
   );
 }
 
-/// B1.2 场景（§13.1 DoS 表「边界值通过」）：key 恰好 256B、value 恰好
+/// B1.2 场景（DoS 表「边界值通过」）：key 恰好 256B、value 恰好
 /// 256KB 全部成功——守住「≤ 上限通过、> 上限拒绝」临界点，防止把
-/// `>=` 写成 `>`。value 区（64..64+256KB）位于 guest 线性内存
+/// `>=` 写成 `>`。value 区位于 guest 线性内存
 /// （memory 5 = 320KB）内。
 fn boundary_key_value_guest() -> Vec<u8> {
   wat::parse_str(
@@ -665,8 +665,8 @@ async fn boundary_key_and_value_pass() {
   assert_eq!(result, json!(1));
 }
 
-/// B1.7 场景（§13.1「log 限流」）：guest 洪水发送 300 条日志（进程
-/// burst 默认 200）——限流静默丢弃超量条目（§6.1），guest 侧执行
+/// B1.7 场景（「log 限流」）：guest 洪水发送 300 条日志（进程
+/// burst 默认 200）——限流静默丢弃超量条目，guest 侧执行
 /// 不失败（与 `LogRateLimiter` 窗口滚动单测互补）。
 fn log_flood_guest() -> Vec<u8> {
   wat::parse_str(
@@ -698,9 +698,9 @@ async fn log_flood_is_throttled_silently() {
   assert_eq!(result, json!(1));
 }
 
-/// B1.6 场景（§13.1「tools() 仅调一次」/ P2-12）：`WasmPlugin::tools`
+/// B1.6 场景（「tools() 仅调一次」）：`WasmPlugin::tools`
 /// 直接读缓存——多次调用结果稳定一致；guest 的 `list_tools` 由加载期
-/// （§4.1 阶段 3）单次执行的代码路径保证，缓存于 WasmPlugin。
+/// （阶段 3）单次执行的代码路径保证，缓存于 WasmPlugin。
 #[tokio::test]
 async fn plugin_tools_manifest_is_cached_and_stable() {
   // manifest JSON 恰 28 字节：{"plugin_id":"t","tools":[]}
@@ -852,7 +852,7 @@ async fn dns_rebinding_to_private_ip_is_blocked() {
 
 /// 场景（B3.2）：权威清单与 guest 自述一致 → `load_with_authority`
 /// 通过；不一致（plugin_id / 工具集合）→ 拒绝加载。guest manifest
-/// 为 `{"plugin_id":"t","tools":[]}`（28 字节，复用 §4.1 fixture 形态）。
+/// 为 `{"plugin_id":"t","tools":[]}`（28 字节，复用 fixture 形态）。
 #[tokio::test]
 async fn authority_manifest_gates_loading() {
   use crate::authority::AuthorityManifest;

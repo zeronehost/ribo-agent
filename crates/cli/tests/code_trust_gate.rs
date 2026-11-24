@@ -1,4 +1,4 @@
-//! 代码信任闸门装配测试（19_ Step 4，设计§7.1/§7.2）。
+//! 代码信任闸门装配测试。
 //!
 //! 覆盖：Project 有插件但 code_trust=false → 不加载 + 提示；
 //! code_trust=true → 加载；无 Global 域（code_trust=None）→ 兼容自动加载。

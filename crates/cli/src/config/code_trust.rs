@@ -1,4 +1,4 @@
-//! 两档信任闸门：配置信任默认开、代码信任须显式（19_ Step 4，设计§7.1）。
+//! 两档信任闸门：配置信任默认开、代码信任须显式。
 //!
 //! Project 的 `.wasm` 属可执行资源，默认**不加载**——须用户在
 //! `global.root/trusted_projects.toml` 显式授予 `code_trust`。
@@ -14,7 +14,7 @@ use super::trust::TrustedProjects;
 /// 代码信任判定上下文。
 ///
 /// `None`（无 Global 域）时装配层退化为「自动加载」的旧语义——
-/// 这是设计§9 的回滚开关：零配置 / 无 Global 目录时行为不变。
+/// 这是设计的回滚开关：零配置 / 无 Global 目录时行为不变。
 #[derive(Debug, Clone)]
 pub struct CodeTrustContext {
   /// 用户显式信任记录（来自 `global.root/trusted_projects.toml`）。

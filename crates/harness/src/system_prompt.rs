@@ -1,4 +1,4 @@
-//! 系统提示组装器（§9）。
+//! 系统提示组装器。
 //!
 //! 两条格式化路径必须分离（pi-harness invariant）：
 //! - 技能**清单**插入系统提示，属性值与文本一律 XML 转义；
@@ -25,7 +25,7 @@ pub struct SystemPromptBuilder {
   template: String,
   include_env: bool,
   custom: Vec<String>,
-  /// 域内 AGENTS.md 拼接内容（19_ Step 5）；空集不产段。
+  /// 域内 AGENTS.md 拼接内容；空集不产段。
   instructions: Option<Instructions>,
 }
 
@@ -64,7 +64,7 @@ impl SystemPromptBuilder {
     self
   }
 
-  /// 注入域内 `AGENTS.md` 拼接内容（19_ Step 5）。
+  /// 注入域内 `AGENTS.md` 拼接内容。
   /// 空集时 build 不产 `<agents-instructions>` 段。
   pub fn with_instructions(mut self, instructions: Instructions) -> Self {
     self.instructions = Some(instructions);
@@ -79,7 +79,7 @@ impl SystemPromptBuilder {
     self.build_compaction(skills, summary, false, None)
   }
 
-  /// 组装系统提示并追加压缩提示段（D6）。
+  /// 组装系统提示并追加压缩提示段。
   ///
   /// 段落顺序：模板 → 环境 → 技能清单 → 自定义段 → 会话摘要 →
   /// 过期提示 / 回退提示。
@@ -159,14 +159,14 @@ impl SystemPromptBuilder {
       }
     }
 
-    // 6. 摘要过期提示（D6）：冷却期复用旧摘要且已存在多轮
+    // 6. 摘要过期提示：冷却期复用旧摘要且已存在多轮
     if let Some(age) = outdated_hint {
       sections.push(format!(
         "<conversation-summary-outdated>\nThis summary is from {age} turns ago; some recent context may be missing.\n</conversation-summary-outdated>"
       ));
     }
 
-    // 7. 回退提示（D6）：无摘要且发生截断——告知模型前文缺失
+    // 7. 回退提示：无摘要且发生截断——告知模型前文缺失
     if fallback_hint && summary.is_none() {
       sections.push(
         "<compaction-fallback>\nEarlier conversation turns were omitted; no summary is available for this request.\n</compaction-fallback>"
@@ -308,7 +308,7 @@ mod tests {
     assert!(text.contains("This is summary"));
   }
 
-  /// D6：无摘要 + fallback_hint → 追加 `<compaction-fallback>` 段。
+  /// 无摘要 + fallback_hint → 追加 `<compaction-fallback>` 段。
   #[test]
   fn fallback_hint_appends_compaction_fallback() {
     let prompt = SystemPromptBuilder::new()
@@ -323,7 +323,7 @@ mod tests {
     assert!(text.contains("no summary is available"));
   }
 
-  /// D6：有摘要时即使 fallback_hint=true 也不追加回退段。
+  /// 有摘要时即使 fallback_hint=true 也不追加回退段。
   #[test]
   fn fallback_hint_ignored_when_summary_present() {
     let prompt = SystemPromptBuilder::new()
@@ -337,7 +337,7 @@ mod tests {
     assert!(!text.contains("<compaction-fallback>"));
   }
 
-  /// D6：outdated_hint=Some(N) → 追加过期提示段且含 N。
+  /// outdated_hint=Some(N) → 追加过期提示段且含 N。
   #[test]
   fn outdated_hint_appends_outdated_section_with_age() {
     let prompt = SystemPromptBuilder::new()

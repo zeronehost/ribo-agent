@@ -1,4 +1,4 @@
-//! 键位表：`KeyEvent → Action` 集中管理（16 §7.2，对齐 pi-tui
+//! 键位表：`KeyEvent → Action` 集中管理（对齐 pi-tui
 //! keybindings；组合键进表统一管理，禁止散落 `if`）。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -27,7 +27,7 @@ pub enum Action {
 /// 是否为**按下**的 Ctrl-C 键事件（raw mode 下为字节 0x03）。
 ///
 /// 必须校验 `kind`：Windows conPTY 会为同一次按键同时产出 Press /
-/// Release 两个事件。退出流程（16 §8 第 2 步 (c)）也调用本函数，若不
+/// Release 两个事件。退出流程也调用本函数，若不
 /// 排除 Release，同一次 Ctrl-C 的 Release 会被误判成「第二次 Ctrl-C」
 /// 而直接强退（退出码 1），使优雅退出失效。
 pub fn is_ctrl_c(key: &KeyEvent) -> bool {
@@ -38,8 +38,8 @@ pub fn is_ctrl_c(key: &KeyEvent) -> bool {
 
 /// 键事件 → 动作（仅匹配表内组合；其余交给编辑器）。
 ///
-/// 滚动方向键在输入框为多行编辑时仍作用于对话区——一期编辑器以单行
-/// 提交为主，方向键全部让位滚动（16 §7.2：Ctrl-V/PageUp/PageDown 滚动）。
+/// 滚动方向键在输入框为多行编辑时仍作用于对话区——编辑器以单行
+/// 提交为主，方向键全部让位滚动（Ctrl-V/PageUp/PageDown 滚动）。
 pub fn map_key(key: &KeyEvent) -> Option<Action> {
   // 仅响应按下事件（Windows conPTY 会同时产出 Press/Release）
   if key.kind != KeyEventKind::Press {

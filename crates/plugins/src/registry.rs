@@ -24,7 +24,7 @@ use crate::error::{
 };
 use crate::traits::{Plugin, ToolManifest};
 
-/// 装配期构造插件感知的 `ToolManagerConfig`（设计文档 18_ §1.3 决策 1）。
+/// 装配期构造插件感知的 `ToolManagerConfig`。
 ///
 /// 在 `ra-tools` 默认白名单（`tool.cancelled` / `tool.invalid_arguments`）
 /// 基础上追加插件域两个**不计数**错误码：
@@ -88,7 +88,7 @@ impl PluginRegistry {
   /// 注册插件。**真原子性**：全量校验 → 生成工具 → 批量注入，任一
   /// 失败不写入任何工具。
   ///
-  /// 处理流程（设计文档 18_ §2.3）：
+  /// 处理流程：
   ///
   /// 1. **全量校验（零写入）**：`plugin_id` 命名约束、注册表去重、
   ///    每个工具的短名约束与参数 Schema 编译预检
@@ -141,7 +141,7 @@ impl PluginRegistry {
 
   /// 注销插件元数据。**仅测试占位**：只从注册表移除 `Plugin` 本体，
   /// 已注入 `ToolManager` 的 `Arc<dyn AgentTool>` 不受影响、继续存活
-  /// （生产不支持运行时卸载，见 17_ §4.1）。
+  /// （生产不支持运行时卸载）。
   #[cfg(test)]
   pub fn unregister(&self, id: &str) -> RiboResult<()> {
     match self.plugins.remove(id) {
@@ -243,7 +243,7 @@ mod tests {
   }
 
   /// 场景：注册成功路径——工具以 `{plugin_id}__` 前缀进入 ToolManager，
-  /// 且 `tools()` 在注册期仅被调用一次（缓存语义，§13.1 P2-8）。
+  /// 且 `tools()` 在注册期仅被调用一次（缓存语义）。
   #[tokio::test]
   async fn register_success_prefixes_tools_and_calls_tools_once() {
     let (manager, registry) = setup();
@@ -368,7 +368,7 @@ mod tests {
     ids.sort();
     assert_eq!(ids, vec!["a", "b"]);
   }
-  /// 场景：装配期白名单（§1.3 决策 1 / §1.6 验收）——连续插件超时 /
+  /// 场景：装配期白名单（决策 1 / 验收）——连续插件超时 /
   /// 越权**不打开**工具面熔断（默认配置下第 5 次连续失败即熔断，
   /// 全部请求将被 `tool.rate_limited` 拒绝）。
   #[tokio::test]
@@ -407,7 +407,7 @@ mod tests {
       .register(Arc::new(TimeoutPlugin))
       .expect("register timeout plugin");
 
-    // 超过默认熔断阈值（5）的连续失败：均直接返回 plugin.plugin_timeout，
+    // 超过默认熔断阈值的连续失败：均直接返回 plugin.plugin_timeout，
     // 不得出现 tool.rate_limited（白名单不计入记账）
     for i in 0..7 {
       let call = ra_core::message::ToolCall {

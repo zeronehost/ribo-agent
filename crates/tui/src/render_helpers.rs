@@ -1,5 +1,4 @@
-//! 渲染辅助：气泡折行（自折行真值）/ 行数缓存刷新 / Markdown 栅栏处理
-//!（16 详细设计 §6 / §7.5 / §15 C2）。
+//! 渲染辅助：气泡折行（自折行真值）/ 行数缓存刷新 / Markdown 栅栏处理。
 
 use crate::state::{AppState, ChatBubble, ChatBubbleBody};
 
@@ -149,7 +148,7 @@ pub fn wrapped_text_lines(text: &str, width: u16) -> usize {
   wrapped_lines(text, usize::from(width.max(1)))
 }
 
-/// token 数量的紧凑显示（K / M，v1.6 用户需求）。
+/// token 数量的紧凑显示（K / M）。
 ///
 /// 规则：`< 1000` 原样；`< 1_000_000` 用 K（一位小数）；其余用 M（一位小数）。
 /// 四舍五入后进位到下一单位（如 999_999 → `1.0M`），避免出现 `1000.0K`。
@@ -162,7 +161,7 @@ pub fn wrapped_text_lines(text: &str, width: u16) -> usize {
 /// assert_eq!(format_compact_tokens(758), "758");
 /// assert_eq!(format_compact_tokens(7586), "7.6K");
 /// assert_eq!(format_compact_tokens(999_999), "1.0M");
-/// assert_eq!(format_compact_tokens(13_885_000), "13.9M");
+/// assert_eq!(format_compact_tokens(885_000), "13.9M");
 /// ```
 pub fn format_compact_tokens(tokens: usize) -> String {
   const THOUSAND: f64 = 1000.0;
@@ -219,7 +218,7 @@ pub fn refresh_line_cache(state: &mut AppState, width: u16) -> usize {
   total
 }
 
-/// 检测流式文本中的开放栅栏并临时补闭合（16 §15 C2 / R-H2）。
+/// 检测流式文本中的开放栅栏并临时补闭合。
 ///
 /// 返回 `(用于渲染的文本, 原文是否本就闭合)`——补闭合仅作用于渲染，
 /// 不污染 `AppState`。
@@ -285,7 +284,7 @@ mod tests {
     ChatBubble { id: 0, body }
   }
 
-  // 场景：token 大数紧凑显示（v1.6 用户需求）。
+  // 场景：token 大数紧凑显示。
   // 预期：<1000 原样；K/M 一位小数；999_999 进位为 1.0M。
   #[test]
   fn format_compact_tokens_uses_k_and_m() {

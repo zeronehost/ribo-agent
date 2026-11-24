@@ -216,7 +216,7 @@ struct ModelEntry {
   id: String,
 }
 
-/// `[[routing.fallback]]` 单条规则（24 号方案 D4）。
+/// `[[routing.fallback]]` 单条规则。
 #[derive(Debug, Deserialize)]
 struct FallbackRuleCfg {
   /// 匹配条件（`model` 缺省 = provider 级通配）。
@@ -479,7 +479,7 @@ async fn run_real(cfg: RealConfig) {
     );
   }
 
-  // ===== 跨 provider 降级路由（24 号方案 D4：统一 fallback 规则）=====
+  // ===== 跨 provider 降级路由（统一 fallback 规则）=====
   let mut routes = RouteMap::default();
   let rules: Vec<FallbackRule> = cfg
     .routing
@@ -715,7 +715,7 @@ async fn run_offline() {
   let anthropic = Arc::new(anthropic_adapter_for(addr_3));
   let backup = Arc::new(chat_backup_adapter_for(addr_4));
 
-  // ===== 降级路由：统一 fallback 规则列表（24 号方案 D4）=====
+  // ===== 降级路由：统一 fallback 规则列表=====
   // 每条规则按声明顺序匹配；targets 按序尝试（{ provider } 形态 =
   // 同名 → 目标默认两级解析）
   let mut routes = RouteMap::default();

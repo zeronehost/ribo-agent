@@ -2,7 +2,7 @@
 //!
 //! 让外部插件（native Rust 与 Step B 的 WASM guest）产出的工具经统一
 //! 声明边界注入 [`ToolManager`](ra_tools::manager::ToolManager)，agent
-//! 主循环零改动。模块分层（设计文档 18_ §3）：
+//! 主循环零改动。模块分层：
 //!
 //! 1. **声明层**：[`traits::Plugin`]（语言无关声明边界）+ [`traits::ToolManifest`]；
 //! 2. **注册层**：[`registry::PluginRegistry`]（进程内注册表，原子批量注入）；

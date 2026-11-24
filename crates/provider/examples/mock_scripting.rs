@@ -1,4 +1,4 @@
-//! 脚本化步骤与调用记录示例（设计文档 §11.6 mock 适配器）。
+//! 脚本化步骤与调用记录示例（mock 适配器）。
 //!
 //! 运行：
 //!
@@ -50,7 +50,7 @@ fn text_partial(text: &str) -> Arc<AssistantMessage> {
 async fn main() {
   // ===== 组装脚本 =====
   // 注意 Fail 步骤的错误经 pre_stream 阶段门构造（stage = PreStream，
-  // 契约层 P1：建流阶段失败只能是 Err）。
+  // 契约层 ：建流阶段失败只能是 Err）。
   let steps = vec![
     MockStep::Complete(Arc::new(|_ctx| {
       (

@@ -1,16 +1,16 @@
-//! 域内 `AGENTS.md` 指令加载与拼接（19_ Step 5，设计§5.2）。
+//! 域内 `AGENTS.md` 指令加载与拼接。
 //!
-//! **加载策略**（严格按设计 v1.2）：
+//! **加载策略**：
 //! - 只认精确文件名 `AGENTS.md`（`agents.md` / `CLAUDE.md` / `AGENTS.txt`
 //!   一律不识别）；
 //! - 只读**域根单文件**：不向上递归（`root/../AGENTS.md`），不向下递归
-//!   （`root/sub/AGENTS.md`）——P2 本产品与 pi-agent 的关键行为差异；
+//!   （`root/sub/AGENTS.md`）——本产品与 pi-agent 的关键行为差异；
 //! - 拼接顺序 Global → Project → Plugin[*]（声明序），每段带
 //!   `<!-- source: ... -->` 标注；矛盾不自动裁决，全文保留；
 //! - 单文件 32KB 上限，超长按 UTF-8 字符边界截断并附提示；
 //! - 零文件 → [`Instructions::is_empty()`] 为 true，调用方不产系统提示段。
 //!
-//! `AGENTS.md` 属文档级资源，**默认加载**，与代码信任无关（设计§7.1）。
+//! `AGENTS.md` 属文档级资源，**默认加载**，与代码信任无关（设计）。
 
 use std::path::PathBuf;
 
@@ -66,7 +66,7 @@ impl InstructionRoot {
 /// 按声明顺序加载并拼接所有域的 `AGENTS.md`。
 ///
 /// 单文件读取失败（不存在 / 非 UTF-8）静默跳过——`AGENTS.md` 是文档级
-/// 资源，问题只记 warning 日志，不中断装配（P3 域故障隔离）。
+/// 资源，问题只记 warning 日志，不中断装配（域故障隔离）。
 /// 超限文件截断到 [`MAX_AGENTS_BYTES`] 内的 UTF-8 字符边界。
 pub fn load_instructions(roots: &[InstructionRoot]) -> Instructions {
   let mut content = String::new();
@@ -74,7 +74,7 @@ pub fn load_instructions(roots: &[InstructionRoot]) -> Instructions {
 
   for root in roots {
     let path = root.path.join("AGENTS.md");
-    // 精确单文件：不递归、不尝试文件名变体（设计§5.2「禁止」）
+    // 精确单文件：不递归、不尝试文件名变体（设计「禁止」）
     if !path.is_file() {
       continue;
     }
@@ -147,7 +147,7 @@ mod tests {
     assert!(out.content.is_empty());
   }
 
-  /// 场景：P2 关键——不向上递归（`../AGENTS.md` 不加载）。
+  /// 场景：关键——不向上递归（`../AGENTS.md` 不加载）。
   #[test]
   fn no_upward_recursion() {
     let parent = test_dir("no_upward_recursion-parent");
@@ -160,7 +160,7 @@ mod tests {
     assert!(!out.content.contains("PARENT CONTENT"));
   }
 
-  /// 场景：P2 关键——不向下递归（`sub/AGENTS.md` 不加载）。
+  /// 场景：关键——不向下递归（`sub/AGENTS.md` 不加载）。
   #[test]
   fn no_downward_recursion() {
     let root = test_dir("no_downward_recursion");

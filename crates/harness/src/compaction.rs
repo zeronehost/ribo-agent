@@ -4,9 +4,9 @@
 //! 任何失败（超时 / 取消 / 建流失败 / 空文本）都回退为纯滑窗，
 //! 永不向上抛错——失败不是故障，只是压缩未发生。
 //!
-//! 25 号方案 D1–D4：不引入 `SmartCompressor` 替代者，而是在 `Compactor`
+//! 不引入 `SmartCompressor` 替代者，而是在 `Compactor`
 //! 内部增加 per-session 状态表（滞回基准 / 冷却 / 增量检查点）。状态是
-//! 进程内派生数据（P1），重启后可从 JSONL 的 `compaction` 旁路记录恢复。
+//! 进程内派生数据，重启后可从 JSONL 的 `compaction` 旁路记录恢复。
 
 use std::{sync::Arc, time::Duration};
 
@@ -31,7 +31,7 @@ use crate::{
   session_store::JsonlSessionStore,
 };
 
-/// 本次压缩的判定原因（D3/D4 可观测性，D8 提示门控）。
+/// 本次压缩的判定原因（可观测性，提示门控）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionReason {
   /// 压缩未启用。
@@ -63,18 +63,18 @@ pub struct CompactionOutcome {
   pub summary: Option<String>,
   /// 被移出消息序列的消息条数（未触发为 0）。
   pub truncated: usize,
-  /// 判定原因（D8 提示门控）：`Summarized` → 成功提示，
-  /// `SummaryFailed` → 失败提示（v1.6 失败也留痕）；
+  /// 判定原因（提示门控）：`Summarized` → 成功提示，
+  /// `SummaryFailed` → 失败提示；
   /// 冷却抑制 / 滞回复用不发射提示。
   pub reason: CompactionReason,
-  /// 本轮是否执行了全量重建（D4 强制重建可观测）。
+  /// 本轮是否执行了全量重建（强制重建可观测）。
   pub rebuild: bool,
-  /// 无摘要且实际发生截断 → `system_prompt` 追加 `<compaction-fallback>`（D6）。
+  /// 无摘要且实际发生截断 → `system_prompt` 追加 `<compaction-fallback>`。
   pub fallback_hint: bool,
-  /// 冷却期复用过期摘要的轮数 N → 追加 `<conversation-summary-outdated>`（D6）。
+  /// 冷却期复用过期摘要的轮数 N → 追加 `<conversation-summary-outdated>`。
   pub outdated_hint: Option<u32>,
   /// 本轮被摘要替代移出视图的 prefix 估算 token（压缩三态统计"已压缩量"，
-  /// 未触发 / 未切分为 0；v1.6 用户需求）。
+  /// 未触发 / 未切分为 0）。
   pub compressed_tokens: usize,
 }
 
@@ -97,7 +97,7 @@ impl CompactionOutcome {
 /// 摘要请求超时（压缩器内部常量，不暴露到 CompactionConfig）。
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 摘要输入上限自动取值比例（摘要模型 / 主模型窗口的 70%，D4 窗口保护）。
+/// 摘要输入上限自动取值比例（摘要模型 / 主模型窗口的 70%，窗口保护）。
 const SUMMARY_INPUT_WINDOW_RATIO: f64 = 0.7;
 
 /// 首次 build 的 overhead 基准（约 200 token；模板 + 环境段初始长度）。
@@ -116,7 +116,7 @@ const PREVIOUS_SUMMARY_TAG: &str = "previous-summary";
 /// 上下文压缩器。
 ///
 /// 持有网关、主模型（提供 `context_window` 预算）、per-session 状态表，
-/// 以及可选的 JSONL 存储（D11 摘要记录写入与重启恢复）。失败全部回退滑窗，
+/// 以及可选的 JSONL 存储（摘要记录写入与重启恢复）。失败全部回退滑窗，
 /// 不向上抛错。`Compactor` 经 `Arc` 共享，`compact(&self)` 可并发调用。
 pub struct Compactor {
   /// LLM 网关（承载并发准入、熔断、重试）。
@@ -125,7 +125,7 @@ pub struct Compactor {
   model: Model,
   /// per-session 压缩状态表（内部可变性，DashMap 天然并发安全）。
   states: DashMap<String, CompactionState>,
-  /// 可选 JSONL 存储：写入摘要旁路记录 + 重启恢复（D11）。
+  /// 可选 JSONL 存储：写入摘要旁路记录 + 重启恢复。
   store: Option<Arc<JsonlSessionStore>>,
 }
 
@@ -140,7 +140,7 @@ impl Compactor {
     }
   }
 
-  /// 绑定 JSONL 存储，启用 D11 摘要记录写入与重启恢复。
+  /// 绑定 JSONL 存储，启用 摘要记录写入与重启恢复。
   ///
   /// builder 风格消费并返回自身；装配期在 store 构造后调用。
   pub fn with_store(mut self, store: Arc<JsonlSessionStore>) -> Self {
@@ -148,7 +148,7 @@ impl Compactor {
     self
   }
 
-  /// 读取某会话 overhead 基准的只读快照（D2 / P1-2，crate-internal）。
+  /// 读取某会话 overhead 基准的只读快照（crate-internal）。
   pub(crate) fn get_state_snapshot(
     &self,
     key: &str,
@@ -160,7 +160,7 @@ impl Compactor {
       .unwrap_or_default()
   }
 
-  /// 回写某会话的 overhead 基准（D2 / P1-2，crate-internal）。
+  /// 回写某会话的 overhead 基准（crate-internal）。
   ///
   /// 首次调用会创建状态条目；其余运行时字段保持默认。
   pub(crate) fn set_last_overhead(&self, key: &str, overhead: usize) {
@@ -195,12 +195,12 @@ impl Compactor {
       return CompactionOutcome::noop(messages, CompactionReason::Disabled);
     }
 
-    // ===== 阶段 2：惰性恢复状态（D11：重启后从 JSONL 摘要记录恢复）=====
+    // ===== 阶段 2：惰性恢复状态（重启后从 JSONL 摘要记录恢复）=====
     self
       .restore_state_if_needed(session_key, messages, config)
       .await;
 
-    // ===== 阶段 3：估算 token 与预算判定（D2：扣 overhead，≤0 退化）=====
+    // ===== 阶段 3：估算 token 与预算判定（扣 overhead，≤0 退化）=====
     let estimated = estimate_tokens(messages);
     let raw_budget =
       (self.model.context_window as f64 * config.trigger_ratio) as usize;
@@ -216,8 +216,8 @@ impl Compactor {
       );
     }
     let last_overhead = self.get_state_snapshot(session_key).last_overhead;
-    // 预算 = 原始预算 − 上一轮 overhead（D2）。overhead ≥ 原始预算时
-    // **退化为原始预算**（文档 25 D2 第 4 条）：不因 prompt 过大而把预算
+    // 预算 = 原始预算 − 上一轮 overhead。overhead ≥ 原始预算时
+    // **退化为原始预算**：不因 prompt 过大而把预算
     // 压成 0——预算为 0 会让「历史是否超预算」的判定永远为真，导致每轮
     // 都触发压缩。
     let budget = match raw_budget.saturating_sub(last_overhead) {
@@ -247,7 +247,7 @@ impl Compactor {
       );
     }
 
-    // ===== 阶段 4：轮切分（复用现有不变量，P2）=====
+    // ===== 阶段 4：轮切分（复用现有不变量）=====
     let Some((prefix, recent)) =
       split_prefix(messages, config.keep_recent_turns)
     else {
@@ -260,8 +260,8 @@ impl Compactor {
       return CompactionOutcome::noop(messages, CompactionReason::NoSplit);
     };
 
-    // ===== 阶段 5：判定路径（D3 滞回 / 冷却 / 复用 last_summary）=====
-    // 压缩三态统计"已压缩量"：本轮被移出视图的 prefix 估算（v1.6 用户需求）
+    // ===== 阶段 5：判定路径（滞回 / 冷却 / 复用 last_summary）=====
+    // 压缩三态统计"已压缩量"：本轮被移出视图的 prefix 估算
     let prefix_tokens = estimate_tokens(prefix);
     // 取出当前状态快照后按判定结果更新；冷却与滞回轮次不调用 LLM。
     let state = self
@@ -270,7 +270,7 @@ impl Compactor {
       .map(|entry| entry.clone())
       .unwrap_or_default();
 
-    // 冷却期（P1-2 顺序）：先递减 -1，再跳过摘要调用，注入 last_summary
+    // 冷却期（顺序）：先递减 -1，再跳过摘要调用，注入 last_summary
     if state.cooldown_turns_left > 0 {
       return self.reuse_summary(
         session_key,
@@ -323,7 +323,7 @@ impl Compactor {
       return outcome;
     };
 
-    // ===== 阶段 7：决定增量 / 全量重建（D4）=====
+    // ===== 阶段 7：决定增量 / 全量重建=====
     let rebuild = self.should_rebuild(&state, config);
     let summary_input = self.build_summary_input(
       messages,
@@ -381,7 +381,7 @@ impl Compactor {
         }
         drop(state);
 
-        // D11：写摘要旁路记录（失败只告警，不影响产出）
+        // 写摘要旁路记录（失败只告警，不影响产出）
         self
           .write_compaction_record(
             session_key,
@@ -454,7 +454,7 @@ impl Compactor {
 
   // ===== 内部辅助：状态恢复与更新 =====
 
-  /// 首次遇到某会话时，从 JSONL 摘要记录惰性恢复状态（D11）。
+  /// 首次遇到某会话时，从 JSONL 摘要记录惰性恢复状态。
   ///
   /// 失效判定：摘要模型变更、检查点指纹在 transcript 中找不到、
   /// 或检查点距当前超过 `cooldown_turns × 2` 轮（严重过期）→ 忽略记录，
@@ -534,7 +534,7 @@ impl Compactor {
     );
   }
 
-  /// 写摘要旁路记录（D11，失败只告警）。
+  /// 写摘要旁路记录（失败只告警）。
   async fn write_compaction_record(
     &self,
     key: &str,
@@ -560,7 +560,7 @@ impl Compactor {
     }
   }
 
-  /// 摘要失败 / 无模型路径的状态更新（不覆盖好缓存的 last_summary，D11）。
+  /// 摘要失败 / 无模型路径的状态更新（不覆盖好缓存的 last_summary）。
   fn apply_no_summary_state(
     &self,
     key: &str,
@@ -584,7 +584,7 @@ impl Compactor {
     }
   }
 
-  /// 冷却 / 滞回期复用 last_summary（不调 LLM，D3 + D6 过期提示）。
+  /// 冷却 / 滞回期复用 last_summary（不调 LLM，+ 过期提示）。
   ///
   /// 若此前无摘要则退化为纯滑窗 + fallback 提示；有摘要则注入该摘要，
   /// 并在摘要已存在多轮时追加过期提示（`summary_age_turns` 递增）。
@@ -596,7 +596,7 @@ impl Compactor {
     state: &CompactionState,
     reason: CompactionReason,
   ) -> CompactionOutcome {
-    // 冷却轮递减已在判定时完成（P1-2：本轮设值不递减，下轮先减）；
+    // 冷却轮递减已在判定时完成（本轮设值不递减，下轮先减）；
     // 这里只维护摘要年龄与 truncated 可观测值
     if let Some(mut current) = self.states.get_mut(session_key) {
       if reason == CompactionReason::CooldownSuppressed
@@ -650,7 +650,7 @@ impl Compactor {
     }
   }
 
-  /// 判断本轮是否必须全量重建（D4 / P7）。
+  /// 判断本轮是否必须全量重建。
   ///
   /// `incremental_count + 1 >= incremental_rebuild_every` 时重建；
   /// `rebuild_every == 1` 等价于每次全量。无 last_summary 也走全量。
@@ -659,7 +659,8 @@ impl Compactor {
     state: &CompactionState,
     config: &CompactionConfig,
   ) -> bool {
-    let rebuild = if !config.enable_incremental || state.last_summary.is_none() {
+    let rebuild = if !config.enable_incremental || state.last_summary.is_none()
+    {
       true
     } else {
       state.incremental_count + 1 >= config.incremental_rebuild_every
@@ -674,7 +675,7 @@ impl Compactor {
     rebuild
   }
 
-  /// 构造摘要输入消息序列（D4 增量 + D4 窗口保护）。
+  /// 构造摘要输入消息序列（增量 + 窗口保护）。
   ///
   /// - 全量：直接取完整 prefix。
   /// - 增量：上次检查点之后的 prefix 增量，前置 last_summary 文本块。
@@ -711,10 +712,9 @@ impl Compactor {
           incremental.extend_from_slice(&messages[index + 1..cut]);
           incremental
         }
-        // 检查点丢失 / 落在 recent 内 → 全量回退（P3 失败隔离）
+        // 检查点丢失 / 落在 recent 内 → 全量回退（失败隔离）
         _ => {
           tracing::warn!(
-            session_key = %session_key,
             checkpoint = state.checkpoint_fingerprint,
             "checkpoint missing or inside recent window; falling back to full summary input"
           );
@@ -813,7 +813,7 @@ impl Compactor {
 // 估算与切分辅助
 // ============================================================================
 
-/// 按加权字符口径估算 token（P6 唯一真值，D2：ASCII 0.25 / CJK 1.0 / 其他 0.5）。
+/// 按加权字符口径估算 token（唯一真值：ASCII 0.25 / CJK 1.0 / 其他 0.5）。
 pub use ra_core::message::estimate_context_tokens;
 
 fn estimate_tokens(messages: &[Message]) -> usize {
@@ -1239,7 +1239,7 @@ mod tests {
   /// 滞回：增长不足 hysteresis_ratio 倍 → 不重算，复用 last_summary。
   /// （cooldown_turns = 0 排除冷却路径；同 messages 第二轮估算持平，
   /// 不满足 ≥ 1.10× 增长 → HysteresisSuppressed，且不再调 LLM。
-  /// 过期提示按 D6「已存在多轮」语义：age=1 不提示、age=2 起 N=2。）
+  /// 过期提示按 「已存在多轮」语义：age=1 不提示、age=2 起 N=2。）
   #[tokio::test]
   async fn second_turn_within_hysteresis_reuses_summary() {
     let (gateway, model) =
@@ -1315,7 +1315,7 @@ mod tests {
     assert!(estimate_tokens(&input) < estimate_tokens(&full));
   }
 
-  /// 检查点丢失 → 增量回退全量：输入不含前置摘要块（P3 失败隔离）。
+  /// 检查点丢失 → 增量回退全量：输入不含前置摘要块（失败隔离）。
   #[test]
   fn missing_checkpoint_falls_back_to_full_prefix() {
     let (gateway, model) = make_gateway_and_model(Vec::new(), 64);
@@ -1356,10 +1356,10 @@ mod tests {
     assert_eq!(outcome.truncated, 0);
   }
 
-  /// 场景（D2 预算退化）：overhead ≥ 原始预算时，预算**退化为原始预算**
-  /// 而非 0（文档 25 D2 第 4 条）。
+  /// 场景（预算退化）：overhead ≥ 原始预算时，预算**退化为原始预算**
+  /// 而非 0。
   ///
-  /// 判别依据：退化后预算 = 原始预算（100 × 0.1 = 10），
+  /// 判别依据：退化后预算 = 原始预算，
   /// - 历史远超 10 → 仍触发压缩；
   /// - 历史很小（≤ 10）→ 不压缩（`estimated <= budget` 为真）。
   /// 若预算未被退化而是保持 0，则 `estimated <= 0` 恒为假 → 第二条断言
@@ -1371,7 +1371,7 @@ mod tests {
       ..enabled_config()
     };
 
-    // 历史远超退化后的预算（10）→ 触发压缩
+    // 历史远超退化后的预算→ 触发压缩
     let (gateway, model) = make_gateway_and_model(Vec::new(), 100);
     let compactor = Compactor::new(gateway, model);
     compactor.set_last_overhead("s1", 50); // 50 ≥ 原始预算 10

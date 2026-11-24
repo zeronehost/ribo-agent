@@ -1,6 +1,6 @@
 //! 技能扫描与加载器。
 //!
-//! 设计取舍（§10.3）：frontmatter 手写解析，不引入 `serde_yaml`；
+//! 设计取舍：frontmatter 手写解析，不引入 `serde_yaml`；
 //! 技能问题一律**不致命**——加载器返回可用集合 + 诊断，
 //! 调用方把诊断写日志后继续装配。
 
@@ -20,12 +20,12 @@ pub struct Skill {
   pub content: String,
   /// 来源文件路径（绝对，装配时一次性解析）。
   pub location: PathBuf,
-  /// 来源域标签（19_ Step 5）：`project` / `global` / `plugin:<id>`。
+  /// 来源域标签：`project` / `global` / `plugin:<id>`。
   /// 单根旧构造器下恒为 `project`，保持零配置行为不变。
   pub origin: String,
 }
 
-/// 带来源域标签的扫描根（19_ Step 5）。
+/// 带来源域标签的扫描根。
 ///
 /// `roots` 顺序即优先级：同名技能**首个 roots 胜出**。装配层按
 /// Project → Global → Plugin[*]（声明序）排列，实现设计的优先级。
@@ -94,7 +94,7 @@ impl SkillsLoader {
     )
   }
 
-  /// 以带来源域标签的扫描根创建加载器（19_ Step 5）。
+  /// 以带来源域标签的扫描根创建加载器。
   pub fn with_origins(roots: Vec<SkillRoot>) -> Self {
     Self {
       roots,
@@ -320,7 +320,7 @@ impl SkillsLoader {
 }
 
 // ============================================================================
-// frontmatter 手写解析（§10.3）
+// frontmatter 手写解析
 // ============================================================================
 
 struct ParsedFm {

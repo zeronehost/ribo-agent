@@ -61,7 +61,7 @@ pub(super) fn map_provider_error(
 /// 命中顺序即优先级：内容安全 > 限流 > 配额 > 鉴权 > 超时——
 /// 内容安全最优先，防止被误判为可重试故障后重放被拦截的输入。
 /// 匹配在 `message` 小写化后做子串查找；除本函数外任何逻辑
-/// 不得匹配错误文本内容（P2：结构化优先于字符串）。
+/// 不得匹配错误文本内容（结构化优先于字符串）。
 fn map_provider_error_by_message(
   body: &serde_json::Value,
 ) -> Option<&'static str> {

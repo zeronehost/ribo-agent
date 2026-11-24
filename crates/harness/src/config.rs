@@ -117,7 +117,7 @@ mod tests {
     assert_eq!(config.keep_recent_turns, 4);
     assert!(config.summarizer_model.is_none());
     assert_eq!(config.max_summary_chars, 2048);
-    // D7 新增字段默认值
+    // 新增字段默认值
     assert!((config.hysteresis_ratio - 1.10).abs() < f64::EPSILON);
     assert_eq!(config.cooldown_turns, 2);
     assert!(config.enable_incremental);

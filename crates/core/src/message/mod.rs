@@ -89,7 +89,7 @@ impl From<ToolResultMessage> for Message {
   }
 }
 
-/// 判定字符是否属于 CJK 统一表意文字（D2 加权口径：1.0 token/char）。
+/// 判定字符是否属于 CJK 统一表意文字（加权口径：1.0 token/char）。
 ///
 /// 覆盖基本区、扩展 A/B-F 与兼容表意文字；不含日文假名与韩文音节
 /// （二者归入"其他 Unicode"档，按 0.5 计）。
@@ -103,7 +103,7 @@ fn is_cjk_ideograph(c: char) -> bool {
   )
 }
 
-/// 单字符 token 权重，放大 4 倍的定点整数（避免浮点误差，D2）。
+/// 单字符 token 权重，放大 4 倍的定点整数（避免浮点误差）。
 ///
 /// ASCII 1（=0.25）、CJK 表意文字 4（=1.0）、其他 Unicode 2（=0.5）。
 fn char_token_weight(c: char) -> usize {
@@ -116,7 +116,7 @@ fn char_token_weight(c: char) -> usize {
   }
 }
 
-/// 按加权字符口径估算任意文本的 token 数（D2，压缩 overhead 复用此口径）。
+/// 按加权字符口径估算任意文本的 token 数（压缩 overhead 复用此口径）。
 ///
 /// 权重：ASCII 0.25、CJK 表意文字 1.0、其他 Unicode（含 Emoji）0.5
 /// token/char。内部以放大 4 倍的定点整数累加后统一整除，避免逐字符舍入。
@@ -136,11 +136,11 @@ pub fn estimate_tokens_from_chars(text: &str) -> usize {
   text.chars().map(char_token_weight).sum::<usize>() / 4
 }
 
-/// 按加权字符口径估算消息序列的 token 占用（P6 唯一真值，D2）。
+/// 按加权字符口径估算消息序列的 token 占用（唯一真值）。
 ///
 /// 口径：各文本块加权字符数之和 / 4 + 每条消息 4 token 附加；
 /// 内联图片与工具调用占位不计（base64 会严重高估）。压缩触发、
-/// agent_loop 降级窗口（24 号方案 D6）、TUI ctx 占比三处共用此函数。
+/// agent_loop 降级窗口、TUI ctx 占比三处共用此函数。
 /// ASCII 场景下与旧口径 `chars/4` 完全等价（定点累加后统一整除）。
 pub fn estimate_context_tokens(messages: &[Message]) -> usize {
   fn content_weight(content: &Content) -> usize {
@@ -316,7 +316,7 @@ mod tests {
     assert_eq!(Message::from(tool.clone()), Message::ToolResult(tool));
   }
 
-  // 场景：D2 加权口径——ASCII 0.25 / CJK 1.0 / 其他 0.5（定点 ×4 累加后整除）。
+  // 场景：加权口径——ASCII 0.25 / CJK 1.0 / 其他 0.5（定点 ×4 累加后整除）。
   // 预期：中文不再按 /4 低估（"上下文压缩" 5 汉字 = 5 token，旧口径为 1）。
   #[test]
   fn estimate_tokens_from_chars_weights_categories() {

@@ -29,7 +29,7 @@ pub type CompleteBuilder =
 /// - [`MockStep::Events`]：脚本中不得携带终结事件——终结由适配器
 ///   以 `Done(Stop)` 收敛（携带终结事件属于脚本编写错误，行为未定义）；
 /// - [`MockStep::Fail`]：错误必须经 `pre_stream` 等阶段门构造器构造，
-///   保证错误 `stage` 为 PreStream（契约层 P1）。
+///   保证错误 `stage` 为 PreStream（契约层阶段门约束）。
 #[derive(Clone)]
 pub enum MockStep {
   /// 回放一组预置事件（`Start` 自动补发；未携带终结事件时以

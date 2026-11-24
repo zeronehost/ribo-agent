@@ -28,7 +28,7 @@ fn step(text: &'static str) -> MockStep {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-  // 文件日志（本地时间，24 号方案后）
+  // 文件日志（本地时间）
   let outcome = LoadOutcome::load(
     Some(std::path::Path::new("ribo_compaction_mock.toml")),
     None,

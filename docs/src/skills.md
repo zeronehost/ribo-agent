@@ -6,7 +6,7 @@
 
 ### 文件布局
 
-技能扫描根固定为 `<harness.root>/.ribo/skills`（项目域，v3 起 `harness.skills_roots` 配置已移除）与全局域目录下的 `skills/`（全局域启用时）；项目技能优先。目录内支持两种布局：
+技能扫描根固定为 `<harness.root>/.ribo/skills`（项目域）与全局域目录下的 `skills/`（全局域启用时）；项目技能优先。目录内支持两种布局：
 
 - 目录型：`<root>/<skill-name>/SKILL.md`
 - 扁平型：`<root>/<skill-name>.md`
@@ -36,11 +36,10 @@ frontmatter 解析失败、空正文、重名等问题只产生诊断（不致�
 
 技能按来源域聚合，优先级为 **Project > Global > Plugin**（Plugin 按声明序，先声明优先）。同名技能按优先级取首个，被覆盖者产生诊断提示。
 
-每个技能记录 `origin` 字段（`project` / `global` / `plugin:<id>`），在三处保持一致：
+每个技能记录 `origin` 字段（`project` / `global` / `plugin:<id>`），在两处保持一致：
 
 - 系统提示 `<skill ... origin="..."/>` 属性
-- 配置来源命令 `ribo config --show-origin`
-- REPL 命令 `/skills` 输出（显示“来自项目 / 来自全局 / 来自插件 <id>”；技能与诊断皆空时显示“（无技能）”）
+- REPL 命令 `/skills` 输出（显示`来自项目 / 来自全局 / 来自插件 <id>；技能与诊断皆空时显示“（无技能）”`）
 
 ## AGENTS.md 指令文件
 
@@ -53,8 +52,8 @@ frontmatter 解析失败、空正文、重名等问题只产生诊断（不致�
 
 ### 严格限制
 
-- **只认精确文件名 `AGENTS.md`**——`agents.md` / `CLAUDE.md` / `AGENTS.txt` 均不识别
-- **只加载域根单文件**——不向上递归（`root/../AGENTS.md` 不加载），不向下递归（`root/sub/AGENTS.md` 不加载）
+- **只认精确文件名 `AGENTS.md`**：`agents.md` / `CLAUDE.md` / `AGENTS.txt` 均不识别
+- **只加载域根单文件**：不向上递归（`root/../AGENTS.md` 不加载），不向下递归（`root/sub/AGENTS.md` 不加载）
 
 > 不向上递归是与 pi-agent 等工具的关键行为差异：父目录的指令文件不会被意外加载。
 
@@ -63,10 +62,10 @@ frontmatter 解析失败、空正文、重名等问题只产生诊断（不致�
 所有域的 `AGENTS.md` 按 **Global → Project → Plugin**（声明序）**拼接**，而非取其一：
 
 - 每段带 `<!-- source: <domain> (<path>) -->` 标注，便于审计；
-- 矛盾不自动裁决——两份都保留，由模型根据上下文判断（通常"更具体、更靠后"优先）；
+- 矛盾不自动裁决，两份都保留，由模型根据上下文判断（通常"更具体、更靠后"优先）；
 - 结果注入系统提示的 `<agents-instructions>` 段。
 
-`AGENTS.md` 属**文档级资源，默认加载**，与代码信任无关——即使项目未授信，其 `AGENTS.md` 仍会加载。
+`AGENTS.md` 属**文档级资源，默认加载**，与代码信任无关；即使项目未授信也会加载。
 
 ### 大小上限
 

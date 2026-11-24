@@ -23,7 +23,7 @@ serde_json = { workspace = true }
 ra-plug-pdk = { workspace = true }
 ```
 
-> guest 代码应整体用 `#[cfg(target_arch = "wasm32")]` 门控——PDK 的运行时与 IO 封装只在 wasm 目标可用；纯逻辑（信封解析、manifest 构建）在宿主目标也可用，便于单测。
+> guest 代码应整体用 `#[cfg(target_arch = "wasm32")]` 门控：PDK 的运行时与 IO 封装只在 wasm 目标可用；纯逻辑（信封解析、manifest 构建）在宿主目标也可用，便于单测。
 
 ## 第一个插件
 
@@ -160,7 +160,7 @@ greeting_prefix = "你好"
 
 要点：
 
-- ACL 默认全关——guest 调用了未授予的 host function 会被宿主拒绝；
+- ACL 默认全关：guest 调用了未授予的 host function 会被宿主拒绝；
 - `http = true` 时须提供非空 `http_hosts`，否则实际不可出站；
 - 覆写类字段（内存 / 配额 / 超时）**只能收紧**，不能放大。
 

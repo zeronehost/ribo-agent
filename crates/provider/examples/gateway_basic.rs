@@ -173,7 +173,7 @@ async fn main() {
   );
 
   // ===== 降级路由表 =====
-  // 隐式同提供方链：alpha-main 失败 → alpha-backup（D3，声明序）；
+  // 隐式同提供方链：alpha-main 失败 → alpha-backup（声明序）；
   // fallback 规则：beta 通道失败 → gamma 通道（{ provider } 形态 =
   // 同名 → 目标默认两级解析，命中 gamma-model）。
   let mut routes = RouteMap::default();

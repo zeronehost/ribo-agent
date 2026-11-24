@@ -136,7 +136,7 @@ impl Harness {
     Ok(self.provider.get_or_create(key).await?.snapshot())
   }
 
-  /// 读取最近一次上下文装配的压缩三态统计（v1.6 用户需求）。
+  /// 读取最近一次上下文装配的压缩三态统计。
   ///
   /// 未装配且未由 estimator 回填（如未绑定估算器的内存 provider）时
   /// 返回 `None`（显示端显示「—」）；持久化 provider 在冷启动回放后

@@ -1,10 +1,10 @@
-//! 一次性 CLI 子命令（19_ Step 6，设计§5.1/§7.2/§8.2）。
+//! 一次性 CLI 子命令。
 //!
 //! 子命令在 REPL 装配**之前**执行：读取配置 → 执行动作 → 打印 → 退出。
 //! 无子命令时 main.rs 直接进 REPL（现状零破坏）。
 //!
 //! **首次使用即创建**：`auth login` / `trust add` 会创建全局域目录与
-//! 对应 TOML（无 migrate 概念，D1）。
+//! 对应 TOML（无 migrate 概念）。
 
 use std::path::{Path, PathBuf};
 
@@ -98,12 +98,12 @@ pub enum PluginsAction {
 /// 解析全局域根：`--global-dir` > 平台默认配置目录 + /ribo。
 ///
 /// 与 `GlobalDomain::discover` 不同，本函数**会创建目录**（首次使用即
-/// 创建，D1）——子命令是用户显式操作，创建目录天经地义。
+/// 创建）——子命令是用户显式操作，创建目录天经地义。
 pub fn resolve_or_create_global_root(
   cli_dir: Option<&Path>,
   config_path: Option<&Path>,
 ) -> RiboResult<PathBuf> {
-  // 文档 21 / D1：与读取端共用同一解析真值（--global-dir > [global].dir > 默认）。
+  // 与读取端共用同一解析真值（--global-dir > [global].dir > 默认）。
   let table = config_path
     .and_then(|p| std::fs::read_to_string(p).ok())
     .and_then(|text| text.parse::<toml::Table>().ok());
@@ -352,7 +352,7 @@ mod tests {
 
   /// 场景：plugins list 输出（Plugin Entries / Read-only mounts）。
   ///
-  /// 挂载点按 D4 从全局 settings.toml 声明（第 4 参数即 global_dir）。
+  /// 挂载点从全局 settings.toml 声明（第 4 参数即 global_dir）。
   #[test]
   fn plugins_list_has_two_sections() {
     let dir = tempfile::tempdir().expect("temp dir");

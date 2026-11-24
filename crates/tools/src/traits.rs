@@ -15,7 +15,7 @@ use crate::{
 /// 契约说明：
 ///
 /// - `execute` 返回 `Err` 表示工具级失败，由上层（`ToolManager`）
-///   记入熔断统计并转为 `is_error` 结果回灌模型（D8）；
+///   记入熔断统计并转为 `is_error` 结果回灌模型；
 /// - 参数校验分两层：`prepare_arguments` 做实现方自定义预处理
 ///   （补默认值、形态归一），JSON Schema 校验由 `ToolManager`
 ///   依据 `schema().input_schema` 统一执行。

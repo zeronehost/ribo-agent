@@ -84,7 +84,7 @@ incremental_rebuild_every = 8  # 默认 8，每 N 次增量强制全量重建（
 # ── session 层（REPL 会话状态）──────────────────────────────
 [session]
 default_key = "default"        # 默认 "default"，REPL 启动会话键（/sessions <名称> 切换）
-history_lines = 10             # 默认 10，CLI `/history` 未带参数时的条数（TUI 无此命令）
+history_lines = 10             # 默认 10；/history 缺省条数当前固定为 10，不读取此配置（字段保留备用，TUI 无 /history 命令）
 
 # ── tools 层（ToolManager 注册）─────────────────────────────
 # fs 沙箱 = harness.root（v3：无独立 fs_root 配置；项目外数据走挂载点）。
@@ -101,7 +101,7 @@ include_environment = true     # 默认 true，系统提示注入 <environment> 
 # ── global 层（全局域，跨项目共享；默认启用）─────────────────
 # [global]
 # enabled = true                 # 默认 true；目录不存在时自动禁用（非致命）
-# dir = "~/.config/ribo"         # 可选；命令行 --global-dir 优先；
+# dir = "/home/you/.config/ribo" # 可选；须绝对路径（~ 不会被展开）；命令行 --global-dir 优先；
 #                                # 未设置时用平台默认配置目录 + /ribo。
 #                                # 全局配置 settings.toml、auth.toml 与信任记录
 #                                # trusted_projects.toml 位于该目录。

@@ -1,5 +1,5 @@
 //! TUI 主循环：`tokio::select!` 三源批处理 + AppState 事件映射 +
-//! Ctrl-C 生命周期（16 详细设计 §2.1 / §5 / §8）。
+//! Ctrl-C 生命周期。
 //!
 //! `AppState`（含 `RefCell<TextArea>`，非 `Sync`）由本任务独占持有
 //!（R-R4）；键盘 task 只投喂 `AppInput`，不触碰状态树。
@@ -23,7 +23,6 @@ use crate::view::input as input_view;
 type StdTerminal =
   ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
 
-/// TUI 应用：状态树 + 会话门面 + 输入通道 + 视图根布局。
 /// 装配警告浮层文本：非空返回带计数的逐条列表，空返回 `None`。
 fn warnings_overlay_text(warnings: &[String]) -> Option<String> {
   if warnings.is_empty() {
@@ -37,6 +36,7 @@ fn warnings_overlay_text(warnings: &[String]) -> Option<String> {
   Some(text)
 }
 
+/// TUI 应用：状态树 + 会话门面 + 输入通道 + 视图根布局。
 pub struct App {
   /// 集中式状态树（主循环独占）。
   pub state: AppState,
@@ -69,7 +69,7 @@ impl App {
     }
   }
 
-  /// 刷新状态行上下文三态（v1.6 用户需求：总量 / 已压缩 / 当前）。
+  /// 刷新状态行上下文三态（总量 / 已压缩 / 当前）。
   ///
   /// 数据源为会话内 `CompactionStats`——`HarnessContext::build` 每轮
   /// 维护，冷启动由 `SessionStatsEstimator` 回放后回填（total=转录估算 /
@@ -86,7 +86,7 @@ impl App {
   ///
   /// 冷启动或 `/sessions <name>` 切到有历史的会话时，Agent 侧虽会回放历史给模型，
   /// 但 UI 气泡队列不会自动填充——必须显式加载，否则对话区只显示
-  /// 本轮输入，用户误以为「会话历史丢失」（2026-11-21 回归）。
+  /// 本轮输入，用户误以为「会话历史丢失」。
   async fn load_session_history(&mut self) {
     let key = self.state.status.session_key.clone();
     let messages = match self.session.harness.session_messages(&key).await {
@@ -155,7 +155,7 @@ impl App {
     self.state.scroll.offset = 0;
   }
 
-  /// 主循环：三源 select → 批处理 → 至多一次 draw（16 §2.1）。
+  /// 主循环：三源 select → 批处理 → 至多一次 draw。
   ///
   /// 退出：`exiting` 置位（Ctrl-C / `/exit` / 事件源关闭 / 键盘 task
   /// 死亡）后跳出循环进入 [`App::exit_flow`]——该函数**总是**
@@ -168,7 +168,7 @@ impl App {
     // 冷启动即有转录（磁盘回放）：先加载历史气泡 + ctx 占比再绘制首帧
     self.load_session_history().await;
     self.refresh_context_stats().await;
-    // 装配期警告自动弹出（2026-11-22 选项 2）：/status 已收敛为 CLI 专用，
+    // 装配期警告自动弹出：/status 已收敛为 CLI 专用，
     // TUI 侧栏只显示计数——详情在启动时一次性浮层展示（Esc 关闭）。
     // 不覆盖已有浮层（如会话历史加载失败提示——后者对用户更关键）。
     if let Some(text) = warnings_overlay_text(&self.state.status.warnings)
@@ -203,7 +203,7 @@ impl App {
           need_draw = true;
           match event {
           Ok(event) => {
-            // 批处理：把当前已排队的全部事件一次性应用（16 §2.1）
+            // 批处理：把当前已排队的全部事件一次性应用
             let mut ended = event.is_terminal();
             self.apply_event(&event);
             while let Ok(next) = self.session.events.try_recv() {
@@ -253,7 +253,7 @@ impl App {
     Ok(())
   }
 
-  /// 键盘分派：先查键位表，未命中交给编辑器（16 §7.2）。
+  /// 键盘分派：先查键位表，未命中交给编辑器。
   async fn on_key(&mut self, key: KeyEvent) {
     let Some(action) = keybindings::map_key(&key) else {
       self
@@ -283,7 +283,7 @@ impl App {
     }
   }
 
-  /// 提交：命令分派或发起回合（16 §10 / §9）。
+  /// 提交：命令分派或发起回合。
   async fn on_submit(&mut self) {
     let text = input_view::editor_text(&self.state);
     match parse_line(&text) {
@@ -383,8 +383,8 @@ impl App {
         self.set_overlay(text);
         input_view::clear_editor(&self.state);
       }
-      // CliOnly 命令（/status、/history）在 TUI 中降级为指引提示：
-      // 状态由侧栏常驻、历史即对话区本身（2026-11-22 命令面收敛）
+      // CliOnly 命令（status、/history）在 TUI 中降级为指引提示：
+      // 状态由侧栏常驻、历史即对话区本身
       Ok(Command::Status) => {
         self.set_overlay(
           "/status 仅 CLI 可用——TUI 左侧栏已常驻显示会话/模式/模型/token/上下文占比。",
@@ -405,14 +405,14 @@ impl App {
     }
   }
 
-  /// Tab 补全：命令 token（行首 `/`）候选 + 模糊匹配（16 §7.4）。
+  /// Tab 补全：命令 token（行首 `/`）候选 + 模糊匹配。
   fn on_complete(&mut self) {
     let text = input_view::editor_text(&self.state);
     let Some(completion) = crate::input::completion::complete(&text) else {
       return;
     };
     // 命令 token 位于行首（补全仅支持首行命令）：整体重建编辑器内容，
-    // End 键把光标移到行末（等价于「插入文本末」，16 §7.4）
+    // End 键把光标移到行末（等价于「插入文本末」）
     input_view::set_editor_text(&self.state, &completion.text);
     self
       .state
@@ -459,7 +459,7 @@ impl App {
     self.scroll_by(direction * 10);
   }
 
-  /// 窗口尺寸变化（16 §7.5）：重绘 + 行数缓存按新宽度重算 +
+  /// 窗口尺寸变化：重绘 + 行数缓存按新宽度重算 +
   /// 编辑器折行随下一次渲染自动重排；offset 在渲染时 clamp。
   fn on_resize(&mut self, width: u16, height: u16) {
     // 宽度变化的行数重算由 draw 前的 refresh_line_cache 完成
@@ -469,7 +469,7 @@ impl App {
   }
 
   /// 广播 Lagged：丢弃本地基线（清流式指针 + 行数缓存），等待
-  /// MessageStart 重同步（16 §5，对齐 CLI on_lagged）。
+  /// MessageStart 重同步。
   fn on_lagged(&mut self, skipped: u64) {
     self.state.chat.streaming_id = None;
     self.state.scroll.clear_cache();
@@ -485,11 +485,11 @@ impl App {
     self.state.overlay_text = Some(text.into());
   }
 
-  /// `AgentEvent` → `AppState` 映射（16 §5 表）。
+  /// `AgentEvent` → `AppState` 映射。
   pub fn apply_event(&mut self, event: &AgentEvent) {
     match event {
-      // D8：压缩痕迹进对话流（持久气泡，不显示摘要内容 / 截断条数）；
-      // 失败回退同样留痕（v1.6，黄色提示）。Compaction 与 AgentStart
+      // 压缩痕迹进对话流（持久气泡，不显示摘要内容 / 截断条数）；
+      // 失败回退同样留痕（黄色提示）。Compaction 与 AgentStart
       // 同批到达，瞬时状态在即时渲染下不可见，气泡是唯一可见载体。
       AgentEvent::Compaction { failed } => {
         self
@@ -679,7 +679,7 @@ impl App {
     }
   }
 
-  /// 流式快照直写流式气泡（Text/Thinking 全量聚合，16 §5）。
+  /// 流式快照直写流式气泡（Text/Thinking 全量聚合）。
   fn apply_partial(
     &mut self,
     id: u64,
@@ -709,13 +709,13 @@ impl App {
     self.state.chat.invalidate_cache(id);
   }
 
-  /// 累加真实 `Usage` 到状态行（16 §5 token 累计口径）。
+  /// 累加真实 `Usage` 到状态行。
   fn accumulate_usage(&mut self, usage: &ra_core::message::Usage) {
     self.state.status.total_input += usage.input.max(0) as u64;
     self.state.status.total_output += usage.output.max(0) as u64;
   }
 
-  /// Ctrl-C / `/exit` 退出流程（16 §8 四步；R-R2：等待期 select! 同武装
+  /// Ctrl-C / `/exit` 退出流程（四步；R-R2：等待期 select! 同武装
   /// 「任务结束 / 超时 / 第二次 Ctrl-C」，绝不阻塞主循环）。
   ///
   /// 本函数以 [`lifecycle::finish_exit`]（`process::exit`）结束进程，
@@ -1027,8 +1027,8 @@ mod tests {
     assert_eq!(input_view::editor_text(&app.state), "second");
   }
 
-  // 场景（ctx 三态 v1.6）：冷启动回放后 provider 已按当前转录写入估算三态
-  // （v1.63 冷启动回填）→ 首次对话前侧栏即有数值；刷新时读回并同步窗口分母。
+  // 场景：冷启动回放后 provider 已按当前转录写入估算三态
+  // → 首次对话前侧栏即有数值；刷新时读回并同步窗口分母。
   #[tokio::test]
   async fn refresh_context_stats_reads_session_stats() {
     let (mut app, _dir) = test_app();
@@ -1109,7 +1109,7 @@ mod tests {
   // 否则窄对话区折行被低估 → 内容显示不全 + 滚动无法触底。
   #[test]
   fn scroll_uses_dialog_width_not_terminal_width() {
-    // 100 列时侧栏压缩到 1/3（33 列），对话文本区再减 Block 边框 2 列
+    // 100 列时侧栏压缩到 1/3，对话文本区再减 Block 边框 2 列
     assert_eq!(crate::view::RootLayout::dialog_width(100), 65);
     assert_eq!(
       crate::view::RootLayout::dialog_width(50),
@@ -1153,7 +1153,7 @@ mod tests {
     );
   }
 
-  // 场景：装配警告浮层文本构建（2026-11-22 选项 2 自动弹出）。
+  // 场景：装配警告浮层文本构建。
   #[test]
   fn warnings_overlay_text_builds_list_or_none() {
     assert_eq!(warnings_overlay_text(&[]), None);
@@ -1360,7 +1360,7 @@ mod tests {
     );
   }
 
-  /// D8：Compaction 事件在对话流插入持久系统气泡（不显示摘要内容），
+  /// Compaction 事件在对话流插入持久系统气泡（不显示摘要内容），
   /// AgentStart 不影响气泡（痕迹保留），回合继续走常规在途文案。
   #[test]
   fn compaction_bubble_persists_in_dialog_flow() {
@@ -1398,7 +1398,7 @@ mod tests {
     );
     assert!(!text.contains("SECRET-SUMMARY"));
 
-    // v1.6：失败回退也留痕——黄色失败气泡文案可见
+    // 失败回退也留痕：断言黄色失败气泡文案可见
     app.apply_event(&AgentEvent::Compaction { failed: true });
     assert_eq!(app.state.chat.messages.len(), 2);
     assert!(matches!(

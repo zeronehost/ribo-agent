@@ -1,4 +1,4 @@
-//! PDK 过程宏：`#[ribo_tool]` 与 `#[ribo_plugin]`（设计文档 18_ §11）。
+//! PDK 过程宏：`#[ribo_tool]` 与 `#[ribo_plugin]`。
 //!
 //! - `#[ribo_tool(name = "...", description = "...", parameters = r#"{...}"#,
 //!   idempotent = true, timeout_hint_ms = 10000, memory_limit_bytes = 16777216)]`
@@ -227,7 +227,7 @@ pub fn ribo_plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into();
   };
 
-  // 收集模块内的工具描述符来源（v0.9 修复：宏展开顺序）。
+  // 收集模块内的工具描述符来源（修复：宏展开顺序）。
   //
   // 属性宏自外向内展开：`#[ribo_plugin]` 先于其模块内的 `#[ribo_tool]`
   // 执行——此刻 `__RIBO_TOOL_*` 常量**尚不存在**（它们由 ribo_tool 在

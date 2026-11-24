@@ -1,6 +1,6 @@
 //! 凭证文件 `auth.toml` 的读写（首次使用即创建，无 migrate 概念）。
 //!
-//! 对应设计§6：`auth.toml` 是用户可编辑的 TOML，凭证不落 `ribo.toml`。
+//! 对应设计：`auth.toml` 是用户可编辑的 TOML，凭证不落 `ribo.toml`。
 //! 本模块用 [`toml_edit::DocumentMut`] 承载内容，从而**保留用户手写注释**
 //! ——重新登录只更新目标 provider 的字段，其他 provider 与注释原样保留。
 //!

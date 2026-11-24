@@ -1,8 +1,8 @@
-//! ra-tui 入口：参数解析 → 配置/装配 → raw mode → 主循环 → 退出码
-//!（16 详细设计 §14）。
+//! ra-tui 入口：参数解析 → 配置/装配 → raw mode → 主循环 → 退出码。
+//!
 //!
 //! 启动失败（配置 / 装配）在 raw mode 进入**之前**用 stderr 报错退出
-//!（15 §4.4）；渲染路径禁止 `println!`，tracing 走文件通道。
+//!；渲染路径禁止 `println!`，tracing 走文件通道。
 //!
 //! **Tokio 上下文**：入口用 `#[tokio::main]` 让整个 main 体运行在
 //! multi-thread runtime 中。键盘 task 的 `spawn_blocking` 经
@@ -36,7 +36,7 @@ use crate::lifecycle::RawModeGuard;
 #[command(name = "ribo-tui", version, about = "Ribo Agent 终端 TUI")]
 pub struct TuiArgs {
   /// 配置文件路径；未指定时自动探测 ribo.toml，缺失则以 mock 模式启动
-  ///（与 ra-cli 共用 `resolve_config_path`，14 §5）。
+  ///（与 ra-cli 共用 `resolve_config_path`）。
   #[arg(short, long, value_name = "PATH")]
   pub config: Option<PathBuf>,
 
@@ -71,14 +71,14 @@ async fn main() -> ExitCode {
     args.root.as_deref(),
     args.global_dir.as_deref(),
   );
-  // D7：release 构建下三类配置异常为致命错误
+  // release 构建下三类配置异常为致命错误
   if let Some(err) = &outcome.fatal_error {
     eprintln!("配置错误：{err}");
     return ExitCode::FAILURE;
   }
   let root = outcome.harness.root.clone();
 
-  // ===== 阶段 2：日志落文件（stdout 由 TUI 全屏占用，11 §11）=====
+  // ===== 阶段 2：日志落文件（stdout 由 TUI 全屏占用）=====
   // 全局域启用 → 日志写全局目录；否则写项目目录（失败自动回退）
   let log_guard = match ra_cli::logging::init_file_logging_with_fallback(
     &outcome.log_root(),
@@ -109,10 +109,10 @@ async fn main() -> ExitCode {
     .and_then(|path| std::fs::read_to_string(path).ok());
   let ctrl_c_timeout = lifecycle::parse_ctrl_c_timeout(config_text.as_deref());
 
-  // ===== 阶段 3.5：首次信任确认（19_ Step 6，设计§7.2）=====
+  // ===== 阶段 3.5：首次信任确认=====
   // 项目有插件但未 code-trust 时，raw mode 下读单个 y/n：
   // y → 写 trusted_projects.toml 并重载配置（插件正常加载）；
-  // n → 保持未信任，装配层跳过插件（Step 4 行为），继续启动。
+  // n → 保持未信任，装配层跳过插件（信任闸门拒绝），继续启动。
   if trust_gate::needs_prompt(&outcome) {
     let plugin_count = outcome.plugins.entries.len();
     let global_root = outcome

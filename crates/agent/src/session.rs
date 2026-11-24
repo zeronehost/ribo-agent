@@ -45,11 +45,11 @@ pub struct Session {
   last_active_at: AtomicI64,
 }
 
-/// 最近一次上下文装配的压缩三态统计（token 估算，用户需求 2026-11-23）。
+/// 最近一次上下文装配的压缩三态统计（token 估算）。
 ///
 /// 由 `ContextProvider::build` 每次装配后写入会话；显示端（TUI 侧栏 /
 /// CLI `/status`）经 Harness 读取。估算口径统一走
-/// `estimate_context_tokens` / `estimate_tokens_from_chars`（P6 唯一真值）。
+/// `estimate_context_tokens` / `estimate_tokens_from_chars`（唯一真值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CompactionStats {
   /// 使用总量：压缩前完整历史（含本轮输入）的估算 token。
@@ -132,7 +132,7 @@ impl Session {
 
   /// 换发新取消根：上一次运行的 `stop` 会永久 abort 旧根
   /// （`AbortHandle` 无复位语义），运行收尾时调用保证会话在
-  /// `/stop` 之后可继续对话（概设 v2.4 复位三分支的会话侧配套）。
+  /// `/stop` 之后可继续对话。
   ///
   /// 并发安全：仅由「已持有 run_lock + running 标志」的运行收尾路径
   /// 调用；外部 `stop` 在无活动运行时是 no-op（`is_running` 检查），

@@ -5,7 +5,7 @@
 //! [`PluginToolAdapter`](crate::adapter::PluginToolAdapter) 桥接为
 //! `Arc<dyn AgentTool>` 注入 `ToolManager`（主循环零改动）。
 //!
-//! `#[async_trait]` 实施纪律（设计文档 18_ §0.4）：
+//! `#[async_trait]` 实施纪律：
 //! trait object（`Arc<dyn Plugin>`）要求 dyn-compatible，RPITIT /
 //! `async fn in trait` 均不可用；**所有** `impl Plugin` 必须同步标记
 //! `#[async_trait]`，漏标直接编译失败。
@@ -17,7 +17,7 @@ use ra_agent::events::AgentEvent;
 use ra_core::error::RiboResult;
 use ra_tools::context::ToolContext;
 
-/// 插件抽象：插件生态的语言无关声明边界（设计文档 18_ §2.1）。
+/// 插件抽象：插件生态的语言无关声明边界。
 ///
 /// 实现方约束：
 ///
@@ -64,7 +64,7 @@ pub trait Plugin: Send + Sync {
   fn on_event(&self, _event: &AgentEvent) {}
 }
 
-/// 插件工具声明：适配器据此生成 `AgentTool`（设计文档 18_ §2.1）。
+/// 插件工具声明：适配器据此生成 `AgentTool`。
 ///
 /// `parameters` 必须是合法 JSON Schema——注册期经
 /// `ra_tools::schema::compile_validator` 预检，非法时整个插件拒绝注册。

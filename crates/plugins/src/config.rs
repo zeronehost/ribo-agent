@@ -1,4 +1,4 @@
-//! 进程级运行参数（设计文档 18_ §0.3，v0.8 #15）。
+//! 进程级运行参数。
 //!
 //! 单一配置结构消除硬编码：进程级默认由 [`PluginRuntimeConfig::default`]
 //! 给出，插件级覆写（[`PluginAcl`](crate::acl::PluginAcl) /
@@ -19,12 +19,12 @@ pub struct PluginRuntimeConfig {
   pub log_burst: u64,
   /// log 限流：每秒采样放行速率。
   pub log_rate_per_sec: u64,
-  /// 单工具执行超时的宿主侧上限（ai_0018 §4.4 / B2.5）：工具自述
+  /// 单工具执行超时的宿主侧上限（ai_0018 / B2.5）：工具自述
   /// `timeout_hint` 与插件 ACL ceiling 合并后再与本值取 min（只收紧）。
   pub tool_timeout_ceiling: std::time::Duration,
   /// 是否启用 fuel（指令数中断）。Step B 恒 `false`；Step C 启用需改
   /// 配置并**重启进程**——`Engine` 配置在 `new()` 时固化，`PluginRuntime`
-  /// 为 `OnceLock` 单例不可重置（18_ §5.2 #5）。
+  /// 为 `OnceLock` 单例不可重置。
   pub enable_fuel: bool,
   /// 每次 tool 执行注入的 fuel 预算（指令数权重）。仅 `enable_fuel`
   /// 为真时生效；耗尽触发 `Trap::OutOfFuel`，由结构化分类器归 Timeout
@@ -36,7 +36,7 @@ pub struct PluginRuntimeConfig {
 }
 
 impl Default for PluginRuntimeConfig {
-  /// 进程级默认值（18_ §0.3 v0.8.1 P1-3：实际实现，取代注释占位）。
+  /// 进程级默认值（实际实现，取代注释占位）。
   fn default() -> Self {
     Self {
       memory_limit_bytes: 32 << 20, // 32MB 线性内存
@@ -90,7 +90,7 @@ impl PluginRuntimeConfig {
 mod tests {
   use super::*;
 
-  /// 场景：进程默认配置与设计文档 §0.3 的约定值一致。
+  /// 场景：进程默认配置与约定值一致。
   #[test]
   fn default_values_match_design_contract() {
     let cfg = PluginRuntimeConfig::default();

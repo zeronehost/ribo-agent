@@ -1,8 +1,8 @@
-//! `AppState` 状态树（16 详细设计 §4）。
+//! `AppState` 状态树。
 //!
 //! 集中式状态：所有键盘事件与 `AgentEvent` 的最终落点。`editor` 为
 //! [`RefCell`]\[`TextArea`\]（非 `Sync`）——`AppState` 整体由**单一主循环
-//! 任务独占持有**，绝不跨任务传递（16 §3.1 R-R4）；键盘 task 只投喂
+//! 任务独占持有**，绝不跨任务传递；键盘 task 只投喂
 //! `AppInput` 事件。
 
 use std::cell::RefCell;
@@ -13,13 +13,13 @@ use ra_cli::config::ConfigMode;
 use ra_cli::config::assemble::TurnHandle;
 use tui_textarea::TextArea;
 
-/// 全局可变状态树：所有事件与按键的最终落点（16 §4）。
+/// 全局可变状态树：所有事件与按键的最终落点。
 pub struct AppState {
   /// 对话区状态（气泡队列 + 流式指针）。
   pub chat: ChatState,
   /// 状态行数据。
   pub status: StatusLine,
-  /// 输入编辑器（`RefCell` 解决渲染需 `&mut self`，16 §3.1 R-B3）。
+  /// 输入编辑器（`RefCell` 解决渲染需 `&mut self`，R-B3）。
   pub editor: RefCell<TextArea<'static>>,
   /// `/help` 帮助浮层开关。
   pub help_open: bool,
@@ -35,9 +35,9 @@ pub struct AppState {
   pub scroll: ChatScrollState,
   /// Ctrl-C 超时（进入「再按一次即强退」子状态的等待时长）。
   pub ctrl_c_timeout: Duration,
-  /// 第一次 Ctrl-C 已触发，进入退出等待态（16 §8）。
+  /// 第一次 Ctrl-C 已触发，进入退出等待态。
   pub exiting: bool,
-  /// 超时后「再按一次即强退」子状态（16 §8 第 2 步 (b)）。
+  /// 超时后「再按一次即强退」子状态。
   pub force_ready: bool,
 }
 
@@ -168,8 +168,8 @@ pub enum ChatBubbleBody {
     /// 是否仍在执行中（Start 后、End 前为真）。
     running: bool,
   },
-  /// 上下文压缩痕迹（D8）：对话流中的持久提示，不显示摘要内容与条数。
-  /// `failed == true` 表示摘要失败、本轮已回退滑窗（v1.6）。
+  /// 上下文压缩痕迹：对话流中的持久提示，不显示摘要内容与条数。
+  /// `failed == true` 表示摘要失败、本轮已回退滑窗。
   Compaction {
     /// 是否失败回退。
     failed: bool,
@@ -204,7 +204,7 @@ pub struct StatusLine {
   pub total_output: u64,
   /// 是否有在途回合。
   pub in_flight: bool,
-  /// 上下文压缩三态统计（v1.6 用户需求：总量 / 已压缩 / 当前）。
+  /// 上下文压缩三态统计（总量 / 已压缩 / 当前）。
   /// `None` 仅在未绑定估算器 / 未回放时出现；冷启动回放后由
   /// `SessionStatsEstimator` 写入三态（当前量为 0，尚未发起请求），
   /// 侧栏显示数值而非「—」。
@@ -224,7 +224,7 @@ pub enum TurnState {
 /// 对话区粘底滚动状态机（pi-tui ScrollViewState 语义移植）。
 ///
 /// `line_cache` 为「气泡 id → (上次计算宽度, 折行行数)」缓存：Resize 时
-/// 仅宽度变化的气泡才重算（16 §7.5 第 4 步，避免 O(n) 全量重排）。
+/// 仅宽度变化的气泡才重算。
 pub struct ChatScrollState {
   /// 视口顶部偏移（视觉行数）。
   pub offset: u16,

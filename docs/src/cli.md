@@ -6,7 +6,7 @@
 
 | 参数 | 说明 |
 | :--- | :--- |
-| `-c, --config <PATH>` | 配置文件路径。未指定时自动探测当前目录的 `ribo.toml`，缺失则进入 Mock 模式 |
+| `-c, --config <PATH>` | 配置文件路径。未指定时自动探测当前目录的 `ribo.toml`，缺失则进入 Mock 模式（debug 构建；release 下无 provider 报错退出）。 |
 | `--root <PATH>` | 覆盖配置中的工作空间根目录（`harness.root`，默认进程 cwd） |
 | `--global-dir <PATH>` | 覆盖全局域目录（默认平台配置目录 + `/ribo`） |
 | `--allow-duplicate-plugin-id` | 允许跨源重复的 plugin_id（首声明胜出）；默认拒绝并启动致命 |

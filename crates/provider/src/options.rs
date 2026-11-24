@@ -49,7 +49,7 @@ pub struct StreamOptions {
   pub extra_headers: Vec<(String, String)>,
   /// 业务标签（供上层打点、路由使用，不参与线格式）。
   pub labels: BTreeMap<String, String>,
-  /// 降级候选的窗口过滤下限（24 号方案 D6）：调用方传「当前转录估算
+  /// 降级候选的窗口过滤下限：调用方传「当前转录估算
   /// token × 1.1」；`0` = 不过滤（默认）。候选 `context_window < 该值`
   /// 会在降级解析时被滤除（防"降级到装不下当前对话的小模型"）。
   pub min_context_window: usize,

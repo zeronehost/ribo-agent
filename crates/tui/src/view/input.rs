@@ -1,4 +1,4 @@
-//! 输入编辑器视图：包裹 `RefCell<TextArea>`（16 §3.1 / §7.3）。
+//! 输入编辑器视图：包裹 `RefCell<TextArea>`。
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -16,7 +16,7 @@ pub struct InputView;
 impl View for InputView {
   fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
     // set_block 需要可变借用（R-B3 的 RefCell 通道）；0.7 起
-    // render_widget 直接受 &TextArea（内部 scroll 更新已在上游解决）
+    // render_widget 直接接受 &TextArea（内部 scroll 更新已在上游解决）
     let mut editor = state.editor.borrow_mut();
     editor.set_block(
       ratatui::widgets::Block::bordered()
@@ -36,7 +36,7 @@ pub fn editor_text(state: &AppState) -> String {
   state.editor.borrow().lines().join("\n")
 }
 
-/// 清空编辑器（提交后调用；`replace` 整体替换，RefCell 语义，16 §9）。
+/// 清空编辑器（提交后调用；`replace` 整体替换，RefCell 语义）。
 pub fn clear_editor(state: &AppState) {
   state.editor.replace(TextArea::new(vec![String::new()]));
 }

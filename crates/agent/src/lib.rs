@@ -11,10 +11,10 @@
 //! - [`adapter`]：ra-tools `ToolManager` 到 [`traits::ToolProvider`] 的适配；
 //! - [`agent`]：`BaseAgent` 门面（组装依赖、重入拒绝、注入与取消入口）。
 //!
-//! 设计依据 `todo/07_阶段2_Agent核心循环概要设计.md`：消息模型全链路复用
-//! ra-core（D1），LLM 边界直持 `Arc<Gateway>`（D2），工具边界经 ra-tools
-//! `ToolManager` 并以错误回灌（D3/D8），错误统一 `RiboError`
-//! （D7，`domain = "agent"`）。
+//! 消息模型全链路复用
+//! ra-core，LLM 边界直持 `Arc<Gateway>`，工具边界经 ra-tools
+//! `ToolManager` 并以错误回灌，错误统一 `RiboError`
+//! （`domain = "agent"`）。
 
 #[cfg(test)]
 mod test_support;

@@ -1,6 +1,6 @@
-//! 技能路径纪律集成测试（文档 22 T2 / T12）。
+//! 技能路径纪律集成测试。
 //!
-//! 覆盖：旧 `<root>/skills/` 不被扫描（D1 硬切换，仅读 `.ribo/skills/`）；
+//! 覆盖：旧 `<root>/skills/` 不被扫描（硬切换，仅读 `.ribo/skills/`）；
 //! 同名技能 Project > Global（SkillsLoader roots 顺序首个胜出）。
 
 use std::path::Path;
@@ -44,7 +44,7 @@ fn write_skill(dir: &Path, name: &str, description: &str) {
 }
 
 /// 场景（T2）：`.ribo/skills/` 与旧 `<root>/skills/` 并存 → 只读新路径，
-/// 旧布局技能不识别（D1 硬切换，无迁移无兼容）。
+/// 旧布局技能不识别（硬切换，无迁移无兼容）。
 #[test]
 fn t2_old_skills_dir_is_not_scanned() {
   let dir = tempfile::tempdir().expect("temp dir");

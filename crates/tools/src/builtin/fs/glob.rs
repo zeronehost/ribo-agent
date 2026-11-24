@@ -73,7 +73,7 @@ impl AgentTool for GlobTool {
     let cwd = self.root.resolve(cwd_raw)?;
     check_cancel(ctx, "glob")?;
     // ===== 模式编译 =====
-    // 完整模式 = cwd 绝对路径 join pattern（分隔符经 Path 抽象，D10）；
+    // 完整模式 = cwd 绝对路径 join pattern（分隔符经 Path 抽象）；
     // 模式非法属入参问题 → INVALID_ARGUMENTS
     let full = cwd.join(pattern);
     let paths = glob::glob(&full.to_string_lossy()).map_err(|e| {
@@ -94,7 +94,7 @@ impl AgentTool for GlobTool {
           results.push(shown.to_string_lossy().into_owned());
         }
         Err(e) => {
-          // 单个 IO 项失败：跳过并记 debug（§10 日志表）
+          // 单个 IO 项失败：跳过并记 debug（日志表）
           tracing::debug!(reason = %e, "glob entry skipped");
         }
       }

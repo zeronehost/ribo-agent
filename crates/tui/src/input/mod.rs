@@ -1,4 +1,4 @@
-//! 输入子系统：键盘 task（spawn_blocking）与键位表（16 §7）。
+//! 输入子系统：键盘 task（spawn_blocking）与键位表。
 
 pub mod completion;
 pub mod keybindings;

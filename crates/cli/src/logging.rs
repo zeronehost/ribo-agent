@@ -1,4 +1,4 @@
-//! 日志落文件：stdout 只留对话渲染（概设 §7 决策 5）。
+//! 日志落文件：stdout 只留对话渲染（模式显式化后固定）。
 //!
 //! 经 `tracing-appender` 写入 `<root>/logs/cli.log.<日期>`（按日滚动），
 //! 生产入口经 `try_init` 全局兜底；E2E 用 `rolling::never` 构造独立
@@ -37,7 +37,7 @@ pub fn init_file_logging(
   Ok(guard)
 }
 
-/// 按「全局优先、项目兜底」初始化日志（19_ 全局域语义）。
+/// 按「全局优先、项目兜底」初始化日志。
 ///
 /// `preferred` 为全局域目录（Global 域启用时），`fallback` 为项目根。
 /// 全局目录不可创建/不可写时（如只读共享目录、权限不足）不阻断启动，

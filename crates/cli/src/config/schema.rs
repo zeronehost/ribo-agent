@@ -1,11 +1,11 @@
 //! 分层配置 schema：每层独立、层间零交叉，聚合层负责拼接与校验
-//!（14 详细设计 §4；默认模型为 `[routing].default` 二元组，24 号方案 D1）。
+//! 默认模型为 `[routing].default` 二元组。
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
-/// global 层：全局域开关与目录（对应设计§8.1）。
+/// global 层：全局域开关与目录（对应设计）。
 ///
 /// `enabled` 默认 `true`，但全局目录不存在时自动禁用（非致命，R4：不主动创建）。
 /// `dir` 由 `--global-dir` 覆盖；未设置时用平台默认配置目录 + `/ribo`。
@@ -27,7 +27,7 @@ impl Default for GlobalSchema {
   }
 }
 
-/// provider 层（24 号方案 v1.3）：默认模型为 `[routing].default` 二元组，
+/// provider 层：默认模型为 `[routing].default` 二元组，
 /// `[[providers]]` 条目经 `models` 数组声明多模型。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -48,7 +48,7 @@ impl Default for ProviderSchema {
   }
 }
 
-/// 默认模型二元组（D1）。
+/// 默认模型二元组。
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct RoutingRef {
   /// 提供方 ID。
@@ -70,12 +70,12 @@ pub struct ProviderEntry {
   /// 缺省为空串（Step 8）：Global 来源从 auth.toml 补、Project 必须显式。
   #[serde(default)]
   pub api_key: String,
-  /// 该通道可用的模型清单（D2，必填非空）：声明顺序 = same_provider
-  /// 隐式备选序（D3）；第一个为该通道默认模型。
+  /// 该通道可用的模型清单（必填非空）：声明顺序 = same_provider
+  /// 隐式备选序；第一个为该通道默认模型。
   pub models: Vec<ModelEntry>,
 }
 
-/// 单模型声明（D2）：窗口随模型走。
+/// 单模型声明：窗口随模型走。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelEntry {
   /// 真实模型 ID：同时作为网关模型 ID 与请求线 `model` 字段。
@@ -90,7 +90,7 @@ fn default_context_window() -> u32 {
   8192
 }
 
-/// 带来源标记的 provider 声明（Step 8 / D1，内部类型）。
+/// 带来源标记的 provider 声明（内部类型）。
 ///
 /// `pub(crate)` 当前足够（只在 `ra-cli::config` 内部使用）；若未来需跨
 /// crate 暴露（如插件系统需知道 provider 来源），再升为 `pub`。
@@ -102,7 +102,7 @@ pub(crate) struct ProviderWithOrigin {
   pub origin: crate::config::origin::ConfigOrigin,
 }
 
-/// 从 TOML 表解析 `[[providers]]` 数组（Step 8 / P1-3，新增辅助函数）。
+/// 从 TOML 表解析 `[[providers]]` 数组（新增辅助函数）。
 ///
 /// 单条解析失败的条目静默跳过（与 `load_layer` 的局部降级语义一致）；
 /// `providers` 键缺失或非数组时返回空列表。
@@ -116,13 +116,13 @@ pub(crate) fn providers_from_table(table: &toml::Table) -> Vec<ProviderEntry> {
     .collect()
 }
 
-/// routing 段（24 号方案 v1.3）：默认二元组 + 统一降级规则列表。
+/// routing 段：默认二元组 + 统一降级规则列表。
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoutingSchema {
-  /// 默认模型二元组（D1）：`(provider, model)` 必须存在于 providers 的
+  /// 默认模型二元组：`(provider, model)` 必须存在于 providers 的
   /// models 中（装配期校验）。
   pub default: RoutingRef,
-  /// 降级规则列表（D4）：按声明顺序，首条 `match` 命中生效。
+  /// 降级规则列表：按声明顺序，首条 `match` 命中生效。
   #[serde(default)]
   pub fallback: Vec<FallbackRuleSchema>,
 }
@@ -140,7 +140,7 @@ impl Default for RoutingSchema {
   }
 }
 
-/// `[[routing.fallback]]` 单条规则：`match` → `targets`（D4）。
+/// `[[routing.fallback]]` 单条规则：`match` → `targets`。
 #[derive(Debug, Clone, Deserialize)]
 pub struct FallbackRuleSchema {
   /// 匹配条件（TOML 键 `match`；Rust 保留字用 rename）。
@@ -150,7 +150,7 @@ pub struct FallbackRuleSchema {
   pub targets: Vec<FallbackTargetSchema>,
 }
 
-/// 规则匹配条件两形态（D4）：`{ provider, model }` 精确 / `{ provider }` 通配。
+/// 规则匹配条件两形态：`{ provider, model }` 精确 / `{ provider }` 通配。
 #[derive(Debug, Clone, Deserialize)]
 pub struct FallbackMatchSchema {
   /// 匹配的提供方 ID。
@@ -160,7 +160,7 @@ pub struct FallbackMatchSchema {
   pub model: Option<String>,
 }
 
-/// 目标两形态（D4，untagged）：
+/// 目标两形态（untagged）：
 /// `{ provider, model }` 显式二元组 / `{ provider }` 两级解析（同名→目标默认）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -243,7 +243,7 @@ impl Default for CompressionSchema {
 pub struct SessionSchema {
   /// 初始会话键（`/sessions <名称>` 切换基准）。
   pub default_key: String,
-  /// `/history` 默认条数。
+  /// 预留字段：`/history` 缺省条数当前固定为 10，暂不读取此配置。
   pub history_lines: usize,
 }
 
@@ -303,11 +303,11 @@ impl Default for HarnessLayerSchema {
   }
 }
 
-/// plugins 层：WASM 插件装配声明（阶段 6 Step B 接入，18_ §4.1）。
+/// plugins 层：WASM 插件装配声明（阶段 6 Step B 接入）。
 ///
 /// 层间零交叉纪律：本层只描述「加载什么文件、授予什么能力」，与
 /// [`ra_plugins::acl::PluginAcl`] 的运行时转换在装配层（assemble）完成；
-/// 能力语义与 18_ §2.1 一致——ACL 由宿主注入，不信任 guest 自述。
+/// 能力语义保持一致——ACL 由宿主注入，不信任 guest 自述。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct PluginsSchema {
@@ -359,7 +359,7 @@ pub struct PluginEntrySchema {
   /// wasm 模块文件路径（相对 harness.root 解析；绝对路径与含 `..`
   /// 逃逸组件的取值在装配期直接拒绝——与 fs 工具同一沙箱纪律）。
   pub path: PathBuf,
-  /// 注入插件的 config（经 args 信封在每次 `execute` 生效，18_ §9）。
+  /// 注入插件的 config（经 args 信封在每次 `execute` 生效）。
   pub config: Option<serde_json::Value>,
   /// 权威清单文件（Step C B3.2，可选）：相对 harness.root 的
   /// manifest.json（与 guest ABI 同构）。提供时宿主以其为信任源，
@@ -414,7 +414,7 @@ pub fn validate_provider_entry(
     warnings.push(format!("provider entry incomplete: {}", entry.provider_id));
     return false;
   }
-  // models 必填非空且各 id 非空（D2：空通道无意义）
+  // models 必填非空且各 id 非空（空通道无意义）
   if entry.models.is_empty() {
     warnings.push(format!("provider models empty: {}", entry.provider_id));
     return false;
@@ -523,7 +523,7 @@ refs = "/opt/refs"
     assert!(!is_valid_domain_id(&"a".repeat(33)));
   }
 
-  /// 场景：`[[providers.models]]` 解析与 `context_window` 缺省值（D2）。
+  /// 场景：`[[providers.models]]` 解析与 `context_window` 缺省值。
   ///
   /// 预期：显式值落位；未配置时取 8192（历史演示基线）；多模型按
   /// 声明序排列。

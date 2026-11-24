@@ -1,5 +1,5 @@
 //! 键盘读取 task：同步阻塞的 `event::read()` 必须在 `spawn_blocking`
-//! 中运行（16 §2.1 / §7.2，R-B1——异步任务内直接调用会冻结 Tokio worker）。
+//! 中运行（R-B1——异步任务内直接调用会冻结 Tokio worker）。
 
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;

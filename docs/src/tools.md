@@ -46,10 +46,9 @@ read("datasets://train/img001.jpg")
 规则：
 
 - `scheme` 为挂载名（须匹配 `^[a-z][a-z0-9_]{0,31}$`，保留字禁用）；未知 scheme → `path.invalid`；
-- 路径必须绝对、存在、是目录，且**不在当前工作目录内**——违反即 `config.mount_invalid`；
+- 路径必须绝对、存在、是目录，且**不在当前工作目录内**，违反即 `config.mount_invalid`；
 - 挂载恒为只读：`write` / `edit` 返回 `plugin.plugin_forbidden`；
 - 无前缀路径仍走主沙箱根，**不能访问 `.ribo/` 内部目录**（返回 `path.internal_forbidden`）；
-- 仅全局可声明——项目配置无权声明挂载点。
 
 ```toml
 [fs.mounts]

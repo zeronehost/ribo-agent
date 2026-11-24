@@ -8,9 +8,9 @@
 | :--- | :--- | :--- |
 | `/help`（`/?`） | CLI + TUI | 显示命令清单 |
 | `/skills` | CLI + TUI | 列出已加载技能及其来源 / 诊断 |
-| `/sessions [name]` | CLI + TUI | 无参列出全部会话键（内存 ∪ 磁盘，→ 标记当前）；带参切换到指定会话，不存在则新建 |
+| `/sessions [name]` | CLI + TUI | 无参列出全部会话键（内存 ∪ 磁盘；TUI 浮层以 → 标记当前，CLI 逗号分隔列出）；带参切换到指定会话，不存在则新建 |
 | `/stop`（`/cancel`） | CLI + TUI | 取消在途回合 |
-| `/status` | **仅 CLI** | 状态摘要（会话 / 模式 / 在途 / token / 上下文三态：总量 / 已压缩 / 当前 / 警告数）；TUI 侧栏常驻展示，无需命令。输出示例：`ctx: total=… \| compressed=…% \| current=… (…)`；未装配时为 `ctx: —` |
+| `/status` | **仅 CLI** | 状态摘要（会话 / 模式 / 在途 / 警告数 / 上下文三态：总量 / 已压缩 / 当前）；TUI 侧栏常驻展示，无需命令。输出示例：`ctx: total=… \| compressed=…% \| current=… (…)`；未装配时为 `ctx: —` |
 | `/history [n]` | **仅 CLI** | 最近 n 条历史记录（默认固定 10，不读取配置）；TUI 对话区即完整历史，PgUp/PgDn 翻页 |
 | `/exit`（`/quit`） | CLI + TUI | 退出 |
 

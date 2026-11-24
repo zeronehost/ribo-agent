@@ -1,5 +1,4 @@
-//! schema → 运行时对象装配：Gateway / LoopDeps / Harness / CliSession
-//!（14 详细设计 §6）。
+//! schema → 运行时对象装配：Gateway / LoopDeps / Harness / CliSession。
 
 use std::{
   collections::HashSet,
@@ -64,7 +63,7 @@ const CONFIG_DOMAIN: &str = "config";
 
 /// REPL 唯一运行时句柄（命名避开 `ra_agent::session::Session`）。
 /// `harness` 为 `Arc<Harness>`：`prompt(&self)` 需跨 spawn 任务共享
-///（概设 v2.4 所有权拆解——Harness 全 Arc 字段，包装零成本）。
+///（Harness 全 Arc 字段，包装零成本）。
 pub struct CliSession {
   pub harness: Arc<Harness>,
   pub events: tokio::sync::broadcast::Receiver<ra_agent::events::AgentEvent>,
@@ -82,7 +81,7 @@ pub struct CliSession {
   pub default_key: String,
   /// 装配期加载的技能名（`/skills` 输出）。
   pub skills: Vec<String>,
-  /// 每个技能的来源域标签（与 `skills` 平行；19_ Step 5）。
+  /// 每个技能的来源域标签（与 `skills` 平行）。
   pub skill_origins: Vec<String>,
   /// 装配期技能诊断（已格式化为单行，`/skills` 输出）。
   pub skill_diagnostics: Vec<String>,
@@ -130,7 +129,7 @@ fn model_of(
   .with_max_tokens(1024)
 }
 
-/// 装配期 compression 配置校验（25 号方案 D7）。
+/// 装配期 compression 配置校验。
 ///
 /// 校验数值范围与摘要模型注册；错误码 `config.compression_invalid`。
 /// 仅 Real 模式校验摘要模型注册（mock 模式无真实 provider 目录）。
@@ -192,12 +191,12 @@ fn validate_compression(outcome: &LoadOutcome) -> RiboResult<()> {
   Ok(())
 }
 
-/// 装配期 routing 引用校验（24 号方案 D1/D4）：
+/// 装配期 routing 引用校验：
 ///
 /// - `[routing].default` 的 `(provider, model)` 必须存在于某条目的 models；
 /// - fallback 规则的 `match.provider` / `targets[].provider` 必须已注册；
 /// - 规则中出现的 `model` 必须存在于对应 provider 的 models；
-/// - 通配规则遮蔽后序精确规则 → shadowing warning（不拒绝，D4）。
+/// - 通配规则遮蔽后序精确规则 → shadowing warning（不拒绝）。
 ///
 /// 任一引用悬空 → `config.routing_invalid`（fail-fast）。
 fn validate_routing_refs(outcome: &LoadOutcome) -> RiboResult<()> {
@@ -213,7 +212,7 @@ fn validate_routing_refs(outcome: &LoadOutcome) -> RiboResult<()> {
       )
     })
     .collect();
-  // D1：default 二元组存在性
+  // default 二元组存在性
   let default_ok = registered
     .get(outcome.provider.routing.default.provider.as_str())
     .is_some_and(|models| {
@@ -230,7 +229,7 @@ fn validate_routing_refs(outcome: &LoadOutcome) -> RiboResult<()> {
       ),
     ));
   }
-  // D4：fallback 规则引用 + shadowing
+  // fallback 规则引用 + shadowing
   for (index, rule) in outcome.provider.routing.fallback.iter().enumerate() {
     if !registered.contains_key(rule.match_rule.provider.as_str()) {
       return Err(ra_core::error::RiboError::new(
@@ -299,7 +298,7 @@ fn validate_routing_refs(outcome: &LoadOutcome) -> RiboResult<()> {
       }
     }
   }
-  // shadowing 检测（warning 不拒绝，D4 伪码）
+  // shadowing 检测（warning 不拒绝，伪码）
   let rules = &outcome.provider.routing.fallback;
   for (i, prev) in rules.iter().enumerate() {
     for (j, next) in rules.iter().enumerate().skip(i + 1) {
@@ -340,7 +339,7 @@ fn build_real_gateway(
   };
   let mut gateway = Gateway::new(cfg);
   for entry in &outcome.provider.providers {
-    // 多模型注册（D2）：models 全量进通道目录
+    // 多模型注册：models 全量进通道目录
     let adapter_models: Vec<Model> = entry
       .models
       .iter()
@@ -380,7 +379,7 @@ fn build_real_gateway(
     gateway.register(adapter)?;
   }
   let mut routes = RouteMap::default();
-  // D3：隐式同 provider 链（models 声明序，其余模型）
+  // 隐式同 provider 链（models 声明序，其余模型）
   for entry in &outcome.provider.providers {
     for (index, m) in entry.models.iter().enumerate() {
       let chain: Vec<ModelId> = entry
@@ -393,7 +392,7 @@ fn build_real_gateway(
       routes.insert_same_provider(mid(&m.id), chain);
     }
   }
-  // D4：统一 fallback 规则列表
+  // 统一 fallback 规则列表
   let rules: Vec<FallbackRule> = outcome
     .provider
     .routing
@@ -423,7 +422,7 @@ fn build_real_gateway(
     .collect();
   routes.insert_fallback_rules(rules);
   let gateway = Arc::new(gateway.with_routes(routes));
-  // D1：默认二元组定位主模型（load 阶段已校验存在性）
+  // 默认二元组定位主模型（load 阶段已校验存在性）
   let primary = outcome
     .provider
     .providers
@@ -511,7 +510,7 @@ fn escapes_root(path: &Path) -> bool {
   !is_lexically_safe(path)
 }
 
-/// 校验 fs 只读挂载点（v3 取代资源域，P3 启动致命）。
+/// 校验 fs 只读挂载点。
 ///
 /// 逐条校验全局 `settings.toml [fs.mounts]` 的声明：
 /// 1. 名字匹配 `^[a-z][a-z0-9_]{0,31}$`（复用 `is_valid_domain_id`）且不在保留字清单；
@@ -700,8 +699,7 @@ fn build_verify_policy(
 ///
 /// 1. **词法**：扫描目录（固定 `.ribo/plugins`）与 entries 的路径必须是
 ///    root 下的相对子路径（绝对路径或 `..` 逃逸组件直接拒绝）。`Path::join`
-///    遇绝对路径会
-///    替换基址，故 roots 的校验是扫描目录不越界的必要条件；
+///    遇绝对路径会替换基址，故 roots 的校验是扫描目录不越界的必要条件；
 /// 2. **归属**：规范化（canonicalize）后的路径必须仍在规范化后的
 ///    harness.root 之下——堵住词法合法但经符号链接 / 目录联接指向沙箱
 ///    外的路径。扫描项在加入 `specs` 前即由 [`validate_plugin_path`]
@@ -878,7 +876,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
 /// 毒化整个进程——半装配状态只会把问题推迟到首次工具调用，故任何
 /// 插件加载 / 注册失败都直接上抛，由启动流程终结。
 ///
-/// `allow_duplicate_plugin_id`（D3 逃生舱口）：`false` 时在注册前检测
+/// `allow_duplicate_plugin_id`（逃生舱口）：`false` 时在注册前检测
 /// 跨源 `plugin_id` 冲突并**致命**（列出全部来源）；`true` 时降级为
 /// Warning + 首声明胜出（与 registry 二道防线行为一致）。
 ///
@@ -922,7 +920,7 @@ fn load_and_register_plugins(
       "plugin loaded"
     );
 
-    // ===== 装配期 plugin_id 冲突检测（C10 / D3）=====
+    // ===== 装配期 plugin_id 冲突检测 =====
     if let Some(first_source) = seen.get(&plugin_id) {
       tracing::warn!(
         plugin = %plugin_id,
@@ -965,7 +963,7 @@ fn load_and_register_plugins(
   Ok(loaded)
 }
 
-/// 回合在途句柄：TUI 与 CLI 共用 prompt 发起逻辑（16 详细设计 §13.1）。
+/// 回合在途句柄：TUI 与 CLI 共用 prompt 发起逻辑。
 ///
 /// `done` 的类型为 `RiboResult<()>`（即 `Result<(), RiboError>`），
 /// **不是** `Result<(), RiboResult<()>>`——避免嵌套 Result。
@@ -1015,7 +1013,7 @@ impl CliSession {
   }
 }
 
-/// 由 LoadOutcome 装配 REPL 会话（完整前链见 14 §6 装配映射表）。
+/// 由 LoadOutcome 装配 REPL 会话。
 ///
 /// mock 模式使用空脚本；E2E 需要按回合供给脚本时走
 /// [`assemble_with_steps`]。
@@ -1027,7 +1025,7 @@ pub fn assemble(outcome: &LoadOutcome) -> RiboResult<CliSession> {
   assemble_with_steps(outcome, Vec::new())
 }
 
-/// 装配选项（19_ Step 3）：控制装配期策略开关。
+/// 装配选项：控制装配期策略开关。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AssembleOptions {
   /// 允许跨源重复 plugin_id（首声明胜出，降级 Warning）。
@@ -1070,12 +1068,12 @@ fn assemble_impl(
   steps: Vec<MockStep>,
   options: AssembleOptions,
 ) -> RiboResult<CliSession> {
-  // ===== 阶段 0：routing 引用校验（24 号方案 D1/D4，Real 模式 fail-fast）===
+  // ===== 阶段 0：routing 引用校验（ Real 模式 fail-fast）===
   // 仅 Real 模式校验——mock 模式无 provider 注册，规则本就悬空属预期。
   if outcome.mode == ConfigMode::Real {
     validate_routing_refs(outcome)?;
   }
-  // D7：compression 数值范围校验（摘要模型注册校验按模式在函数内判定）
+  // compression 数值范围校验（摘要模型注册校验按模式在函数内判定）
   validate_compression(outcome)?;
   // ===== 阶段 1：网关 =====
   let (gateway, model) = match outcome.mode {
@@ -1128,9 +1126,9 @@ fn assemble_impl(
   let skill_origins: Vec<String> =
     skills.iter().map(|s| s.origin.clone()).collect();
 
-  // ===== 域内 AGENTS.md 拼接（19_ Step 5）=====
+  // ===== 域内 AGENTS.md 拼接=====
   // 顺序 Global → Project → Plugin[* prompts/all]（后写更具体）；
-  // 文档级资源默认加载，与代码信任无关（P4）。
+  // 文档级资源默认加载，与代码信任无关。
   let mut instruction_roots: Vec<InstructionRoot> = Vec::new();
   if let Some(groot) = &global_root {
     instruction_roots.push(InstructionRoot::new(groot.clone(), "global"));
@@ -1169,7 +1167,7 @@ fn assemble_impl(
     },
     include_environment: outcome.harness.include_environment,
   };
-  // D11：绑定 store，启用摘要记录写入与重启恢复（与 provider 共享同一 Arc）
+  // 绑定 store，启用摘要记录写入与重启恢复（与 provider 共享同一 Arc）
   let compactor = Arc::new(
     Compactor::new(gateway.clone(), model.clone()).with_store(store.clone()),
   );
@@ -1189,9 +1187,9 @@ fn assemble_impl(
   );
 
   // ===== 阶段 4：内置工具 + WASM 插件 =====
-  // 沙箱根：以 harness.root 为主根（v3 挂载点为只读具名根，D4），
+  // 沙箱根：以 harness.root 为主根，
   // 沙箱恒位于工作空间之内。
-  // 工具面熔断配置统一走插件感知白名单（18_ §1.3 决策 1）：插件未
+  // 工具面熔断配置统一走插件感知白名单：插件未
   // 启用时白名单多余但无害（内置工具不会产生 plugin.plugin_* 错误码）。
   let manager =
     Arc::new(ToolManager::with_config(plugin_aware_tool_manager_config()));
@@ -1208,10 +1206,10 @@ fn assemble_impl(
     }
     ra_tools::builtin::register_builtin_with_root(&manager, fs_root)?;
   }
-  // ===== 阶段 4.5：代码信任闸门（19_ Step 4，设计§7.1/§7.2）=====
+  // ===== 阶段 4.5：代码信任闸门=====
   // Project 插件须显式 code_trust 才加载；无 Global 域（code_trust=None）
   // 时退化为自动加载（回滚开关）。未信任不致命——只弃加载 + warning，
-  // 技能与 AGENTS.md 仍照常加载（P4 域故障隔离）。
+  // 技能与 AGENTS.md 仍照常加载（域故障隔离）。
   let mut warnings = outcome.warnings.clone();
   let project_code_trusted = match outcome.code_trust.as_ref() {
     Some(ctx) => {
@@ -1260,7 +1258,7 @@ fn assemble_impl(
   };
   let agent = BaseAgent::new(deps, provider.clone());
   let harness = Arc::new(Harness::new(agent, provider, store));
-  let events = harness.subscribe(); // §3 透传
+  let events = harness.subscribe(); // 透传
   Ok(CliSession {
     harness,
     events,
@@ -1279,7 +1277,7 @@ fn assemble_impl(
   })
 }
 
-/// T3：会话目录硬切换到 `.ribo/sessions/`（D1），旧布局
+/// T3：会话目录硬切换到 `.ribo/sessions/`，旧布局
 /// `<root>/sessions/` 不读取、不迁移、不兼容。
 #[test]
 fn t3_sessions_live_under_ribo_dir() {
@@ -1288,7 +1286,7 @@ fn t3_sessions_live_under_ribo_dir() {
   assert_ne!(sessions_dir(root), root.join("sessions"));
 }
 
-/// 场景：compression 配置校验（25 号方案 D7）。
+/// 场景：compression 配置校验。
 ///
 /// 覆盖五类非法值 → `compression_invalid`（裸码断言）、老配置新字段
 /// 取默认值、Real 模式摘要模型未注册拒绝、Mock 模式跳过注册校验。

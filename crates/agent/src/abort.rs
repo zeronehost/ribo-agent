@@ -1,4 +1,4 @@
-//! 取消句柄：包装 `CancellationToken` 并提供树形派生（D5）。
+//! 取消句柄：包装 `CancellationToken` 并提供树形派生。
 //!
 //! 父令牌触发时全部子令牌级联触发（tokio 原生 `child_token` 语义）。
 //! 传播路径：会话取消根 → 循环配置的 `signal` → 每次 LLM 流与
@@ -76,7 +76,7 @@ mod tests {
     assert!(!default.is_aborted(), "实例之间不应共享取消状态");
   }
 
-  // 场景：父句柄触发后子句柄级联取消（D5 树形语义）。
+  // 场景：父句柄触发后子句柄级联取消（树形语义）。
   // 预期：子句柄与孙句柄全部同步进入已触发状态。
   #[test]
   fn parent_abort_cascades_to_descendants() {

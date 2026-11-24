@@ -1,5 +1,5 @@
-//! 生命周期管理：raw mode RAII guard、终端恢复单一入口与 panic hook
-//!（16 详细设计 §7.1 / §8）。
+//! 生命周期管理：raw mode RAII guard、终端恢复单一入口与 panic hook。
+//!
 //!
 //! 核心约束：`std::process::exit` **不执行 Drop**——所有退出路径必须先
 //! 显式调用 [`restore_terminal`] 再 exit（R-B2）；[`finish_exit`] 是
@@ -24,7 +24,7 @@ impl RawModeGuard {
   /// # Errors
   ///
   /// 任一步骤失败时返回错误（调用方在构造 guard **之前**用 stderr
-  /// 报错退出，15 §4.4）。
+  /// 报错退出）。
   pub fn enter() -> anyhow::Result<Self> {
     crossterm::terminal::enable_raw_mode().context("enable raw mode failed")?;
     crossterm::execute!(
@@ -60,7 +60,7 @@ pub fn restore_terminal() -> std::io::Result<()> {
 
 /// 退出同源出口：显式恢复终端后以指定退出码结束进程。
 ///
-/// `code`：优雅退出 0 / 超时强退 1（16 §8 第 2 步分支）。
+/// `code`：优雅退出 0 / 超时强退 1。
 pub fn finish_exit(code: i32) -> ! {
   let _ = restore_terminal();
   std::process::exit(code);
@@ -77,7 +77,7 @@ pub fn install_panic_hook() {
 
 /// 从配置文本解析 `[tui] ctrl_c_timeout_ms`（缺失 / 非法 → 默认 2s）。
 ///
-/// TUI 层不在六层 schema 内（16 §13 未列为受控新增），由 ra-tui 自行
+/// TUI 层不在六层 schema 内，由 ra-tui 自行
 /// 读取同一配置文件的本表，单字段、失败保守回退。
 pub fn parse_ctrl_c_timeout(config_text: Option<&str>) -> Duration {
   let Some(text) = config_text else {

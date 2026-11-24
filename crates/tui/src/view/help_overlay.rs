@@ -1,4 +1,4 @@
-//! 帮助浮层视图：分组命令表（与 CLI `/help` 同源 `COMMANDS` 表，16 §10）。
+//! 帮助浮层视图：分组命令表（与 CLI `/help` 同源 `COMMANDS` 表）。
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -22,7 +22,7 @@ impl View for HelpOverlayView {
     )));
     lines.push(Line::from(""));
     for meta in ra_cli::commands::COMMANDS {
-      // TUI 命令面过滤：CliOnly 命令（/history、/status）不展示——
+      // TUI 命令面过滤：CliOnly 命令（history、/status）不展示——
       // 对话区即完整历史、侧栏常驻状态，二者在 TUI 中冗余
       if meta.target == ra_cli::commands::Target::CliOnly {
         continue;

@@ -170,7 +170,7 @@ mod tests {
   /// 场景：基础四则表达式求值。
   ///
   /// 预期：整数字面量按整数运算，输出 "<表达式> = 3"，details 携带
-  /// 整数结果 3；整数除法截断（7/2 = 3）。
+  /// 整数结果 3；整数除法截断。
   #[tokio::test]
   async fn evaluates_arithmetic_expression() {
     let tool = create_calculator_tool();

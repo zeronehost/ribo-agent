@@ -1,7 +1,7 @@
 //! 左侧状态面板：会话 / provider / 模型 / token / 上下文占用 / 警告。
 //!
 //! 由根布局横向切分后占据左侧固定宽度；内容均为 `AppState` 只读快照，
-//! 与主循环事件解耦（16 §3 即时模式渲染纪律）。
+//! 与主循环事件解耦。
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,7 +19,7 @@ pub const SIDEBAR_WIDTH: u16 = 34;
 /// 左侧状态面板视图。
 pub struct SidebarView;
 
-/// 上下文占用条（10 格）：按占比填充，超阈值（>75%）转红。
+/// 上下文占用条：按占比填充，超阈值（>75%）转红。
 fn ctx_bar(pct: Option<f32>) -> (String, Style) {
   const CELLS: usize = 10;
   let Some(pct) = pct else {
@@ -52,7 +52,7 @@ impl View for SidebarView {
     } else {
       Color::Green
     };
-    // 上下文三态（v1.6 用户需求）：总量 token / 已压缩占总量百分比 /
+    // 上下文三态：总量 token / 已压缩占总量百分比 /
     // 当前使用 token + 占窗口百分比；未装配过统一显示「—」。
     let ctx_stats = s.compaction;
     let total_text = match ctx_stats {
@@ -168,7 +168,7 @@ mod tests {
     assert_eq!(bar, "··········");
   }
 
-  // 场景：上下文「当前」行显示 `<当前量>/<窗口>(nn%)`（v1.6 用户需求）。
+  // 场景：上下文「当前」行显示 `<当前量>/<窗口>(nn%)`。
   // 预期：1502 / 2048 → `1.5K/2.0K (73%)`；窗口未知时只显示当前量。
   #[test]
   fn current_line_shows_current_over_window_ratio() {
@@ -208,7 +208,7 @@ mod tests {
     // 总量同样紧凑显示
     assert!(text.contains("7.6K"), "total not compact: {text:?}");
 
-    // 窗口未知（0）→ 只显示当前量，不显示比值
+    // 窗口未知→ 只显示当前量，不显示比值
     state.status.context_window = 0;
     terminal
       .draw(|frame| SidebarView.render(frame, frame.area(), &state))

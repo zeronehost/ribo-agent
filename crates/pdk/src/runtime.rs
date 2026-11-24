@@ -1,5 +1,5 @@
-//! guest 侧 ABI 运行时：线性内存分配器与 ABI v0 导出实现
-//! （设计文档 18_ §11）。
+//! guest 侧 ABI 运行时：线性内存分配器与 ABI v0 导出实现。
+//!
 //!
 //! 仅 `#[ribo_plugin]` 生成的 `#[unsafe(no_mangle)]` 导出与本模块交互：
 //!
@@ -13,7 +13,7 @@
 //! - `list_tools` / `execute`：**单 i32 打包返回**——指向 8 字节块
 //!   `{ptr: i32 LE, len: i32 LE}`，载荷紧随独立分配。
 //!
-//! # 内存所有权（§8.2 三分表）
+//! # 内存所有权（三分表）
 //!
 //! - host 经 `alloc` 申请的缓冲（args / 帧化返回），由**使用方**
 //!   （host 或 PDK 封装）以相同 `(ptr, len)` 调 `dealloc` 释放；
@@ -26,8 +26,8 @@
 /// ABI `alloc(size)`：按 `size` 分配一字节对齐缓冲，失败返回 0。
 ///
 /// 用 `Vec::with_capacity(size)` 分配后 `forget`，指针交由 ABI 调用方
-/// 使用；释放责任见模块文档（§8.2）。`size <= 0` 返回 0（宿主侧视为
-/// guest 分配失败，v0.8.1 P0-5）。
+/// 使用；释放责任见模块文档。`size <= 0` 返回 0（宿主侧视为
+/// guest 分配失败）。
 #[unsafe(no_mangle)]
 pub extern "C" fn alloc(size: i32) -> i32 {
   if size <= 0 {
@@ -64,8 +64,8 @@ pub fn list_tools(plugin_id: &'static str, tools: &[crate::ToolEntry]) -> i32 {
 }
 
 /// ABI `execute`：读工具名与 args → 解包信封 → 派发 → 序列化结果 →
-/// 打包返回。工具 `Err(String)` 生成 `{"ok":false,"error":...}`
-/// （4KB 截断），宿主据此回灌业务错误（§11.1 契约要点 ④）。
+/// 打包返回。工具 `Err(String)` 生成 `{"ok":false,"error":...}`，
+/// 宿主据此回灌业务错误（契约要点 ④）。
 pub fn execute(
   _plugin_id: &'static str,
   tools: &[crate::ToolEntry],

@@ -1,4 +1,4 @@
-//! 插件 storage：进程内 / 插件级 / 不持久化的键值存储（设计文档 18_ §6.2）。
+//! 插件 storage：进程内 / 插件级 / 不持久化的键值存储。
 //!
 //! 语义边界：
 //!
@@ -17,7 +17,7 @@ use std::sync::{Mutex, PoisonError};
 use crate::acl::PluginAcl;
 use crate::config::PluginRuntimeConfig;
 
-// ===== DoS 边界（v0.8.3 P1-1）：单条 key / value 长度上限 =====
+// ===== DoS 边界：单条 key / value 长度上限 =====
 // `StoreLimits` 只约束 guest 线性内存，**不约束 host 堆上的 Vec 分配**——
 // 恶意 guest 传巨大 len 即可在不触碰沙箱的前提下打爆 host。长度判定
 // 必须在读取点（`read_guest_bytes_limited`，第一道）先做；本模块的检查
@@ -29,12 +29,12 @@ pub const MAX_KEY_LEN: usize = 256;
 /// 保证「单次写入」不会先于「总配额」把 host 内存打爆。
 pub const MAX_VALUE_LEN: usize = 256 * 1024;
 
-/// storage 内部错误（跨层契约的一部分：经 §6.4 trap 前缀表映射为
+/// storage 内部错误（跨层契约的一部分：经 trap 前缀表映射为
 /// `storage_full` / `storage_bad_key` / `forbidden:storage` /
 /// `storage_internal:{stage}`；对外最终收敛为 `plugin.plugin_*`）。
 ///
 /// **不含 NotFound 变体**——「key 不存在」是正常态，由
-/// `get` 的 `Ok(None)` 承载（v0.8.2 P0-1 跨层契约）。
+/// `get` 的 `Ok(None)` 承载（跨层契约）。
 #[derive(Debug)]
 pub enum StorageError {
   /// 仅 put：容量超限（单条 value 超 [`MAX_VALUE_LEN`] 或总配额用尽）
@@ -48,7 +48,7 @@ pub enum StorageError {
   /// 表内部错 → `storage_internal:{stage}` trap → `plugin.plugin_internal`。
   ///
   /// 当前 [`PluginTable`] 基于 HashMap，本变体尚无真实触发路径；
-  /// 保留是为 §6.4 trap 前缀契约完整（Step C 持久化路径启用），
+  /// 保留是为 trap 前缀契约完整（Step C 持久化路径启用），
   /// host function 侧已实现对应匹配分支。
   #[allow(dead_code)] // 契约保留项：无触发路径属预期，见上注释
   Internal(String),
@@ -99,7 +99,7 @@ pub struct Storage {
 }
 
 impl Storage {
-  /// 以进程默认配置与插件 ACL 构造（配额注入，18_ §6.2 v0.8 #15）。
+  /// 以进程默认配置与插件 ACL 构造（配额注入）。
   pub fn new(cfg: &PluginRuntimeConfig, acl: &PluginAcl) -> Self {
     // 插件只能收紧，不能放大进程默认
     let cap = acl
@@ -113,7 +113,7 @@ impl Storage {
     }
   }
 
-  /// 读取 key（三态契约，v0.8.2 P0-1）。
+  /// 读取 key（三态契约）。
   ///
   /// # Errors
   ///
@@ -282,7 +282,7 @@ mod tests {
   }
 
   /// 场景：`Storage` 满足 Send + Sync（作为 `Arc<Storage>` 放进
-  /// `HostState` / `HostStateSnapshot` 的前提，18_ §0.4 纪律 2）。
+  /// `HostState` / `HostStateSnapshot` 的前提，纪律 2）。
   #[test]
   fn storage_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}

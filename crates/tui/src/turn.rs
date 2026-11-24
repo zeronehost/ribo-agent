@@ -1,4 +1,4 @@
-//! 回合驱动封装：复用 `CliSession::spawn_turn`（16 详细设计 §9）。
+//! 回合驱动封装：复用 `CliSession::spawn_turn`。
 
 use crate::state::{AppState, TurnState};
 use crate::view::input as input_view;
@@ -11,7 +11,7 @@ pub fn submit(
   session: &ra_cli::config::assemble::CliSession,
 ) -> bool {
   if matches!(app.turn, TurnState::Running { .. }) {
-    return false; // 在途拒绝（16 §9）
+    return false; // 在途拒绝
   }
   let text = input_view::editor_text(app);
   if text.trim().is_empty() {
@@ -28,7 +28,7 @@ pub fn submit(
   true
 }
 
-/// `/stop`：请求取消在途回合（后续 `AgentEnd` 自然复位，16 §9）。
+/// `/stop`：请求取消在途回合（后续 `AgentEnd` 自然复位）。
 ///
 /// 返回是否确有在途回合被请求取消。
 pub async fn request_stop(
@@ -45,5 +45,5 @@ pub async fn request_stop(
 
 #[cfg(test)]
 mod tests {
-  // （/sessions 合并原 /new 后无本模块单测；命令解析见 ra-cli commands）
+  // （sessions 合并原 /new 后无本模块单测；命令解析见 ra-cli commands）
 }

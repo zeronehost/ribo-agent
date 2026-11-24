@@ -1,5 +1,4 @@
-//! 配置聚合：默认 → 文件逐层覆盖 → 环境变量（仅密钥）→ 校验 → 模式显式化
-//!（14 详细设计 §5）。
+//! 配置聚合：默认 → 文件逐层覆盖 → 环境变量（仅密钥）→ 校验 → 模式显式化。
 
 pub mod assemble;
 pub mod code_trust;
@@ -30,13 +29,13 @@ use self::credentials::AuthConfig;
 /// 默认配置文件名：`--config` 未指定时自动探测。
 pub const DEFAULT_CONFIG_FILE: &str = "ribo.toml";
 
-/// 解析本次启动实际生效的配置文件路径（v3.4：显式 --config 缺失报错）。
+/// 解析本次启动实际生效的配置文件路径（显式 --config 缺失报错）。
 ///
 /// - **显式指定** `--config <PATH>`：必须存在且是普通文件，否则
 ///   `Err(config.config_file_missing)`——不再静默降级；
 /// - **未指定**：从 cwd 向上探测 `ribo.toml`（`.git` 处停止），命中即采用；
 ///   否则返回 `Ok(None)`，由 [`LoadOutcome::load`] 走全默认 mock（开发）或
-///   release 下由 D7 致命错误拦截。
+///   release 下由致命错误拦截。
 ///
 /// `ribo` 与 `ribo-tui` 共用此函数，保证两个入口的探测规则一致。
 pub fn resolve_config_path(
@@ -89,7 +88,7 @@ fn find_config_upwards_from(start: &Path, default: &Path) -> Option<PathBuf> {
   }
 }
 
-/// 全局域：跨项目共享的用户级配置根（设计§3 / §8.1）。
+/// 全局域：跨项目共享的用户级配置根。
 ///
 /// 目录发现遵循"`--global-dir` > 平台默认配置目录 + `/ribo`"，目录不存在
 /// 时域禁用（非致命，R4：不主动创建、不报错）。
@@ -131,7 +130,7 @@ impl GlobalDomain {
   }
 }
 
-/// 配置模式（启动横幅显式展示，概设 D3）。
+/// 配置模式（启动横幅显式展示）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigMode {
   /// 真实 provider 模式。
@@ -157,12 +156,12 @@ pub struct LoadOutcome {
   /// 字段级来源标记：`--show-origin` / `--explain` 的数据源。
   /// 零配置时为空（所有字段隐含来源为 `default`）。
   pub origins: ConfigOrigins,
-  /// 代码信任判定上下文（19_ Step 4）。`None` = 无 Global 域 / 兼容入口，
+  /// 代码信任判定上下文。`None` = 无 Global 域 / 兼容入口，
   /// 装配层退化为「自动加载」的旧语义（回滚开关）。
   pub code_trust: Option<CodeTrustContext>,
   /// fs 只读挂载点（v3 取代资源域；仅全局 settings.toml 声明）。
   pub fs_mounts: FsMountsSchema,
-  /// release 构建下的致命配置错误（D7）：main 入口须检查并退出。
+  /// release 构建下的致命配置错误：main 入口须检查并退出。
   /// debug 构建恒为 None（保留 mock 降级）。
   pub fatal_error: Option<ra_core::error::RiboError>,
 }
@@ -218,7 +217,7 @@ fn record_origin(
 
 /// 递归逐字段合并两层 TOML 表：`project` 覆盖 `global`，记录每个叶子来源。
 ///
-/// 语义（设计§5.1）：
+/// 语义（设计）：
 /// - 双方同键且都是子表 → **递归合并**（子表内字段各自覆写，这是关键：
 ///   `[retry]` 只写 `max_retries` 时不应抹掉 global 的 `initial_backoff_ms`）；
 /// - 其余情况（标量 / 数组 / 类型不同）→ project 整体覆盖，来源 `Project`；
@@ -295,7 +294,7 @@ fn merge_tables(
   }
 }
 
-/// 解析全局域根目录（文档 21，唯一真值，读写两端共用）。
+/// 解析全局域根目录。
 ///
 /// 优先级：`--global-dir`（`cli_dir`）> 项目 `[global].dir` > 平台默认
 /// 配置目录 + `/ribo`。**不创建目录、不校验存在性**——写入端由调用方
@@ -322,11 +321,11 @@ pub fn resolve_global_dir(
   dirs::config_dir().map(|d| d.join(GlobalDomain::DIR_NAME))
 }
 
-/// 按 D0 合并两域 providers（Step 8，方案 §5.1 伪码）。
+/// 合并两域 providers（Step 8，方案伪码）。
 ///
 /// project 在前按声明序全部放入；global 在后只追加 provider_id 未冲突的；
 /// 同名 project 整条胜出（不继承全局字段）。`array_overwrite` 环境变量
-/// 走旧语义（项目非空则整体替换）；未知值 warn 后走 D0。
+/// 走旧语义（项目非空则整体替换）；未知值 warn 后走默认 id-merge。
 fn merge_providers(
   project: Vec<ProviderWithOrigin>,
   global: Vec<ProviderWithOrigin>,
@@ -357,7 +356,7 @@ fn merge_providers(
 
 /// 从 one 域 TOML 表解析 providers 并打来源标签（Step 8）。
 ///
-/// D5 步骤②：配置文件来源的 api_key 在此先做 `$ENV` 展开；auth.toml
+/// 步骤②：配置文件来源的 api_key 在此先做 `$ENV` 展开；auth.toml
 /// 的值不走本函数（保证不展开）。展开失败的 provider 保留原值，交由
 /// from_table 的校验链统一跳过。
 fn sourced_providers(
@@ -383,11 +382,11 @@ fn sourced_providers(
     .collect()
 }
 
-/// 读取全局域 auth.toml（Step 8 / D6）。
+/// 读取全局域 auth.toml。
 ///
 /// 文件不存在 → 空集（正常）；损坏 → warning + 空集（不致命）；
 /// Unix 权限非 0600 → warning 但继续读取（日志不打印完整路径，
-/// 避免暴露用户名，对齐 19 号文档 §4）。
+/// 避免暴露用户名。
 fn load_auth_config(
   root: Option<&Path>,
   warnings: &mut Vec<String>,
@@ -427,7 +426,7 @@ fn load_auth_config(
 impl LoadOutcome {
   /// 日志根目录：Global 域启用（`code_trust` 为 Some，即 enabled 且目录
   /// 存在）→ 全局域目录；否则 → 项目内部目录 `.ribo/`（logging 层在其
-  /// 下拼接 `logs/`，最终落 `.ribo/logs/`，D1 收敛）。
+  /// 下拼接 `logs/`，最终落 `.ribo/logs/`，收敛）。
   ///
   /// 日志属"运行期产物"，集中到全局域便于跨项目统一收集；未启用全局域
   /// 时退回项目 `.ribo/`（与 sessions/skills/plugins 同一内部目录纪律）。
@@ -451,7 +450,7 @@ impl LoadOutcome {
     let mut warnings = Vec::new();
     let providers =
       sourced_providers(table.as_ref(), ConfigOrigin::Project, &mut warnings);
-    // D2 第 2 档：--config（或兼容入口显式 path）文件父目录作为工作目录
+    // 第 2 档：--config（或兼容入口显式 path）文件父目录作为工作目录
     // 默认值；相对路径 "ribo.toml" 的父目录为空 → 回退 cwd 档。
     let config_parent = path
       .and_then(|p| p.parent())
@@ -464,7 +463,7 @@ impl LoadOutcome {
       None,
       providers,
       AuthConfig::empty(),
-      FsMountsSchema::default(), // 兼容入口无全局域：挂载点不可用（D4）
+      FsMountsSchema::default(), // 兼容入口无全局域：挂载点不可用
       config_parent,
     )
   }
@@ -489,7 +488,7 @@ impl LoadOutcome {
     // 全局开关必须写在项目配置里——全局目录尚未发现时无从读取其 [global] 段。
     let global_schema: GlobalSchema =
       load_layer(project_table.as_ref(), "global", &mut warnings);
-    // 唯一真值：读写两端共用 resolve_global_dir（文档 21 / D1）。
+    // 唯一真值：读写两端共用 resolve_global_dir。
     let effective_dir = resolve_global_dir(global_dir, project_table.as_ref());
 
     // ===== ③ 发现 Global 域（目录缺失 / enabled=false → None，非致命）=====
@@ -512,9 +511,9 @@ impl LoadOutcome {
       );
     }
 
-    // ===== ④.5 Step 8：分来源解析 providers + D0 合并 + auth.toml =====
-    // 数组字段 providers 不走 merge_tables 的"整体覆盖"（C17/D0）：
-    // 分别解析两域、先做 $ENV 展开（D5 步骤②），再按 provider_id 合并。
+    // ===== ④ 分来源解析 providers + 合并 + auth.toml =====
+    // 数组字段 providers 不走 merge_tables 的"整体覆盖"：
+    // 分别解析两域、先做 $ENV 展开（步骤②），再按 provider_id 合并。
     let project_providers = sourced_providers(
       project_table.as_ref(),
       ConfigOrigin::Project,
@@ -528,7 +527,7 @@ impl LoadOutcome {
     let merged_providers =
       merge_providers(project_providers, global_providers, &mut warnings);
 
-    // auth.toml 在入口读一次（D6 权限检查 + 脱敏），传给 from_table 补充
+    // auth.toml 在入口读一次（权限检查 + 脱敏），传给 from_table 补充
     let auth_config = load_auth_config(
       global.as_ref().map(|g| g.root.as_path()),
       &mut warnings,
@@ -539,7 +538,7 @@ impl LoadOutcome {
     let merged =
       merge_tables(global_table.as_ref(), project_table.as_ref(), &mut origins);
 
-    // ===== ⑤.5 fs.mounts：仅全局 settings.toml 声明（文档22 D4）=====
+    // ===== ⑤ fs.mounts：仅全局 settings.toml 声明=====
     // 项目配置无权声明——发现 [fs.*] 键即 warning + 忽略（防项目越权暴露
     // 沙箱外路径：挂载点语义是用户级路径别名，暴露决定权天然属于用户）。
     if project_table.as_ref().is_some_and(|t| t.contains_key("fs")) {
@@ -563,9 +562,9 @@ impl LoadOutcome {
         None => FsMountsSchema::default(),
       };
 
-    // ===== ⑥ 代码信任上下文（19_ Step 4）=====
+    // ===== ⑥ 代码信任上下文=====
     // 仅当 Global 域存在时启用闸门；无 Global 域 → None（回滚为自动加载）。
-    // 信任记录位于 global.root/trusted_projects.toml（设计§7.1）。
+    // 信任记录位于 global.root/trusted_projects.toml（设计）。
     let code_trust = global.as_ref().map(|g| {
       let trust = self::trust::TrustedProjects::load(
         &g.root.join("trusted_projects.toml"),
@@ -579,7 +578,7 @@ impl LoadOutcome {
       CodeTrustContext::new(trust).with_global_root(&g.root)
     });
 
-    // D2 第 2/3 档：已解析配置文件（--config 或向上探测命中）的父目录
+    // 第 2/3 档：已解析配置文件（--config 或向上探测命中）的父目录
     // 作为工作目录默认值；None（零配置）→ 回退 cwd 档。
     let config_parent = path
       .and_then(|p| p.parent())
@@ -599,11 +598,11 @@ impl LoadOutcome {
 
   /// 从合并后的表构造 outcome（含逐层反序列化、校验、mock 降级）。
   ///
-  /// `mounts` 由调用方按 D4 从**全局 settings.toml** 单独解析后传入——
+  /// `mounts` 由调用方从**全局 settings.toml** 单独解析后传入——
   /// 项目配置无权声明 `[fs.mounts]`，故本函数不从合并表读取。
-  /// `config_parent` 为已解析配置文件的所在目录（D2 第 2/3 档）：
+  /// `config_parent` 为已解析配置文件的所在目录（第 2/3 档）：
   /// 仅当 `harness.root` 未被任何来源显式设置时，作为工作目录默认值。
-  // 私有构造器、仅 load/load_with_global 两个调用点：参数 outright
+  // 私有构造器、仅 load/load_with_global 两个调用点：参数直接
   // 对应 outcome 字段，抽参数结构体不减少信息量，allow 更直接。
   #[allow(clippy::too_many_arguments)]
   fn from_table(
@@ -631,7 +630,7 @@ impl LoadOutcome {
       None => ProviderSchema::default(),
     };
 
-    // ===== Step 8 / D5 步骤④：Global 来源空 key 从 auth.toml 补充 =====
+    // ===== 步骤④：Global 来源空 key 从 auth.toml 补充 =====
     // 配置文件来源的 api_key 已在 sourced_providers 中做过 $ENV 展开；
     // 此处只作用于 Global 来源且 trim 后为空的，且直接赋值不调 expand
     //（auth.toml 的值原样使用，即使恰为 "$FOO" 也不展开——T12）。
@@ -652,7 +651,7 @@ impl LoadOutcome {
         p.entry.api_key = key.to_string(); // 原样赋值
       }
     }
-    // origins 逐条记录 providers.<id>（Step 8 / P2-2：整体键取第一个来源）
+    // origins 逐条记录 providers.<id>（整体键取第一个来源）
     // 兼容入口 load()（code_trust=None）不记录，保持 origins 恒空的契约。
     if code_trust.is_some() {
       let first_origin = merged.first().map(|p| p.origin);
@@ -684,7 +683,7 @@ impl LoadOutcome {
       .is_some_and(|t| t.get("harness").and_then(|v| v.get("root")).is_some())
       && let Some(parent) = config_parent
     {
-      // D2 第 2/3 档：harness.root 未被显式设置（合并表中无该键——项目
+      // 第 2/3 档：harness.root 未被显式设置（合并表中无该键——项目
       // 文件或全局 settings 均未给出）时，工作目录 = 配置文件所在目录
       //（--config 父目录 / 向上探测命中目录）。不查 origins：兼容入口
       // 的 origins 恒空，表键检查对两条入口语义一致。
@@ -709,7 +708,7 @@ impl LoadOutcome {
       fatal_error: None,
     };
 
-    // ===== 无 provider：mock（D7：release 致命）=====
+    // ===== 无 provider：mock（release 致命）=====
     if outcome.provider.providers.is_empty() {
       #[cfg(not(debug_assertions))]
       {
@@ -764,7 +763,7 @@ impl LoadOutcome {
     outcome.provider.providers.retain_mut(|p| {
       let mut w = Vec::new();
       // Step 8：$ENV 展开已在 sourced_providers 完成；此处只 validate，
-      // 避免 auth.toml 补充的值（可能恰为 "$FOO"）被二次展开（D5/T12）。
+      // 避免 auth.toml 补充的值（可能恰为 "$FOO"）被二次展开（T12）。
       let ok = schema::validate_provider_entry(p, &mut w);
       prune_warnings.extend(w);
       ok
@@ -845,7 +844,7 @@ impl LoadOutcome {
 mod tests {
   use super::*;
 
-  /// 场景：配置路径解析（v3.4：显式 --config 缺失报错 + 向上探测）。
+  /// 场景：配置路径解析（显式 --config 缺失报错 + 向上探测）。
   #[test]
   fn resolve_config_path_behavior() {
     let dir = tempfile::tempdir().expect("temp");
@@ -882,7 +881,7 @@ mod tests {
     );
   }
 
-  /// 场景（D2 T1）：`--config /proj/ribo.toml` 且未显式设置 harness.root
+  /// 场景（T1）：`--config /proj/ribo.toml` 且未显式设置 harness.root
   /// → 工作目录 = 配置文件父目录（第 2 档），origin 标记 Project。
   #[test]
   fn t1_config_parent_becomes_work_dir() {
@@ -896,7 +895,7 @@ mod tests {
     assert_eq!(outcome.origins.get("harness.root"), ConfigOrigin::Project);
   }
 
-  /// 场景（D2 档位校验）：配置文件显式给出 `[harness].root` → 第 1 档
+  /// 场景（档位校验）：配置文件显式给出 `[harness].root` → 第 1 档
   /// 文件值胜出，父目录推导不覆盖。
   #[test]
   fn t1_file_harness_root_wins_over_config_parent() {
@@ -909,7 +908,7 @@ mod tests {
     assert_eq!(outcome.harness.root, std::path::Path::new("./custom"));
   }
 
-  /// 场景（D2 T1b）：向上探测命中 `ribo.toml` → 工作目录 = 命中目录
+  /// 场景（T1b）：向上探测命中 `ribo.toml` → 工作目录 = 命中目录
   ///（第 3 档；注入起点避免改动进程 cwd）。
   #[test]
   fn t1b_upward_probe_parent_becomes_work_dir() {
@@ -925,7 +924,7 @@ mod tests {
     assert_eq!(outcome.harness.root, proj.as_path());
   }
 
-  /// 场景（D2 第 4 档）：零配置（无 --config、探测未命中）→ 工作目录
+  /// 场景（第 4 档）：零配置（无 --config、探测未命中）→ 工作目录
   /// 保持 cwd（`.`），origin 为 Default。
   #[test]
   fn t1_no_config_falls_back_to_cwd() {
@@ -1237,7 +1236,7 @@ root = "./proj"
     assert_eq!(outcome.origins.get("harness.root"), ConfigOrigin::Project);
   }
 
-  /// 场景：全局域目录缺失但项目配置正常（P3 故障隔离）。
+  /// 场景：全局域目录缺失但项目配置正常（故障隔离）。
   ///
   /// 预期：项目配置照常加载、无 warning、启动不被全局域缺失拖垮。
   #[test]
@@ -1324,7 +1323,7 @@ root = "./proj"
     );
   }
 
-  /// 场景：项目配置声明 `[fs.mounts]`（D4 越权）→ warning + 忽略；
+  /// 场景：项目配置声明 `[fs.mounts]`（越权）→ warning + 忽略；
   /// 全局 settings.toml 声明的挂载正常生效。
   #[test]
   fn project_fs_declaration_is_ignored_with_warning() {
@@ -1377,7 +1376,7 @@ root = "./proj"
     assert_eq!(outcome.session.default_key, "default");
   }
 
-  /// D7 T14/T15：无 provider —— debug 降级 mock / release 致命
+  /// T14/T15：无 provider —— debug 降级 mock / release 致命
   #[test]
   fn d7_no_providers_mode() {
     let outcome = LoadOutcome::load(None, None);
@@ -1393,7 +1392,7 @@ root = "./proj"
     }
   }
 
-  /// D7 T18：单 provider 缺 key 被跳过 —— 两模式都保留 warning
+  /// T18：单 provider 缺 key 被跳过 —— 两模式都保留 warning
   #[test]
   fn d7_partial_provider_skip_never_fatal() {
     let dir = tempfile::tempdir().expect("temp");

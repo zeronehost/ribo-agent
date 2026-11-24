@@ -226,7 +226,7 @@ impl ProviderCore {
       Ok(resp) if resp.status().is_success() => Ok(resp),
       Ok(resp) => {
         let status = resp.status();
-        // body 截断（512 字节、UTF-8 边界）与换行清理由 from_http 统一处理
+        // body 截断与换行清理由 from_http 统一处理
         let body_text = resp.text().await.unwrap_or_default();
         tracing::warn!(
           provider = self.id.as_str(),

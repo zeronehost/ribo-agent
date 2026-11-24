@@ -1,4 +1,4 @@
-//! ra-cli 入口：参数解析与启动（14 详细设计 §9/§13）。
+//! ra-cli 入口：参数解析与启动。
 //!
 //! 薄壳：装配 → 日志落文件 → REPL 主循环；逻辑见 lib（`ribo_cli`
 //! crate 内部模块）。
@@ -42,7 +42,7 @@ pub struct CliArgs {
 async fn main() -> ExitCode {
   // ===== 阶段 1：参数与配置加载 =====
   let args = CliArgs::parse();
-  // 未指定 --config 时向上探测；显式指定但文件不存在 → 报错退出（v3.4）
+  // 未指定 --config 时向上探测；显式指定但文件不存在 → 报错退出
   let config_path = match resolve_config_path(args.config.as_deref()) {
     Ok(p) => p,
     Err(e) => {
@@ -75,7 +75,7 @@ async fn main() -> ExitCode {
     args.root.as_deref(),
     args.global_dir.as_deref(),
   );
-  // D7：release 构建下三类配置异常为致命错误
+  // release 构建下三类配置异常为致命错误
   if let Some(err) = &outcome.fatal_error {
     eprintln!("配置错误：{err}");
     return ExitCode::FAILURE;

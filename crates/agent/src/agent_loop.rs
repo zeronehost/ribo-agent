@@ -1,5 +1,5 @@
 //! Agent 主循环：LLM 调用 → ToolCall 收集 → 工具批执行 → 结果回灌 →
-//! 终止判定（07 §5.1–§5.4 的落地）。
+//! 终止判定。
 //!
 //! 关键语义：
 //!
@@ -9,7 +9,7 @@
 //!   失败回灌，不执行任何工具（照常续跑）；
 //! - **事件序解耦**：并行批 `ToolExecutionEnd` 按完成序发射，
 //!   回灌消息按源顺序发射；
-//! - **错误回灌**（D8）：工具失败以 `is_error: true` 结果回灌模型，
+//! - **错误回灌**：工具失败以 `is_error: true` 结果回灌模型，
 //!   循环继续；`tool.cancelled` 触发批量终止；
 //! - **错误路径也写回转录**：入口收尾统一执行（包括
 //!   `max_iterations` 失败），已产出消息不丢失。
@@ -143,9 +143,9 @@ pub async fn run_agent_loop(
 
   // ===== 阶段 4：发射起始事件并进入主循环 =====
 
-  // D8：压缩在 build 阶段（早于此处）发生。摘要成功发射
+  // 压缩在 build 阶段（早于此处）发生。摘要成功发射
   // `Compaction { failed: false }`；失败回退发射 `{ failed: true }`
-  //（v1.6 用户拍板：失败也留痕）。冷却抑制 / 复用摘要不发射。
+  //（失败也留痕）。冷却抑制 / 复用摘要不发射。
   if context.compaction_triggered {
     tracing::info!(
       session_key = %session.key,
@@ -428,7 +428,7 @@ async fn stream_assistant_response(
   };
 
   let stream_token = config.signal.child_token();
-  // D6（24 号方案）：降级候选窗口过滤下限 = 当前转录估算 token × 1.1
+  // 降级候选窗口过滤下限 = 当前转录估算 token × 1.1
   //（余量应对估算偏低）；0 或小转录时过滤自然不生效
   let estimated_tokens =
     ra_core::message::estimate_context_tokens(&context.messages);
@@ -440,7 +440,7 @@ async fn stream_assistant_response(
   };
 
   // ===== 建流：失败折叠为终端消息 =====
-  // 取消不是错误路径（07 §5.6）：建流被取消（CANCELLED）折叠为
+  // 取消不是错误路径：建流被取消（CANCELLED）折叠为
   // Aborted 终端消息，循环以 Aborted 收敛；其余失败仍为 Error。
   let mut stream =
     match deps.gateway.stream(&deps.model, &request, options).await {
@@ -533,7 +533,7 @@ async fn stream_assistant_response(
 /// 构造终端助手消息（provider 记为 "gateway"，错误文本入 `error_message`）。
 ///
 /// `stop_reason` 由调用方决定：一般失败为 `Error`；建流被取消时为
-/// `Aborted`（取消不是错误路径，07 §5.6）。
+/// `Aborted`（取消不是错误路径）。
 fn terminal_error_message(
   deps: &LoopDeps,
   stop_reason: StopReason,
@@ -655,11 +655,11 @@ async fn execute_tool_batch(
   for item in finalized {
     match &item.result {
       // 取消折叠：tool.cancelled → is_error: true 回灌 + 批量终止
-      //（其余并行调用随子令牌级联中断，07 §5.6）
+      //（其余并行调用随子令牌级联中断）
       Err(err) if err.code() == ra_tools::error::CANCELLED => {
         terminated = true;
       }
-      // 熔断折叠（18_ §14 DoD 2 / v0.8 #18）：tool.rate_limited =
+      // 熔断折叠：tool.rate_limited =
       // 工具面已被 ToolManager 熔断拒绝（连续失败达阈值）——原始错误
       // 反复回灌只会诱导 LLM 无限重试。改为：回灌「工具不可用」语义
       // 的友好提示（不含原始错误栈，见 fold_tool_error），并终结整个
@@ -667,7 +667,7 @@ async fn execute_tool_batch(
       Err(err) if err.code() == ra_tools::error::RATE_LIMITED => {
         terminated = true;
       }
-      // terminate 消费（07 §7.3 决策 11）：任一结果声明终局 →
+      // terminate 消费：任一结果声明终局 →
       // 终结整个循环（"exit 工具"语义）
       Ok(result) if result.terminate => {
         terminated = true;
@@ -685,8 +685,7 @@ async fn execute_tool_batch(
 /// 发射 `ToolExecutionEnd`：错误折叠为含错误文本的结果载荷。
 ///
 /// 熔断拒绝（`tool.rate_limited`）的载荷为「工具不可用」友好提示——
-/// 事件是 UI 渲染给最终用户的主要来源，不得携带原始错误栈
-/// （18_ §14 DoD 2 / v0.8 #18）。
+/// 事件是 UI 渲染给最终用户的主要来源，提示文案不得携带原始错误栈与内部细节。
 async fn emit_tool_end(
   emitter: &Arc<dyn AgentEmitter>,
   item: &FinalizedToolCall,
@@ -733,7 +732,7 @@ async fn execute_one_tool_inner(
 }
 
 /// 截断失败：逐条生成 `is_error` 回灌消息并发射结束事件
-/// （不执行任何工具，07 §5.4 不变式）。
+/// （不执行任何工具，不变式）。
 async fn fail_tool_calls_from_truncation(
   calls: &[ToolCall],
   emitter: &Arc<dyn AgentEmitter>,
@@ -797,8 +796,8 @@ fn fold_tool_result(item: &FinalizedToolCall) -> ToolResultMessage {
 /// 错误折叠：错误文本进 `content`，`is_error` 置位。
 ///
 /// 熔断拒绝（`tool.rate_limited`）替换为「工具不可用」友好提示：
-/// 原始错误（"circuit open..."）反复回灌会诱导 LLM 无限重试（18_ §14
-/// DoD 2 / v0.8 #18）；提示文案不携带原始错误栈与内部细节。
+/// 原始错误（"circuit open..."）反复回灌会诱导 LLM 无限重试，
+/// 因此提示文案不携带原始错误栈与内部细节。
 fn fold_tool_error(
   tool_call_id: &str,
   tool_name: &str,
@@ -823,7 +822,7 @@ fn fold_tool_error(
 ///
 /// `tool.rate_limited`（熔断拒绝）映射为「工具不可用」语义提示并
 /// 终结循环（由 `execute_tool_batch` 的折叠分支完成终结）；其余错误
-/// 透传原始 message（D8：模型需要错误细节来自我修正）。原始错误全文
+/// 透传原始 message（模型需要错误细节来自我修正）。原始错误全文
 /// 仍经 `tracing` 记录，不丢失可观测性。
 fn user_facing_tool_error_text(err: &RiboError) -> String {
   if err.code() == ra_tools::error::RATE_LIMITED {
@@ -1231,7 +1230,7 @@ mod tests {
     );
   }
 
-  // 场景：工具业务失败回灌（D8 错误回灌路径）。
+  // 场景：工具业务失败回灌（错误回灌路径）。
   // 预期：is_error=true 回灌、循环继续（第二次 LLM 调用）、最终 Completed。
   #[tokio::test]
   async fn tool_error_backfills_and_continues() {
@@ -1557,7 +1556,7 @@ mod tests {
 
   // 场景：取消时仍有排队 steering——下一轮流建流被网关取消检查拒绝。
   // 预期：CANCELLED 建流失败折叠为 Aborted 终端消息（取消不是错误路径，
-  // 07 §5.6），循环以 Aborted 收敛；steering 在建流前已排水注入转录；
+  // 循环以 Aborted 收敛；steering 在建流前已排水注入转录；
   // 网关层拒绝不触达提供方（record 仅 1 次）。
   #[tokio::test]
   async fn cancel_with_pending_steering_converges_aborted_not_failed() {
@@ -1862,7 +1861,7 @@ mod tests {
     assert_eq!(run.session.snapshot().len(), 2);
   }
 
-  // ===== INT-VAL-01（10 §11）：真实 ToolManager 校验失败的回灌链路 =====
+  // ===== 真实 ToolManager 校验失败的回灌链路 =====
 
   // 场景：mock 网关返回非法 echo 调用（缺 required "text" 且
   // additionalProperties=false），工具边界为真实 ToolManagerAdapter
@@ -1980,7 +1979,7 @@ mod tests {
     }
   }
 
-  // 场景（18_ §14 DoD 2 / v0.8 #18）：连续失败触发工具面熔断后——
+  // 场景：连续失败触发工具面熔断后——
   // ① 熔断闭合：第 6 次调用被 ToolManager 拒绝（tool.rate_limited）；
   // ② 用户侧消息为「工具不可用」语义提示，不含原始错误栈
   //    （"boom-original-stack" / "circuit open"）；
@@ -2029,7 +2028,7 @@ mod tests {
       .await
       .expect("熔断终止应正常返回，而非错误");
 
-    // ③ 重试次数有上界：恰好 6 次 LLM 调用（5 次真实失败 + 1 次熔断拒绝轮），
+    // ③ 重试次数有上界：恰好 6 次 LLM 调用，
     //    循环在熔断轮终结、未消费第 7 步
     assert_eq!(
       provider.record().len(),
@@ -2084,7 +2083,7 @@ mod tests {
         _ => None,
       })
       .collect();
-    // 仅熔断轮（最后一个错误事件）脱敏：前 5 轮真实失败按 D8 透传
+    // 仅熔断轮（最后一个错误事件）脱敏：前 5 轮真实失败按 透传
     // 原始错误（供模型自我修正），属预期行为
     let last = end_texts.last().expect("应有错误结束事件");
     assert!(last.contains("不可用"), "got: {last}");
@@ -2092,7 +2091,7 @@ mod tests {
       !last.contains("boom-original-stack") && !last.contains("circuit open"),
       "熔断轮事件不得携带原始错误栈: {last}"
     );
-    // 前 5 轮真实失败：错误原样透传（D8），且确实发生了 5 次
+    // 前 5 轮真实失败：错误原样透传，且确实发生了 5 次
     assert_eq!(
       end_texts.len(),
       6,

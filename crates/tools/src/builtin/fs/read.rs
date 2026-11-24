@@ -79,7 +79,7 @@ impl AgentTool for ReadTool {
     let path = self.root.resolve(raw)?;
     check_cancel(ctx, "read")?;
     let bytes = tokio::fs::read(&path).await.map_err(|e| {
-      // 不存在的文件对模型是可修正问题：warn 记录（§10 日志表）
+      // 不存在的文件对模型是可修正问题：warn 记录（日志表）
       if e.kind() == std::io::ErrorKind::NotFound {
         tracing::warn!(path = %raw, "read tool: file not found");
       }
@@ -90,7 +90,7 @@ impl AgentTool for ReadTool {
       };
       exec_failed("read", &reason)
     })?;
-    // 图片文件：本期不返回图片内容，给出明确提示（§13 收敛决策 3）
+    // 图片文件：本期不返回图片内容，给出明确提示（收敛决策 3）
     if detect_image_mime(&bytes).is_some() {
       return Err(exec_failed(
         "read",

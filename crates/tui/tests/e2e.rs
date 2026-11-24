@@ -1,11 +1,11 @@
-//! ra-tui E2E：伪终端全链路（16 详细设计 §15 Step B 验收）。
+//! ra-tui E2E：伪终端全链路。
 //!
 //! 用 `portable-pty` 起伪终端驱动真实 bin（`CARGO_BIN_EXE_ribo-tui`）：
 //! 启动（mock 模式）→ 输入消息 → Ctrl-C 退出 → 断言**终端已恢复**
 //! （备用屏退出序列出现）且退出码 0；中文 / Emoji 输入专项。
 //!
 //! 全部用例走真实 conPTY（Windows）/ OpenPTY（Unix）——mock 模式空脚本
-//! 下回合以 INVALID_REQUEST 终结属预期（14 §14 关注点 2），不影响退出。
+//! 下回合以 INVALID_REQUEST 终结属预期，不影响退出。
 
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};

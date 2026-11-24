@@ -1,9 +1,9 @@
-//! 行命令解析：`Command` 枚举与纯函数解析（14 详细设计 §7）。
+//! 行命令解析：`Command` 枚举与纯函数解析。
 //!
 //! 解析不持有 `Harness`——命令执行的控制流经 [`Effect`] 返回主循环，
 //! 保持纯函数可完整单测。
 
-/// 行命令（概设 §4.2 命令表；非 `/` 开头的整行为用户消息）。
+/// 行命令（命令表；非 `/` 开头的整行为用户消息）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
   /// 用户消息（含空行——调用方丢弃空串）。
@@ -12,12 +12,12 @@ pub enum Command {
   Help,
   /// `/stop`：取消在途回合。
   Stop,
-  /// `/cancel`：`/stop` 同义（TODO_02 命令集）。
+  /// `/cancel`：`/stop` 同义（兼容命令集）。
   Cancel,
   /// `/skills`：列出已有技能与诊断。
   Skills,
   /// `/sessions [name]`：无参列出会话键；带参切换到指定会话
-  ///（不存在则新建空白会话，2026-11-22 合并原 `/new`）。
+  ///（不存在则新建空白会话）。
   Sessions(Option<String>),
   /// `/status`：状态行摘要（token 累计 / 在途 / 上下文占比）。
   Status,
@@ -29,7 +29,7 @@ pub enum Command {
 
 /// 命令适用端：TUI 与 CLI 命令面不完全一致——CLI 终端滚动缓冲不可控，
 /// 依赖 `/history` 回看历史记录、`/status` 看状态；TUI 对话区即完整历史、
-/// 侧栏常驻状态，二者冗余（2026-11-22 命令面收敛）。
+/// 侧栏常驻状态，二者冗余。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
   /// 双端可用。
@@ -38,7 +38,7 @@ pub enum Target {
   CliOnly,
 }
 
-/// 命令元数据表条目：CLI `/help` 展示与 TUI Tab 补全的同源候选（16 §10）。
+/// 命令元数据表条目：CLI `/help` 展示与 TUI Tab 补全的同源候选。
 pub struct CommandMeta {
   /// 主名（含 `/` 前缀）。
   pub name: &'static str,

@@ -1,10 +1,10 @@
-//! Agent 域错误码与构造辅助（D7）。
+//! Agent 域错误码与构造辅助。
 //!
 //! 常量命名沿用 ra-provider 惯例：常量名大写、值点分小写，
 //! 与 `domain = "agent"` 配对；每个构造函数统一设置严重程度并附加
 //! 结构化 context（仅内部键值，不含敏感信息）。
 //!
-//! 工具失败**不**转 `agent.tool_exec_error`——D8 回灌路径上错误以
+//! 工具失败**不**转 `agent.tool_exec_error`——回灌路径上错误以
 //! `ToolResultMessage { is_error: true }` 表达；[`RiboError`] 仅用于
 //! 循环自身的结构性失败（会话、上下文、迭代超限等）。
 

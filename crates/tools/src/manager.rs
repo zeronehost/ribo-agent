@@ -28,7 +28,7 @@ pub struct ToolManagerConfig {
   pub failure_threshold: u64,
   /// 熔断打开后的冷却时长，期满进入半开放行单个探测。
   pub cooldown: Duration,
-  /// 不计入熔断记账的错误码白名单（阶段 6 新增，18_ §1.3）。
+  /// 不计入熔断记账的错误码白名单（阶段 6 新增）。
   ///
   /// 命中任一 code 的执行失败**不调用** `record_failure()`，避免该类
   /// 错误触发整个工具面熔断；匹配规则为错误码字符串**完全相等**，
@@ -64,7 +64,7 @@ impl Default for ToolManagerConfig {
 ///   失败达到阈值后拒绝后续调用（`tool.rate_limited`），保护下游系统。
 ///
 /// 取消语义：执行与取消信号竞争（`tokio::select!`），取消不计入
-/// 熔断失败——取消既非成功也非业务失败（05 §5.2）。
+/// 熔断失败——取消既非成功也非业务失败。
 pub struct ToolManager {
   /// 工具注册表。
   registry: ToolRegistry,
@@ -149,7 +149,7 @@ impl ToolManager {
   /// 与逐个调用 [`ToolManager::register`] 的区别在于**原子性**：批次内
   /// 任意工具预检失败（Schema 非法、批内重名、与已注册工具冲突）时，
   /// **不写入任何工具**（零写入），适合插件等「全成或全不成」的注册
-  /// 场景（阶段 6，18_ §1.4）。
+  /// 场景（阶段 6）。
   ///
   /// # Errors
   ///
@@ -198,7 +198,7 @@ impl ToolManager {
   /// 按工具名前缀批量注销，并同步清理其校验器缓存，返回移除数量。
   ///
   /// 典型用途：按插件 ID 前缀（`{plugin_id}__`）一次性移除该插件的
-  /// 全部工具（阶段 6，18_ §1.4）。
+  /// 全部工具（阶段 6）。
   ///
   /// # Panics
   ///
@@ -264,7 +264,7 @@ impl ToolManager {
   ///    （防御注册链路与缓存不同步的缺陷，不阻断执行）；
   /// 4. 执行与取消竞争：取消优先于完成，二者均不计熔断失败；
   /// 5. 终结记账：成功闭合熔断计数；业务失败计入并原样透传错误
-  ///    （D8：上层转为 `is_error` 结果回灌模型）。
+  ///    （上层转为 `is_error` 结果回灌模型）。
   ///
   /// # Errors
   ///
@@ -348,7 +348,7 @@ impl ToolManager {
         Ok(result)
       }
       Some(Err(e)) if e.code() == CANCELLED => {
-        // 取消不是业务失败：只归还探测资格，不污染熔断统计（05 §5.2）。
+        // 取消不是业务失败：只归还探测资格，不污染熔断统计。
         if probe {
           self.circuit.abort_probe();
         }
@@ -356,7 +356,7 @@ impl ToolManager {
         Err(e)
       }
       Some(Err(e)) => {
-        // ===== 白名单分支（阶段 6，18_ §1.3） =====
+        // ===== 白名单分支（阶段 6） =====
         // 命中 non_counting_codes 的失败不计入熔断记账：半开探测需归还
         // 探测资格（与取消路径一致），避免探测资格永久占用。
         if self.non_counting_codes.contains(&e.code()) {
@@ -371,7 +371,7 @@ impl ToolManager {
         }
         self.circuit.record_failure();
         tracing::error!(tool = %name, call_id = %call.id, code = %e.code(), error = %e.message(), "tool execution failed");
-        Err(e) // 错误原样透传（D8：上层转为 is_error 结果回灌）
+        Err(e) // 错误原样透传：上层转为 is_error 结果回灌
       }
       None => {
         // select 中取消先到：归还探测资格并合成取消错误。
@@ -702,7 +702,7 @@ mod tests {
         .unwrap_err();
     }
 
-    // ===== 阶段 2：等待冷却期满（20ms 冷却，睡 60ms）进入半开 =====
+    // ===== 阶段 2：等待冷却期满进入半开 =====
     tokio::time::sleep(Duration::from_millis(60)).await;
 
     // ===== 阶段 3：半开探测成功 → 闭合 =====
@@ -854,7 +854,7 @@ mod tests {
     assert_eq!(err.code(), NOT_FOUND);
   }
 
-  // ===== 阶段 6 · Step 0 验收（18_ §1.4 / §1.6 / §13.1） =====
+  // ===== 阶段 6 · Step 0 验收 =====
 
   /// 场景：`register_batch` 原子性——批次内第 3 个工具与已注册工具
   /// 冲突时整批拒绝，**0 个工具写入**。
@@ -913,7 +913,7 @@ mod tests {
   }
 
   /// 场景：方案 A 白名单——白名单内错误码（插件超时）连续超过阈值
-  /// **不打开熔断**，内置工具不受影响（18_ §1.6）。
+  /// **不打开熔断**，内置工具不受影响。
   #[tokio::test]
   async fn whitelisted_plugin_timeout_does_not_trip_breaker() {
     let mut cfg = config(5);
@@ -946,7 +946,7 @@ mod tests {
     assert_eq!(first_text(&result), "ok");
   }
 
-  /// 场景：白名单内错误码（插件越权）连续出现同样不打开熔断（18_ §1.3）。
+  /// 场景：白名单内错误码（插件越权）连续出现同样不打开熔断。
   #[tokio::test]
   async fn whitelisted_plugin_forbidden_does_not_trip_breaker() {
     let mut cfg = config(5);
@@ -1034,7 +1034,7 @@ mod tests {
   }
 
   /// 场景：`ToolManagerConfig::default()` 的白名单包含既有两个不计数
-  /// 错误码（保证新增字段不回退现有行为，18_ §1.3）。
+  /// 错误码（保证新增字段不回退现有行为）。
   #[test]
   fn default_config_whitelist_contains_existing_non_counting_codes() {
     let cfg = ToolManagerConfig::default();

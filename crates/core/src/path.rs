@@ -10,7 +10,7 @@
 //!
 //! - **域根 vs 域内路径**：`domain_root` 是"域选择器"（沙箱边界），本身
 //!   允许绝对路径（如 CI 传入 `--root /tmp/build`），由调用方单独校验存在
-//!   性与目录类型；本模块的 P1 校验只作用于**域内相对路径** `raw`。
+//!   性与目录类型；本模块的 校验只作用于**域内相对路径** `raw`。
 //! - **不做向上递归**：任何 `..` 组件一律拒绝，杜绝 `cwd` 向上渗透。
 //! - **物理校验**：`canonicalize` 消解符号链接与 Windows 目录联接后再判定
 //!   归属，堵住"词法合法但经链接指向域外"的逃逸面。
@@ -152,7 +152,7 @@ pub fn is_within(canonical_root: &Path, canonical_candidate: &Path) -> bool {
   canonical_candidate.starts_with(canonical_root)
 }
 
-/// 域内相对路径解析（P1 权威实现）：词法拒绝 → canonicalize → 归属校验。
+/// 域内相对路径解析（权威实现）：词法拒绝 → canonicalize → 归属校验。
 ///
 /// # 双层校验
 ///
@@ -350,7 +350,7 @@ mod tests {
     assert_eq!(err.code(), PATH_ESCAPED);
   }
 
-  /// 场景：域根本身可为绝对路径（域选择器语义，不参与 P1）。
+  /// 场景：域根本身可为绝对路径（域选择器语义，不参与沙箱校验）。
   /// 预期：绝对域根 + 域内相对路径正常解析。
   #[test]
   fn resolve_in_domain_allows_absolute_domain_root() {

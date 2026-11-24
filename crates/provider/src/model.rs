@@ -4,7 +4,7 @@
 //! 变更必须以新实例替换（保证并发读取无锁）。
 //!
 //! 计费使用"微美元"（`u64`）而非浮点——`1 USD = 1,000,000 micros`，
-//! 彻底避免精度丢失。阶梯费率通过 `tiers: Vec<ModelCostTiers>` 表达：
+//! 避免精度丢失。阶梯费率通过 `tiers: Vec<ModelCostTiers>` 表达：
 //! 当输入 token 超过 `input_token_above` 阈值时切换到新费率。
 
 use crate::ids::{ModelId, ProviderId};

@@ -1,6 +1,6 @@
 //! 压缩状态：进程内 per-session 增量基 + 跨重启持久化子集。
 //!
-//! 承重约束（25 号方案 P1 / D4 / D11）：
+//! 承重约束：
 //! - 压缩是「请求级视图」，增量状态是进程内派生数据，重启丢失可从完整转录重建；
 //! - 只有四字段跨重启有价值（摘要文本 / 检查点指纹 / 摘要模型 / 生成时间），
 //!   其余运行时字段重启一律归零（滞回基准重算、冷却消失、重建计数从零开始）；
@@ -9,7 +9,7 @@
 use ra_core::message::{Content, Message, UserContent};
 use serde::{Deserialize, Serialize};
 
-/// 跨重启持久化的摘要缓存（JSONL `compaction` 记录承载的四字段，D11 / P1-3）。
+/// 跨重启持久化的摘要缓存（JSONL `compaction` 记录承载的四字段）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionCache {
   /// 上次成功摘要文本（已按 `max_summary_chars` 截断）。
@@ -22,7 +22,7 @@ pub struct CompactionCache {
   pub generated_at: i64,
 }
 
-/// 供 `HarnessContext::build` 读取的只读快照（D2 / P1-2）。
+/// 供 `HarnessContext::build` 读取的只读快照。
 ///
 /// 只暴露 overhead 基准，不暴露冷却 / 摘要等内部字段；
 /// `HarnessContext` 不直接持有 [`CompactionState`]。
@@ -34,25 +34,25 @@ pub struct CompactionStateSnapshot {
 
 /// 单次压缩会话状态（进程内，按 session key 隔离）。
 ///
-/// 全零 / None 即默认值：运行时字段重启重置（P1-3）的语义恰好与
+/// 全零 / None 即默认值：运行时字段重启重置的语义恰好与
 /// `Default` 一致，直接派生。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CompactionState {
-  /// 上次触发时的估算 token（D3 滞回基准；0 表示从未触发）。
+  /// 上次触发时的估算 token（滞回基准；0 表示从未触发）。
   pub last_trigger_tokens: usize,
-  /// 冷却剩余轮数（D3）。
+  /// 冷却剩余轮数。
   pub cooldown_turns_left: u32,
-  /// 上次摘要文本（D4 增量基）。
+  /// 上次摘要文本（增量基）。
   pub last_summary: Option<String>,
   /// 上次摘要覆盖到的消息指纹（prefix 末尾消息）。
   pub checkpoint_fingerprint: u64,
   /// 上次被移出的消息条数（保持 truncated 可观测一致）。
   pub last_truncated: usize,
-  /// 已完成的增量次数（D4 强制重建计数）。
+  /// 已完成的增量次数（强制重建计数）。
   pub incremental_count: u32,
-  /// 上一轮 system prompt 的估算 token（D2 循环依赖破解）。
+  /// 上一轮 system prompt 的估算 token（循环依赖破解）。
   pub last_overhead: usize,
-  /// 自上次摘要以来的 build 轮数（D6 过期提示的 N；摘要成功时归零）。
+  /// 自上次摘要以来的 build 轮数（过期提示的 N；摘要成功时归零）。
   pub summary_age_turns: u32,
 }
 
@@ -66,12 +66,12 @@ impl CompactionState {
     Self {
       last_summary: Some(cache.last_summary.clone()),
       checkpoint_fingerprint: cache.checkpoint_fingerprint,
-      // 以下运行时字段重启后重置（P1-3）
+      // 以下运行时字段重启后重置
       ..Self::default()
     }
   }
 
-  /// 导出可持久化子集：仅当存在摘要文本时返回（摘要失败不写记录，D11）。
+  /// 导出可持久化子集：仅当存在摘要文本时返回（摘要失败不写记录）。
   ///
   /// # Arguments
   ///
@@ -111,7 +111,7 @@ impl CompactionState {
 /// （未来引入可能失败的自定义序列化时生效），但「绝不静默降级」的
 /// 语义必须成立。
 ///
-/// 用于检查点定位与 D11 失效判定（重启后与 transcript 比对）。
+/// 用于检查点定位与失效判定（重启后与 transcript 比对）。
 pub fn fingerprint_message(message: &Message) -> u64 {
   match serde_json::to_string(message) {
     Ok(text) => fnv1a64(text.as_bytes()),
@@ -192,7 +192,7 @@ fn metadata_fingerprint_source(message: &Message) -> String {
 /// 在完整消息序列中定位指纹对应的检查点下标。
 ///
 /// 从后向前匹配（多条同指纹时取最近的），找不到返回 `None`
-/// → 增量路径回退全量（D4 检查点丢失）。
+/// → 增量路径回退全量（检查点丢失）。
 pub fn locate_checkpoint(
   messages: &[Message],
   fingerprint: u64,

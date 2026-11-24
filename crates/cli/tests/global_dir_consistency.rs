@@ -1,4 +1,4 @@
-//! 文档 21：全局目录写入端与读取端一致性测试（T1–T7）。
+//! 全局目录写入端与读取端一致性测试（T1–T7）。
 //!
 //! 核心断言：`[global].dir` 不仅影响读取端，也影响 `auth` / `trust`
 //! 等写入型子命令——两端共用 `resolve_global_dir`。
@@ -118,7 +118,7 @@ fn t4_trust_add_honors_project_global_dir() {
   );
 }
 
-/// T5：enabled = false 不影响显式写入（D3）。
+/// T5：enabled = false 不影响显式写入。
 #[test]
 fn t5_disabled_global_still_writes_to_dir() {
   let tmp = tempfile::tempdir().expect("temp");

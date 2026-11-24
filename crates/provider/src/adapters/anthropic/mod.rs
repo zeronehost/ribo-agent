@@ -16,7 +16,7 @@
 //! # 设计原则
 //!
 //! - **文本优先**：阶段 1 仅处理 `text` 块 + `tool_use` / `tool_result` 块；
-//!   `thinking` / `redacted_thinking` / `image` 等块静默丢弃 + warn 日志（decision=6）。
+//!   `thinking` / `redacted_thinking` / `image` 等块静默丢弃并记 warn 日志。
 //! - **同构 OpenAI**：StreamAggregator / LineFlow / map_stop_reason 复用 `crate::stream`，
 //!   SSE 帧分派 / spawn_parse_task 模式同构 openai 适配器。
 //! - **零重试**：适配器内部不做任何重试，由上层网关组合。

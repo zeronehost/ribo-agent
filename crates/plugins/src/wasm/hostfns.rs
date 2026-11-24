@@ -1,12 +1,12 @@
 //! Host Functions：log / storage_get / storage_put / http_proxy 与
-//! `Linker` 构建（设计文档 18_ §6）。
+//! `Linker` 构建。
 //!
 //! 能力按 ACL 注入（guest 默认无 IO）：`log` 走限流、`storage_*` 走
 //! 插件级进程内存储、`http_proxy` 走受控代理（UrlPolicy + 禁重定向 +
 //! 响应体上限）。所有 guest 可控长度在**读取点先判后分配**
 //! （`StoreLimits` 只约束 guest 线性内存，管不到 host 堆上的 Vec）。
 //!
-//! 错误链契约（§6.4）：host function 内部错误 → **结构化前缀 trap**
+//! 错误链契约：host function 内部错误 → **结构化前缀 trap**
 //! （`internal:` / `guest_error:` / `forbidden:{cap}` / `cancelled` /
 //! `storage_*`）→ `run_tool` 的 [`classify_wasmtime_error`](crate::wasm::runtime)
 //! 按前缀分类。ACL 拒绝**必须直接构造** `WasmError::msg("forbidden:{cap}")`
@@ -23,7 +23,7 @@ use ra_core::error::{RiboError, RiboResult};
 use ra_tools::context::ToolContext;
 use wasmtime::{Caller, Error as WasmError};
 
-// ===== wasmtime 50 API 校准（依赖锁定时实测，§0.3） =====
+// ===== wasmtime 50 API 校准（依赖锁定时实测） =====
 // `wasmtime::Trap` 在 50.x 已是 #[non_exhaustive] 的预定义 enum
 // （无 `Trap::new`），host function 的错误类型统一为 `wasmtime::Error`
 // （`WasmRet for Result<T>` 以 wasmtime::Result 为准）。自定义结构化
@@ -38,16 +38,16 @@ use crate::error::{
 use crate::wasm::runtime::{HostState, HostStateSnapshot};
 use crate::wasm::storage::{MAX_KEY_LEN, MAX_VALUE_LEN, StorageError};
 
-// ===== guest 可控输入长度上限（§6.4 v0.8.3 DoS 边界） =====
+// ===== guest 可控输入长度上限（DoS 边界） =====
 // 四条纪律：① 每个 guest 可控长度参数都必须有上限；② 上限判定必须在
 // host 侧；③ 先判后分配；④ 越界 → plugin_invalid_arguments →
 // guest_error: → plugin.plugin_exec_failed（可回灌的业务错误）。
 // 注意：storage 语义的 MAX_KEY_LEN / MAX_VALUE_LEN 定义在 storage.rs，
-// 本文件定义 HTTP / 日志相关常量；§8.1 ABI 表是四处上限的契约汇总。
+// 本文件定义 HTTP / 日志相关常量；ABI 表是四处上限的契约汇总。
 
-/// http 请求 JSON 长度上限（64KB）。
+/// http 请求 JSON 长度上限。
 pub const MAX_REQ_LEN: usize = 64 * 1024;
-/// 日志文本长度上限（16KB）。
+/// 日志文本长度上限。
 pub const MAX_LOG_LEN: usize = 16 * 1024;
 
 /// 本 crate 私有的单调毫秒函数（限流窗口基准）。
@@ -68,7 +68,7 @@ pub(crate) fn now_ms() -> u64 {
 /// 每个 [`Storage`](crate::wasm::storage::Storage) / 限流器即单插件实例
 /// （挂 `Arc<PluginShared>`），内部无需按 plugin_id 分表。
 ///
-/// 实现要点（§6.1 v0.8.3 / v0.8.4 P1-1）：
+/// 实现要点：
 ///
 /// ① 窗口滚动用 CAS（`try_update`，原 `fetch_update`），不用「load → 比较 → store」；
 /// ② 计数用 `fetch_add`；**窗口一旦滚动，必须同步把 `count` 归零**
@@ -98,8 +98,7 @@ impl LogRateLimiter {
   }
 
   /// 判定本条日志是否放行：窗口内计数 < burst 直接放行；超出后按
-  /// `rate_per_sec` 采样。窗口滚动成功者负责把 count 清零（v0.8.4
-  /// P1-1：**滚动必须重置计数**，否则第二窗口起限流永久失效）。
+  /// `rate_per_sec` 采样。窗口滚动成功者负责把 count 清零：**滚动必须重置计数**，否则第二窗口起限流永久失效。
   pub fn allow(&self) -> bool {
     let window_ms = self.window.as_millis() as u64;
     let now = now_ms();
@@ -129,7 +128,7 @@ impl LogRateLimiter {
   }
 }
 
-// ===== http-proxy（§6.3：sync/async 桥接 + SSRF 三层的前两层） =====
+// ===== http-proxy（sync/async 桥接 + SSRF 三层的前两层） =====
 
 /// host function 内部私有错误（对外经 trap 前缀表映射，不引入第二套
 /// 对外错误类型）。`Display` 供 `guest_error: {e}` 前缀拼接使用。
@@ -158,16 +157,16 @@ pub(crate) enum HttpProxyError {
   ResponseTooLarge(usize),
 }
 
-/// http 响应体大小上限（4MB，v0.8.3 P1-2 DoS 边界）。
+/// http 响应体大小上限（4MB，DoS 边界）。
 ///
 /// `StoreLimits` 只约束 guest 线性内存，不约束 host 堆上的 Vec——
 /// 异常服务端返回超大响应即可打爆 host。**即使 Step B 只面向受控 URL，
 /// 内网里的异常服务同样能打垮 host**，故该上限在 Step B 就必须存在。
 pub const MAX_RESP_BYTES: usize = 4 * 1024 * 1024;
 
-// v0.7（§三.4）：`host_http_get` 内 `?` 需要 url::ParseError / reqwest::Error
-// 的 From 实现，缺失编译不过。注：reqwest 0.13 不再 re-export `http` 模块，
-// v0.8.1 P0-4 的 `From<reqwest::http::method::InvalidMethod>` 无法成立——
+// `host_http_get` 内 `?` 需要 url::ParseError / reqwest::Error
+// 的 From 实现，缺失编译不过。reqwest 0.13 不再 re-export `http` 模块，
+// `From<reqwest::http::method::InvalidMethod>` 无法成立——
 // `Method::from_bytes` 的错误在调用点以 `map_err` 就地映射为
 // `HttpProxyError::BadMethod`（不引入 http 直接依赖）。
 impl From<url::ParseError> for HttpProxyError {
@@ -188,7 +187,7 @@ impl From<reqwest::Error> for HttpProxyError {
 /// 与取消竞争（`tokio::select!`），响应体分块读取并累计上限
 /// （`Content-Length` 不可信，只信预检等于没设防）。
 ///
-/// **调用约束（v0.6 P2-5 / v0.7 §三.2）**：本函数依赖
+/// **调用约束（§三.2）**：本函数依赖
 /// `tokio::runtime::Handle::current()`——仅在 `run_tool` 的
 /// `spawn_blocking` 路径（runtime 上下文已注入）或 `#[tokio::test]`
 /// 内调用；无 runtime 时 `Handle::current()` 会 panic。
@@ -300,7 +299,7 @@ impl reqwest::dns::Resolve for SystemResolver {
   }
 }
 
-/// SSRF 第 3 层（B3.1，18_ §12）：DNS 解析结果 IP 复检守卫。
+/// SSRF 第 3 层（B3.1）：DNS 解析结果 IP 复检守卫。
 ///
 /// [`UrlPolicy`] 检查的是 URL 字符串的 host，防不了「白名单域名解析到
 /// 私网 IP」的 DNS rebinding——本守卫在解析结果上复用
@@ -346,11 +345,11 @@ impl reqwest::dns::Resolve for DnsGuardResolver {
   }
 }
 
-// ===== guest 内存读写辅助（§6.4） =====
+// ===== guest 内存读写辅助 =====
 
 /// 把 host function 内部的 `RiboError` 转成**带结构化前缀**的 Trap。
 ///
-/// **硬约束（v0.8.4 P2-1）**：本函数**绝不产生 `forbidden:` 前缀**——
+/// **硬约束**：本函数**绝不产生 `forbidden:` 前缀**——
 /// 所有 ACL 拒绝路径必须直接构造 `WasmError::msg("forbidden:{capability}")`
 /// （规范能力名）。本函数只产 `internal:{stage}`（计入熔断）与
 /// `guest_error:{reason}`（其余一律按业务错误收敛，含
@@ -367,10 +366,10 @@ fn ribo_to_error(e: &RiboError) -> WasmError {
 
 /// 从 guest 线性内存按 (ptr, len) 读原始字节（越界由 wasmtime 转 Trap）。
 ///
-/// guest 必须显式 `(export "memory" (memory 0))`（§8.1），否则
+/// guest 必须显式 `(export "memory" (memory 0))`，否则
 /// `caller.get_export("memory")` 返回 None → `plugin.plugin_internal`。
 ///
-/// **签名必须收 `&mut Caller`**（v0.8.3 P0-1）：wasmtime 的
+/// **签名必须收 `&mut Caller`**：wasmtime 的
 /// `Caller::get_export` 需 `&mut self`；`&Caller` 编译不过（E0596）。
 fn read_guest_bytes(
   caller: &mut Caller<HostState>,
@@ -393,7 +392,7 @@ fn read_guest_bytes(
   Ok(buf)
 }
 
-/// **带长度上限**的 guest 内存读取（先判后分配，v0.8.3 P1-1 DoS 边界）。
+/// **带长度上限**的 guest 内存读取（先判后分配，DoS 边界）。
 ///
 /// `read_guest_bytes` 里的 `vec![0u8; len]` 发生在 host 堆上——恶意
 /// guest 传巨大 `len` 即可在不触碰 guest 沙箱内存上限的前提下打爆
@@ -419,12 +418,12 @@ fn read_guest_bytes_limited(
 
 /// 经 guest 导出的 `alloc(len)` 申请缓冲区并写入 bytes，返回 (ptr, len)。
 ///
-/// **边界契约（v0.8.3 P2-3）**：本函数不接受空 bytes——`alloc(0)` 的
+/// **边界契约**：本函数不接受空 bytes——`alloc(0)` 的
 /// 行为在不同引擎/版本下不一致，需要表达「没有结果」的场景一律走
-/// `Ok(0)` 哨兵（§8.1 返回语义表），绝不把 `&[]` 传进来。
+/// `Ok(0)` 哨兵（返回语义表），绝不把 `&[]` 传进来。
 /// **释放责任**：本函数只负责「申请 + 写入 + 返回首址」，不负责释放——
-/// 返回值缓冲区由 guest 读完后 `dealloc`（§8.2 三分表）。
-/// **alloc 返回 0 / 非 i32 视为 guest 分配失败**（v0.8.1 P0-5：先判 0
+/// 返回值缓冲区由 guest 读完后 `dealloc`（三分表）。
+/// **alloc 返回 0 / 非 i32 视为 guest 分配失败**（先判 0
 /// 再 write，否则写到 guest 线性内存 0 地址属潜在 UB）。
 fn alloc_return(
   caller: &mut Caller<HostState>,
@@ -469,9 +468,9 @@ struct HttpRequest {
   body: Option<String>,
 }
 
-/// 构建 `Linker`：注册 4 个 host import，与 §11.2 PDK 声明一一对应。
+/// 构建 `Linker`：注册 4 个 host import，与 PDK 声明一一对应。
 ///
-/// 返回值语义按 §8.1「host import 返回语义表」：
+/// 返回值语义按 「host import 返回语义表」：
 ///
 /// | import | 入参 | 返回 |
 /// | :-- | :-- | :-- |
@@ -483,7 +482,7 @@ struct HttpRequest {
 /// 由 `WasmPluginHost::new()` 调用一次并以 `Arc` 缓存复用；
 /// `Linker::instantiate(&self, ...)` 为只读方法，可跨并发 Store 调用。
 ///
-/// **四个闭包参数一律保留 `mut caller`**（v0.8.3 P0-1 冲突裁决）：
+/// **四个闭包参数一律保留 `mut caller`**（冲突裁决）：
 /// `read_guest_bytes_limited` 需 `&mut Caller`（`get_export` 要
 /// `&mut self`）；若 clippy 报 unused_mut，先确认该闭包确实未触达
 /// `&mut caller` 再删。
@@ -503,7 +502,7 @@ pub fn build_linker(
     |mut caller: Caller<HostState>, ptr: i32, len: i32| -> wasmtime::Result<i32> {
       let snap = caller.data().snapshot(); // owned 快照，借用即结束
       if !snap.acl.log {
-        // ACL 拒绝必须直接构造规范能力名 trap（v0.8.4 P2-1 硬约束）
+        // ACL 拒绝必须直接构造规范能力名 trap（硬约束）
         return Err(WasmError::msg("forbidden:log"));
       }
       // 先判后分配：日志文本 ≤ 16KB
@@ -511,7 +510,7 @@ pub fn build_linker(
         .map_err(|e| ribo_to_error(&e))?;
       let msg = String::from_utf8(bytes)
         .map_err(|_| WasmError::msg("guest_error: log invalid utf8"))?;
-      // 限流（§6.1）：超配额直接丢弃，不报错（避免放大噪声）
+      // 限流：超配额直接丢弃，不报错（避免放大噪声）
       if snap.log_limiter.allow() {
         tracing::debug!(plugin = %snap.plugin_id, tool = %snap.tool_name, "{msg}");
       }
@@ -520,7 +519,7 @@ pub fn build_linker(
   )
   .map_err(|e| plugin_internal("linker:log", e))?;
 
-  // —— `storage_get`：读 key → 查 Arc<Storage> → 三态返回（v0.8.2 P0-1） ——
+  // —— `storage_get`：读 key → 查 Arc<Storage> → 三态返回 ——
   linker.func_wrap(
     "ribo",
     "storage_get",
@@ -538,7 +537,7 @@ pub fn build_linker(
         // 其已把 alloc 返回 0 视为 guest 分配失败并拒绝写入）
         Ok(None) => return Ok(0),
         Err(StorageError::Denied) => return Err(WasmError::msg("forbidden:storage")),
-        // Full 对 get 而言是防御性分支（§6.2 明确 Full 仅 put 触发），
+        // Full 对 get 而言是防御性分支（明确 Full 仅 put 触发），
         // 保留并映射到正确的 storage_full（不与 BadKey 混淆）
         Err(StorageError::Full) => return Err(WasmError::msg("storage_full")),
         Err(StorageError::BadKey(reason)) => {
@@ -553,7 +552,7 @@ pub fn build_linker(
       // 帧化返回（PDK 跨层契约）：host function 的 import 只能返回单
       // i32（rustc 不支持多值返回），无法同时携带 ptr 与 len——故写入
       // `[len: u32 LE][value]` 帧化块，guest 读首 4 字节取长度后读载荷，
-      // 用完 dealloc 整块（4 + len）。
+      // 用完 dealloc 整块。
       let mut framed = Vec::with_capacity(4 + value.len());
       framed.extend_from_slice(&(value.len() as u32).to_le_bytes());
       framed.extend_from_slice(&value);
@@ -565,7 +564,7 @@ pub fn build_linker(
   )
   .map_err(|e| plugin_internal("linker:storage_get", e))?;
 
-  // —— `storage_put`：写 key/value（4 参签名，v0.8.2 P1-1） ——
+  // —— `storage_put`：写 key/value ——
   linker
     .func_wrap(
       "ribo",
@@ -689,7 +688,7 @@ mod tests {
   use crate::config::PluginRuntimeConfig;
 
   /// 场景：限流器窗口语义——burst 内全放行；burst 后按 rate 采样；
-  /// **窗口滚动后 count 必须重置、burst 重新可用**（v0.8.4 P1-1 防回归：
+  /// **窗口滚动后 count 必须重置、burst 重新可用**（防回归：
   /// 旧版只滚动 window_start 不重置 count，第二窗口起限流永久失效）。
   #[test]
   fn rate_limiter_resets_count_on_window_roll() {

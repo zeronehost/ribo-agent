@@ -1,5 +1,5 @@
-//! 视图层：`View` trait（即时模式、无状态渲染）与五区根布局
-//!（16 详细设计 §3）。
+//! 视图层：`View` trait（即时模式、无状态渲染）与五区根布局。
+//!
 
 pub mod dialog;
 pub mod help_overlay;
@@ -13,10 +13,9 @@ use ratatui::layout::{Constraint, Rect};
 use crate::state::AppState;
 
 /// 组件视图：每帧由布局分配区域后调用，从 `AppState` 只读绘制
-///（15 §3.2 拍板——可变状态全部收敛在 AppState，组件不持有）。
+///（可变状态全部收敛在 AppState，组件不持有）。
 ///
-/// 例外：`InputView` 经 `RefCell<TextArea>` 获取内部可变借用渲染
-///（16 §3.1 R-B3）。
+/// 例外：`InputView` 经 `RefCell<TextArea>` 获取内部可变借用渲染。
 pub trait View {
   /// 在指定区域绘制自身当前状态。
   fn render(&self, frame: &mut Frame, area: Rect, state: &AppState);
@@ -59,7 +58,7 @@ impl RootLayout {
   /// 必须与 `DialogView` 中 `Paragraph` 的 `text_area.width`（= area.width
   /// 减 Block 边框）一致——`bubble_line_count` 的行数缓存与 offset
   /// 均按此宽度计算，否则折行行数与 WordWrapper 实际渲染不符 →
-  /// 内容显示不全、滚动偏移错位（2026-11-21 布局改造回归）。
+  /// 内容显示不全、滚动偏移错位。
   pub fn dialog_width(terminal_width: u16) -> u16 {
     let show_sidebar = Self::sidebar_visible(terminal_width);
     let sidebar_w = if show_sidebar {

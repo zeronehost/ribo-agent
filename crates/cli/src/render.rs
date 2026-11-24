@@ -1,6 +1,6 @@
-//! 事件流渲染：逐块增量 diff + 分桶基线恢复（14 详细设计 §8）。
+//! 事件流渲染：逐块增量 diff + 分桶基线恢复。
 //!
-//! 基线模型（概设 v2.4 §4.4）：按「消息桶 × 内容块」组织——
+//! 基线模型：按「消息桶 × 内容块」组织——
 //! `MessageStart` 建新桶、单桶单块内基线单调不减、`MessageEnd` 仅收尾、
 //! `Lagged` 丢弃基线等下一个 `MessageStart` 重同步。
 
@@ -35,11 +35,11 @@ fn error_message_of(message: &Message) -> Option<&str> {
   }
 }
 
-/// 压缩成功提示文案（D8）：只提示压缩已发生，不显示摘要内容 / 截断条数。
+/// 压缩成功提示文案：只提示压缩已发生，不显示摘要内容 / 截断条数。
 /// （事件在压缩完成后、AgentStart 前到达，故措辞为"已压缩"。）
 const COMPACTION_HINT: &str = "[已压缩上下文]";
 
-/// 压缩失败提示文案（v1.6 用户拍板：失败也留痕）。
+/// 压缩失败提示文案（失败也留痕）。
 const COMPACTION_FAILED_HINT: &str = "[上下文压缩失败，已回退滑窗]";
 
 /// 终端渲染器：stdout 只承载对话渲染（tracing 日志由 logging 落文件）。
@@ -84,7 +84,7 @@ fn emit(rendered: usize, prefix: &str, text: &str) -> usize {
 impl Renderer for TerminalRenderer {
   fn on_event(&mut self, event: &AgentEvent) {
     match event {
-      // D8：压缩痕迹——成功一行暗色提示；失败（v1.6）黄色降级提示。
+      // 压缩痕迹——成功为暗色提示，失败为黄色降级提示。
       // 均不进消息桶、不落盘、不显示摘要内容 / 截断条数。
       AgentEvent::Compaction { failed } => {
         self.compacting = true;
@@ -112,7 +112,7 @@ impl Renderer for TerminalRenderer {
         };
         for (index, block) in partial.content.iter().enumerate() {
           // 仅 Text/Thinking 参与字符 diff；ToolCall/Image 无字符长度语义，
-          // 工具调用由 ToolExecutionStart/End 状态行表达（概设 v2.4 规则 2）。
+          // 工具调用由 ToolExecutionStart/End 状态行表达。
           let rendered = baseline.blocks.get(index).copied().unwrap_or(0);
           let new_rendered = match block {
             Content::Text(t) => emit(rendered, "", &t.content),
@@ -127,7 +127,7 @@ impl Renderer for TerminalRenderer {
         }
       }
       // 收尾换行；无当前桶（建流失败/取消路径只有无配对 MessageEnd）→ 仅换行；
-      // 终端消息的错误原因经 error_message 输出（概设 v2.4 规则 3）。
+      // 终端消息的错误原因经 error_message 输出。
       AgentEvent::MessageEnd { message } => {
         self.current = None;
         if let Some(reason) = error_message_of(message) {
@@ -165,7 +165,7 @@ impl Renderer for TerminalRenderer {
 
   fn on_lagged(&mut self, skipped: u64) {
     println!("\n(已跳过 {skipped} 条事件，恢复渲染)");
-    // 丢弃当前基线（概设 v2.4 规则 4）：partial 不携带消息身份，Lagged
+    // 丢弃当前基线：partial 不携带消息身份，Lagged
     // 可能吞掉 MessageStart，分桶边界不可靠——等下一个 MessageStart 重同步。
     self.current = None;
   }
@@ -185,7 +185,7 @@ pub struct RecordingRenderer {
   pub lagged: Vec<u64>,
   /// Closed 调用次数。
   pub closed: usize,
-  /// 压缩提示是否在显示（D8 配对断言用）。
+  /// 压缩提示是否在显示（配对断言用）。
   pub compacting: bool,
 }
 
@@ -322,7 +322,7 @@ mod tests {
     assert_eq!(r.closed, 1);
   }
 
-  /// D8：Compaction 输出一行持久状态提示（不含摘要内容），
+  /// Compaction 输出一行持久状态提示（不含摘要内容），
   /// AgentStart 仅复位测试标志（提示本身不依赖该标志）。
   #[test]
   fn compaction_hint_shows_then_resets_on_agent_start() {
@@ -333,7 +333,7 @@ mod tests {
     assert_eq!(r.outputs.last(), Some(&COMPACTION_HINT.to_string()));
     assert!(!r.outputs.iter().any(|o| o.contains("secret-summary")));
 
-    // v1.6：失败回退也留痕——黄色失败文案，不携带失败原因细节
+    // 失败回退也留痕：黄色提示，不携带失败原因细节
     r.on_event(&AgentEvent::Compaction { failed: true });
     assert_eq!(r.outputs.last(), Some(&COMPACTION_FAILED_HINT.to_string()));
 

@@ -40,14 +40,14 @@ pub struct SessionReplay {
   pub messages: Vec<Message>,
   /// 破损行 / 未知版本 / 未知记录类型的诊断。
   pub diagnostics: Vec<ReplayDiagnostic>,
-  /// 最后一条有效的摘要旁路记录（D11）：不进 `messages`，不决定读取起点。
+  /// 最后一条有效的摘要旁路记录：不进 `messages`，不决定读取起点。
   pub compaction: Option<CompactionCache>,
 }
 
 /// 单条回放诊断。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayDiagnostic {
-  /// 1 起始的行号。
+  /// 从 1 起始的行号。
   pub line: usize,
   /// 诊断码。
   pub code: ReplayDiagnosticCode,
@@ -64,7 +64,7 @@ pub enum ReplayDiagnosticCode {
   UnknownRecordType,
   /// 版本号高于当前支持版本，按 v1 尽力回放。
   UnsupportedVersion,
-  /// `compaction` 摘要记录损坏 / 字段缺失（忽略记录，不中断回放，D11）。
+  /// `compaction` 摘要记录损坏 / 字段缺失（忽略记录，不中断回放）。
   StaleCompaction,
 }
 
@@ -154,7 +154,7 @@ impl JsonlSessionStore {
     Ok(())
   }
 
-  /// 追加一条摘要旁路记录（D11）。
+  /// 追加一条摘要旁路记录。
   ///
   /// 与 `append` 共用逐键写锁；首轮（文件不存在）时先写 meta 首行。
   /// 摘要记录**不写回转录**：不截断、不删除任何 `message`。
@@ -229,7 +229,7 @@ impl JsonlSessionStore {
     Ok(())
   }
 
-  /// 读取最后一条有效的摘要旁路记录（D11）。
+  /// 读取最后一条有效的摘要旁路记录。
   ///
   /// 损坏 / 字段非法 / 指纹解析失败的记录记 `StaleCompaction` 诊断并跳过，
   /// 返回最后一条有效记录；不存在返回 `Ok(None)`。
@@ -363,7 +363,7 @@ impl JsonlSessionStore {
             }),
           }
         }
-        // D11：摘要旁路记录——不进 messages、不决定读取起点，只存最后一条。
+        // 摘要旁路记录——不进 messages、不决定读取起点，只存最后一条。
         Some("compaction") => {
           match serde_json::from_value::<CompactionRecord>(value.clone()) {
             Ok(record) => match record.checkpoint.parse::<u64>() {
@@ -650,7 +650,7 @@ enum WriteBody<'a> {
     ts: i64,
     message: &'a Message,
   },
-  /// D11 摘要旁路记录：纯缓存，不截断 / 不删除任何 message，
+  /// 摘要旁路记录：纯缓存，不截断 / 不删除任何 message，
   /// 也不决定模型读取起点。`v` 保持 1（硬切换不靠版本号区分）。
   Compaction {
     summary: &'a str,
@@ -661,7 +661,7 @@ enum WriteBody<'a> {
   },
 }
 
-/// 读侧摘要记录载荷（D11）：与 `WriteBody::Compaction` 字段一一对应。
+/// 读侧摘要记录载荷：与 `WriteBody::Compaction` 字段一一对应。
 #[derive(Deserialize)]
 struct CompactionRecord {
   summary: String,
@@ -839,7 +839,7 @@ mod tests {
     assert!(!store.exists("empty").await);
   }
 
-  /// D11：append_compaction 写入旁路记录，load_compaction 读回四字段，
+  /// append_compaction 写入旁路记录，load_compaction 读回四字段，
   /// 且不污染 message 转录（不截断 / 不删除）。
   #[tokio::test]
   async fn compaction_record_roundtrip_does_not_touch_messages() {
@@ -876,7 +876,7 @@ mod tests {
     assert_eq!(store.load_compaction("s1").await.unwrap(), Some(cache));
   }
 
-  /// D11：首轮（无 message）直接写摘要记录时自动补 meta 首行。
+  /// 首轮（无 message）直接写摘要记录时自动补 meta 首行。
   #[tokio::test]
   async fn compaction_record_first_creates_meta_line() {
     let dir =
@@ -899,7 +899,7 @@ mod tests {
     assert_eq!(store.load_compaction("solo").await.unwrap(), Some(cache));
   }
 
-  /// D11：损坏的 compaction 记录记 StaleCompaction 诊断，不中断回放。
+  /// 损坏的 compaction 记录记 StaleCompaction 诊断，不中断回放。
   #[tokio::test]
   async fn load_marks_stale_compaction_record() {
     let dir = crate::test_util::test_dir("load_marks_stale_compaction_record");

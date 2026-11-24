@@ -28,7 +28,7 @@ use crate::{manager::ToolManager, traits::AgentTool};
 /// 用已构造的 [`FsRoot`] 构造全部内置工具实例（不注册）。
 ///
 /// 与 [`builtin_tools`] 的区别：允许注入带具名域根表的 `FsRoot`
-///（19_ Step 3 的 `scheme://` 前缀解析）。
+///（Step 3 的 `scheme://` 前缀解析）。
 pub fn builtin_tools_with_root(fs_root: FsRoot) -> Vec<Arc<dyn AgentTool>> {
   vec![
     echo::create_echo_tool(),

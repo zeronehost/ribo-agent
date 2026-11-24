@@ -25,10 +25,10 @@ pub struct AgentContext {
   pub system_prompt: Vec<Content>,
   /// 对话转录（含 prompt、注入消息、助手消息、工具结果）。
   pub messages: Vec<Message>,
-  /// 本轮是否触发了新摘要（D8）：`run_agent_loop` 据此发射
+  /// 本轮是否触发了新摘要：`run_agent_loop` 据此发射
   /// `Compaction { failed: false }`。冷却抑制 / 复用摘要为 `false`。
   pub compaction_triggered: bool,
-  /// 本轮摘要调用是否失败回退（v1.6 用户拍板失败留痕）：据此发射
+  /// 本轮摘要调用是否失败回退（失败留痕）：据此发射
   /// `Compaction { failed: true }`。与 `compaction_triggered` 互斥，
   /// 二者皆 `false` 表示本轮未执行压缩。
   pub compaction_failed: bool,
@@ -115,13 +115,13 @@ pub struct LoopReport {
   pub new_messages: Vec<Message>,
 }
 
-/// 循环依赖集合：LLM 边界、工具边界与上下文构建边界（D2/D3）。
+/// 循环依赖集合：LLM 边界、工具边界与上下文构建边界。
 ///
 /// 手工实现 [`Debug`]：trait 对象字段（`Arc<dyn ToolProvider>` 等）
 /// 不可打印，只输出模型标识等确定性字段，避免泄露依赖内部状态。
 #[derive(Clone)]
 pub struct LoopDeps {
-  /// LLM 网关（内含并发准入 / 熔断 / 重试 / 降级，不装箱为 Provider，D2）。
+  /// LLM 网关（内含并发准入 / 熔断 / 重试 / 降级，不装箱为 Provider）。
   pub gateway: Arc<Gateway>,
   /// 本轮请求的模型。
   pub model: ModelId,

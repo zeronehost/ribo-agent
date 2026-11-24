@@ -1,4 +1,4 @@
-//! Tab 补全：命令候选 + 模糊匹配（16 详细设计 §7.4）。
+//! Tab 补全：命令候选 + 模糊匹配。
 //!
 //! 候选与 CLI `/help` 同源（`ra_cli::commands::COMMANDS` 元数据表）。
 
@@ -126,14 +126,14 @@ mod tests {
   // 场景：多候选 → 最长公共前缀 + 候选列表。
   #[test]
   fn ambiguous_completion_reports_alternatives() {
-    // /s 命中 /stop /skills /sessions（/status 为 CliOnly 不参与补全）
+    // /s 命中 /stop /skills /sessions（status 为 CliOnly 不参与补全）
     let completion = complete("/s").expect("/s 应有多候选");
     assert!(completion.ambiguous);
     assert!(completion.alternatives.len() >= 3);
     assert!(completion.text.starts_with("/s"));
   }
 
-  // 场景：别名参与模糊匹配（/c 命中 /cancel）。
+  // 场景：别名参与模糊匹配（c 命中 /cancel）。
   #[test]
   fn aliases_participate() {
     let completion = complete("/ca").expect("/ca 应命中 /cancel 别名");

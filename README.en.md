@@ -17,7 +17,7 @@ Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ri
 - **Gateway resilience**: request retries (exponential backoff + jitter), first-token timeout, cross-provider fallback, circuit breaking, and admission control.
 - **Sessions & context**: session persistence, configurable context compaction (summary / sliding window), system prompt and environment injection.
 - **Skill system**: loads `SKILL.md` skills from scan roots; load diagnostics are non-fatal.
-- **Layered configuration**: six independent layers (provider / retry / compression / session / tools / harness); falls back to Mock mode when unconfigured. Also supports two trust domains (Project / Global) and two trust tiers (documents trusted by default, code requires explicit grant); data outside the project is exposed read-only via global `[fs.mounts]`.
+- **Layered configuration**: six independent layers (provider / retry / compression / session / tools / harness); falls back to Mock mode when unconfigured in debug builds (release builds abort with `config.no_providers_in_release` instead). Also supports two trust domains (Project / Global) and two trust tiers (documents trusted by default, code requires explicit grant); data outside the project is exposed read-only via global `[fs.mounts]`.
 
 ---
 
@@ -59,7 +59,7 @@ cargo run -p ra-cli        # command-line REPL
 cargo run -p ra-tui        # full-screen terminal TUI
 ```
 
-> **Mock mode**: when `--config` is not given and no `ribo.toml` exists in the current directory, the entire request path falls back to a local simulator (`mock-model`), so you can try the interaction and tool flow with zero configuration.
+> **Mock mode**: when `--config` is not given and no `ribo.toml` exists in the current directory, the entire request path falls back to a local simulator (`mock-model`), so you can try the interaction and tool flow with zero configuration (`cargo run` is a debug build). Release builds forbid this fallback: missing providers or placeholder configs abort with `config.no_providers_in_release` / `config.placeholder_in_release`.
 
 ---
 
@@ -69,7 +69,7 @@ Both binaries share the same `clap`-parsed flags:
 
 | Flag | Description |
 | :--- | :--- |
-| `-c, --config <PATH>` | Config file path. When omitted, `ribo.toml` in the current directory is auto-detected; if absent, Mock mode is entered. |
+| `-c, --config <PATH>` | Config file path. When omitted, `ribo.toml` in the current directory is auto-detected; if absent, Mock mode is entered (debug builds; release builds abort without providers). |
 | `--root <PATH>` | Override the workspace root (`harness` layer `root`, defaults to the process cwd). |
 | `--global-dir <PATH>` | Override the global domain directory (default: platform config dir + `/ribo`). |
 | `--allow-duplicate-plugin-id` | Allow cross-source duplicate plugin IDs (first declaration wins); rejected fatally by default. |
@@ -112,7 +112,7 @@ Configuration uses a **multi-layer schema**; each layer is independent with zero
   - Template left in placeholder state (`your-*` / `example.com`) → whole stack falls back to Mock.
   - A missing `$ENV` key → local degradation; fallback targets referencing it are dropped, and if `default` becomes dangling the whole stack falls back to Mock.
   - A single layer failing to parse (except ignored unknown fields) → that layer keeps its defaults and prints a warning.
-- **Config selection**: an explicit `--config` wins; when omitted, `ribo.toml` is loaded only if present, otherwise fully-defaulted Mock mode is used.
+- **Config selection**: an explicit `--config` wins; when omitted, `ribo.toml` is loaded only if present, otherwise fully-defaulted Mock mode is used (debug builds; release builds abort without providers).
 
 A complete, copyable template is [`ribo_example.toml`](ribo_example.toml): copy it to `ribo.toml` and fill in real endpoints and keys.
 

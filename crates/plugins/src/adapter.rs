@@ -6,7 +6,7 @@
 //! 注入 `ToolManager` 后自动被 `ToolManagerAdapter` 暴露给主循环——
 //! 这是保持 `AgentTool` / `ToolManager` / agent 主循环**零改动**的核心。
 //!
-//! 工具名策略（方案 A，设计文档 18_ §2.4）：适配器自动为每个工具加
+//! 工具名策略（方案 A）：适配器自动为每个工具加
 //! `{plugin_id}__{tool_name}` 双下划线前缀。LLM 看到的是完整名
 //! （如 `plugin_a__echo`），两个插件提供同名工具不再冲突；
 //! `PluginAgentTool::execute` 派发时使用剥离前缀后的**短名**。
@@ -27,17 +27,17 @@ use ra_tools::{
 use crate::error::plugin_invalid_name;
 use crate::traits::Plugin;
 
-/// `plugin_id` 长度上界（1..=32 字节）。
+/// `plugin_id` 长度上界。
 ///
-/// 32 与 `tool_name` 的 64 **不是笔误，是刻意的命名空间预算**（18_ §2.4）：
+/// 32 与 `tool_name` 的 64 **不是笔误，是刻意的命名空间预算**：
 /// 方案 A 下 `plugin_id` 出现在每个工具名前缀里，限制 32 可把完整名
 /// 压在 32 + 2 分隔符 + 64 = 98 字节上界内，避免 LLM 看到的工具名过长。
 pub const PLUGIN_ID_MAX_LEN: usize = 32;
 
-/// 工具短名长度上界（1..=64 字节）。
+/// 工具短名长度上界。
 pub const TOOL_NAME_MAX_LEN: usize = 64;
 
-/// 校验插件 ID：`^[a-z][a-z0-9_]{0,31}$`（1..=32 字节，ASCII）。
+/// 校验插件 ID：`^[a-z][a-z0-9_]{0,31}$`。
 ///
 /// # Errors
 ///
@@ -47,7 +47,7 @@ pub fn validate_plugin_id(s: &str) -> RiboResult<()> {
   validate_ident(s, PLUGIN_ID_MAX_LEN, "plugin_id")
 }
 
-/// 校验工具短名：`^[a-z][a-z0-9_]{0,63}$`（1..=64 字节，ASCII）。
+/// 校验工具短名：`^[a-z][a-z0-9_]{0,63}$`。
 ///
 /// # Errors
 ///
@@ -60,7 +60,7 @@ pub fn validate_tool_name(s: &str) -> RiboResult<()> {
 /// 逐字节标识符校验（不引入 regex 依赖；字节即字符——限定 ASCII）。
 ///
 /// 先以**显式守卫**拒绝空串 / 超长，再索引 `b[0]`，不依赖 `&&`
-/// 短路求值顺序（重构打乱顺序也不会 panic，18_ §三.5）。
+/// 短路求值顺序（重构打乱顺序也不会 panic，§三.5）。
 fn validate_ident(s: &str, max: usize, field: &str) -> RiboResult<()> {
   let b = s.as_bytes();
   let err = || {
@@ -99,7 +99,7 @@ struct PluginAgentTool {
   /// 是否强制顺序执行：由 `ToolManifest.idempotent` 取反得到。
   ///
   /// 非幂等工具（如 `send_email`）在并行批中交错执行的副作用顺序
-  /// 不可控、重试会放大风险，故强制 `Sequential`（18_ §2.4）。
+  /// 不可控、重试会放大风险，故强制 `Sequential`。
   sequential: bool,
 }
 
@@ -138,7 +138,7 @@ impl AgentTool for PluginAgentTool {
     let value = self.plugin.execute(&self.tool_name, args, ctx).await?;
     Ok(ToolExecutionResult {
       content: vec![ToolOutput::Text(TextContent {
-        // 4KB 截断仅约束错误路径（§1.2）；成功结果的裁剪策略由
+        // 4KB 截断仅约束错误路径；成功结果的裁剪策略由
         // 插件侧与上层共同负责，此处不做二次截断
         content: value.to_string(),
         signature: None,
@@ -338,7 +338,7 @@ mod tests {
   /// 场景：`Arc<dyn Plugin>` 可跨 `tokio::spawn` 调用（Future: Send）。
   ///
   /// 任一 `impl Plugin` 漏标 `#[async_trait]`（Future 非 Send）时
-  /// 本测试编译失败——这是 §2.5 的编译期契约测试。
+  /// 本测试编译失败——这是 `Plugin` trait 的编译期契约测试。
   #[tokio::test]
   async fn plugin_trait_object_is_send() {
     let plugin: Arc<dyn Plugin> = Arc::new(MockPlugin {

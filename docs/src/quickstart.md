@@ -21,7 +21,7 @@ cargo build --workspace
 cargo run -p ra-cli
 ```
 
-未指定 `--config` 且当前目录不存在 `ribo.toml` 时，整个请求链路回退为本地模拟器（`mock-model`），无需任何密钥即可体验交互、工具调用与会话流程。启动横幅会显式打印当前模式（real / mock）与降级原因。
+未指定 `--config` 且当前目录不存在 `ribo.toml` 时，整个请求链路回退为本地模拟器（`mock-model`），无需任何密钥即可体验交互、工具调用与会话流程。启动横幅会显式打印当前模式（real / mock）与降级原因。此降级仅限 debug 构建；release 构建下无 provider 会直接报错退出（`config.no_providers_in_release`）。
 
 TUI 版本：
 
@@ -45,7 +45,7 @@ cargo run -p ra-tui
    cargo run -p ra-cli
    ```
 
-密钥一律以 `$ENV_NAME` 占位，**不落盘**。若某 provider 的密钥环境变量未设置，该 provider 被跳过；若因此导致 `default` 二元组悬空，则整体回退 Mock 模式。
+密钥一律以 `$ENV_NAME` 占位，**不落盘**。若某 provider 的密钥环境变量未设置，该 provider 被跳过；若因此导致 `default` 二元组悬空，debug 构建下整体回退 Mock 模式，release 构建下报错退出（`config.no_providers_in_release`）。
 
 > 说明：`ribo auth login` 管理的凭证存在于全局域的 `auth.toml`，用于凭证的查看与增删；provider 实际读取的密钥仍来自 `ribo.toml` 中的 `$ENV` 占位。
 

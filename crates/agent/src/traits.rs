@@ -1,6 +1,6 @@
 //! Agent 边界 trait：门面、工具、上下文、会话与事件出口。
 //!
-//! 全部 `#[async_trait]`（D4）且对象安全，供跨任务 `Arc<dyn _>` 共享；
+//! 全部 `#[async_trait]` 且对象安全，供跨任务 `Arc<dyn _>` 共享；
 //! 循环体只依赖 trait，具体实现见 `agent.rs`（门面）、`adapter.rs`
 //! （工具）、`session.rs`（会话表）、`emit.rs`（事件出口）。
 
@@ -30,7 +30,7 @@ pub trait Agent: Send + Sync {
   ///
   /// 会话创建失败、会话忙（重入拒绝）、上下文构建失败或迭代超限时
   /// 返回 `agent.*` 域错误；工具执行失败不产生错误（以
-  /// `is_error: true` 结果回灌，D8）。
+  /// `is_error: true` 结果回灌）。
   async fn prompt(
     &self,
     session_key: &str,
@@ -53,7 +53,7 @@ pub trait ToolProvider: Send + Sync {
   /// 当前可用工具声明（按名升序，由 ra-tools 保证）。
   async fn get_tool_schemas(&self) -> Vec<ToolSchema>;
 
-  /// 执行一次工具调用；`Err` 的错误码决定回灌与批终止语义（D8）。
+  /// 执行一次工具调用；`Err` 的错误码决定回灌与批终止语义。
   ///
   /// # Errors
   ///
@@ -265,7 +265,7 @@ mod tests {
     assert!(context.messages.is_empty());
   }
 
-  // 场景：ContextProvider 的对象安全性（D4：Arc<dyn _> 跨任务共享）。
+  // 场景：ContextProvider 的对象安全性（Arc<dyn _> 跨任务共享）。
   // 预期：trait 对象调用与具体类型行为一致。
   #[tokio::test]
   async fn context_provider_is_object_safe() {

@@ -120,7 +120,7 @@ impl ProviderEventStream {
       Ok(stream) => stream,
       Err(e) => {
         // ===== 从错误 context 还原 provider / model =====
-        // §5.5.4 约定构造器会注入这两个键；极早期失败（如 PROVIDER_NOT_FOUND）
+        // 约定构造器会注入这两个键；极早期失败（如 PROVIDER_NOT_FOUND）
         // 时可能缺失，回退为空串占位。
         let (provider, model) = e
           .context()

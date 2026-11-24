@@ -1,6 +1,6 @@
-//! REPL 主循环：命令分派、在途回合管理与事件渲染（14 详细设计 §9）。
+//! REPL 主循环：命令分派、在途回合管理与事件渲染。
 //!
-//! 核心不变式（概设 v2.4）：
+//! 核心不变式：
 //! - **复位权威**在回合任务完成分支（`turn_done_rx` 能拿到 `prompt`
 //!   的 `Result`）；`AgentEnd` 仅作渲染权威——它早于落盘完成
 //!   （agent_loop 事件 emit 先于 `store.append`），若由它复位会在
@@ -116,7 +116,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
         recv = self.session.events.recv() => match recv {
           Ok(event) => self.renderer.on_event(&event),
           Err(broadcast_lagged) => {
-            // broadcast 满载丢帧：丢弃基线等重同步（概设 v2.4 规则 4）
+            // broadcast 满载丢帧：丢弃基线等重同步
             let skipped = match broadcast_lagged {
               tokio::sync::broadcast::error::RecvError::Lagged(n) => n,
               tokio::sync::broadcast::error::RecvError::Closed => {
@@ -272,7 +272,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
 
   /// `/status`：状态摘要（会话键 / 模式 / 在途回合 / 上下文三态）。
   ///
-  /// 上下文三态（v1.6 用户需求：总量 / 已压缩 / 当前）读自最近一次
+  /// 上下文三态（总量 / 已压缩 / 当前）读自最近一次
   /// 上下文装配写入会话的统计；未装配过显示 ctx: —。
   async fn print_status(&mut self) {
     let in_flight = matches!(self.turn, TurnState::Running { .. });
@@ -399,7 +399,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
   }
 }
 
-/// 启动横幅：模式 + 降级原因（概设 D3——模式显式化）。
+/// 启动横幅：模式 + 降级原因（模式显式化）。
 fn banner(session: &CliSession) {
   let mode = match session.mode {
     ConfigMode::Real => "real",
@@ -412,7 +412,7 @@ fn banner(session: &CliSession) {
   println!("输入 /help 查看命令。");
 }
 
-/// `/help` 命令清单（与 TUI 帮助浮层共用 `COMMANDS` 元数据表，16 §10）。
+/// `/help` 命令清单（与 TUI 帮助浮层共用 `COMMANDS` 元数据表）。
 fn print_help() {
   println!("命令：");
   for meta in crate::commands::COMMANDS {

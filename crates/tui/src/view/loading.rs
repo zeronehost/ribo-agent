@@ -1,7 +1,7 @@
 //! 对话区底部固定 loading 行：在途时逐帧动画，空闲时静默提示。
 //!
 //! 动画由主循环的 tick 源递增 `AppState.spinner_tick` 驱动，视图只读
-//! 帧计数——保持即时模式渲染纪律（16 §3）。
+//! 帧计数——保持即时模式渲染纪律。
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -20,7 +20,7 @@ pub struct LoadingView;
 
 impl View for LoadingView {
   fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
-    // D8 压缩痕迹走对话区 Compaction 气泡（Compaction 与 AgentStart 同批
+    // 压缩痕迹走对话区 Compaction 气泡（Compaction 与 AgentStart 同批
     // 到达，瞬时状态位在即时模式渲染下不可见——气泡才是用户可见载体）
     let line = if state.status.in_flight {
       let frame = FRAMES[(state.spinner_tick as usize) % FRAMES.len()];

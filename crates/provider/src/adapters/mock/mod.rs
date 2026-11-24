@@ -18,24 +18,24 @@
 //! use ra_provider::model::Model;
 //! use ra_provider::traits::Provider;
 //!
-//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! let provider = ProviderId::parse("mock").expect("valid provider id");
-//! let model = Model::new(
-//!   provider.clone(),
-//!   ModelId::parse("mock-model").expect("valid model id"),
-//!   "Mock Model",
-//!   "http://localhost",
-//! );
-//! let mock = MockProvider::new(provider, vec![model], Vec::new());
+//! tokio::runtime::Runtime::new().unwrap().block_on(async {
+//!   let provider = ProviderId::parse("mock").expect("valid provider id");
+//!   let model = Model::new(
+//!     provider.clone(),
+//!     ModelId::parse("mock-model").expect("valid model id"),
+//!     "Mock Model",
+//!     "http://localhost",
+//!   );
+//!   let mock = MockProvider::new(provider, vec![model], Vec::new());
 //!
-//! // 脚本耗尽：建流成功，但流以 INVALID_REQUEST 错误终结（不 panic）
-//! let options = ra_provider::options::ProviderOptions {
-//!   model: &mock.models()[0],
-//!   context: &ra_provider::context::Context::default(),
-//!   options: &ra_provider::options::StreamOptions::default(),
-//! };
-//! let stream = mock.stream(options).await.expect("建流成功");
-//! # });
+//!   // 脚本耗尽：建流成功，但流以 INVALID_REQUEST 错误终结（不 panic）
+//!   let options = ra_provider::options::ProviderOptions {
+//!     model: &mock.models()[0],
+//!     context: &ra_provider::context::Context::default(),
+//!     options: &ra_provider::options::StreamOptions::default(),
+//!   };
+//!   let stream = mock.stream(options).await.expect("建流成功");
+//! });
 //! ```
 
 mod provider;

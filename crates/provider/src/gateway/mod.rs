@@ -79,7 +79,7 @@ pub struct Gateway {
   route: RouteMap,
   /// 全局在途请求配额；permit 由 `ObservedStream` 持有至流终结。
   semaphore: Arc<Semaphore>,
-  /// 首次降级 stderr 提示已输出（24 号方案 D7：进程内一次，AtomicBool 防重复）。
+  /// 首次降级 stderr 提示已输出（进程内一次，AtomicBool 防重复）。
   stderr_fallback_warned: AtomicBool,
 }
 
@@ -228,15 +228,15 @@ impl Gateway {
     }];
     let mut fallbacks_resolved = false;
     let mut last_err: Option<RiboError> = None;
-    // D9：尝试记录——(候选 key, 重试次数, 末次失败码)；同候选合并
+    // 尝试记录——(候选 key, 重试次数, 末次失败码)；同候选合并
     let mut attempt_log: Vec<(String, u32, String)> = Vec::new();
-    // D9：摘要条目（circuit-open / attempts / switched 按发生序穿插）
+    // 摘要条目（circuit-open / attempts / switched 按发生序穿插）
     let mut chain_summary: Vec<String> = Vec::new();
-    // D6：窗口过滤下限（调用方传估算 ×1.1；0 = 不过滤）
+    // 窗口过滤下限（调用方传估算 ×1.1；0 = 不过滤）
     let min_context_window = effective_options.min_context_window;
-    // D6：零候选解析原因（经 CandidatesResult 结构化返回，D9 摘要用）
+    // 零候选解析原因（经 CandidatesResult 结构化返回，摘要用）
     let mut degrade_reason: Option<DegradeReason> = None;
-    // D8：软警告——遍历超 60s 时 warn 一次（不中断，防"以为死锁"）
+    // 软警告——遍历超 60s 时 warn 一次（不中断，防"以为死锁"）
     let fallback_started = std::time::Instant::now();
     let mut long_fallback_warned = false;
     let mut idx = 0usize;
@@ -247,7 +247,7 @@ impl Gateway {
     while let Some(candidate_ref) = chain.get(idx) {
       let candidate = candidate_ref.clone();
       idx += 1;
-      // D8：总耗时软警告（达到阈值 warn 一次并继续，不中断）
+      // 总耗时软警告（达到阈值 warn 一次并继续，不中断）
       if !long_fallback_warned
         && fallback_started.elapsed() >= std::time::Duration::from_secs(60)
       {
@@ -357,13 +357,13 @@ impl Gateway {
                     );
                     degrade_reason = result.reason;
                     if let Some(next) = result.candidates.first() {
-                      // D9 switched 条目（切换到的候选；其失败由它自己的
+                      // switched 条目（切换到的候选；其失败由它自己的
                       // attempts 条目承载）
                       chain_summary.push(format!(
                         "switched: {}/{}",
                         next.provider, next.model.id
                       ));
-                      // D7：首次降级 stderr 提示（进程内一次）
+                      // 首次降级 stderr 提示（进程内一次）
                       if !self
                         .stderr_fallback_warned
                         .swap(true, Ordering::Relaxed)
@@ -387,7 +387,7 @@ impl Gateway {
                   last_err = Some(e);
                   break; // 下一候选
                 }
-                // 致命错误短路：换 provider 也解决不了（§10.2 错误处理策略）
+                // 致命错误短路：换 provider 也解决不了（错误处理策略）
                 return Err(e);
               }
             }
@@ -475,7 +475,7 @@ impl Gateway {
   }
 }
 
-/// 把一次候选尝试记入尝试日志（D9：同候选合并 ×N，末次失败码）。
+/// 把一次候选尝试记入尝试日志（同候选合并 ×N，末次失败码）。
 fn record_attempt(
   log: &mut Vec<(String, u32, String)>,
   candidate: &Candidate,
@@ -490,7 +490,7 @@ fn record_attempt(
   }
 }
 
-/// 把某候选的 attempts 条目写入摘要（D9：`attempts: key ×N (code)`）。
+/// 把某候选的 attempts 条目写入摘要（`attempts: key ×N (code)`）。
 fn push_attempts_entry(
   summary: &mut Vec<String>,
   candidate: &Candidate,
@@ -502,7 +502,7 @@ fn push_attempts_entry(
   }
 }
 
-/// 把降级链摘要附加到最终错误上（D9：区分 attempts / switched / degraded）。
+/// 把降级链摘要附加到最终错误上（区分 attempts / switched / degraded）。
 ///
 /// 不改错误码，仅在 message 末尾追加摘要段，并保留原错误的全部
 /// context，供上层继续分类与排障。`degraded: none (reason)` 仅在

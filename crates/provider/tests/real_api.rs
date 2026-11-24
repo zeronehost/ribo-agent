@@ -1,4 +1,4 @@
-//! 真实 API 集成测试（10 §14.4 Step 3；全部 `#[ignore]`，手动运行）。
+//! 真实 API 集成测试（Step 3；全部 `#[ignore]`，手动运行）。
 //!
 //! 需要 `#[ignore]` 的原因：打真实外部端点（AGENTS.md：需要外部服务的
 //! 测试应标记 `#[ignore]`）。运行方式：
@@ -156,7 +156,7 @@ async fn int_02_openai_chat_real_stream() {
 
 // ===== INT-03：OpenAI Responses 真实流 =====
 
-/// 场景：真实 OpenAI Responses 端点最小对话（10 §16 背书的线格式实测）。
+/// 场景：真实 OpenAI Responses 端点最小对话。
 /// 预期：Done(Stop) 且文本非空。缺密钥时跳过。
 #[ignore]
 #[tokio::test]

@@ -1,4 +1,4 @@
-//! fuel 模式独立进程用例（v0.8.8）。
+//! fuel 模式独立进程用例。
 //!
 //! `PluginRuntime` 是 `OnceLock` 单例，`Engine` 的 `consume_fuel` 在进程
 //! 初始化时固化——同一测试进程无法先跑默认配置再切 fuel 配置。本文件

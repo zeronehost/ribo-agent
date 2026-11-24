@@ -1,12 +1,12 @@
-//! 降级路由：统一 `FallbackRule` 规则列表（24 号方案 v1.3 / D4）。
+//! 降级路由：统一 `FallbackRule` 规则列表。
 //!
 //! 规则表达：一条规则 = `match`（精确二元组或 provider 级通配）→ `targets`
 //! （有序目标列表，元素两形态）。**按声明顺序，第一条 `match` 命中的规则
 //! 生效**——这是全部优先级规则（评审拍板：声明顺序优先，无"精确优先"魔法）。
 //!
 //! 旧的三级路由（explicit / same_provider / cross_provider 分离表达）已删除
-//!（v1.3：两套规则并存会引发优先级歧义）；`same_provider` 隐式链保留——它是
-//! D3「provider 内 models 声明序」的落点，在候选解析中先于 fallback 规则。
+//!（原因：两套规则并存会引发优先级歧义）；`same_provider` 隐式链保留——它是
+//! 「provider 内 models 声明序」的落点，在候选解析中先于 fallback 规则。
 
 use std::collections::HashMap;
 
@@ -22,7 +22,7 @@ use crate::{
 // 规则表达（配置层映射目标）
 // ============================================================================
 
-/// 匹配条件两形态（D4）：精确二元组 / provider 级通配（model 缺失）。
+/// 匹配条件两形态：精确二元组 / provider 级通配（model 缺失）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FallbackMatch {
   /// 匹配的提供方。
@@ -31,7 +31,7 @@ pub struct FallbackMatch {
   pub model: Option<ModelId>,
 }
 
-/// 目标两形态（D4）：显式二元组（跨命名体系精确降级）/ 仅 provider
+/// 目标两形态：显式二元组（跨命名体系精确降级）/ 仅 provider
 ///（同名 → 目标默认两级解析）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FallbackTarget {
@@ -57,7 +57,7 @@ pub struct FallbackRule {
 // 解析结果
 // ============================================================================
 
-/// 降级落空原因（D9：零候选时供摘要使用；互斥按序判定）。
+/// 降级落空原因（零候选时供摘要使用；互斥按序判定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DegradeReason {
   /// 无 fallback 规则命中（或规则 targets 全被 AUTH_FAILED 跳过），
@@ -71,7 +71,7 @@ pub enum DegradeReason {
 }
 
 impl DegradeReason {
-  /// 摘要文本（D9 `degraded: none (reason)` 用）。
+  /// 摘要文本（`degraded: none (reason)` 用）。
   pub fn as_str(self) -> &'static str {
     match self {
       Self::NoCandidatesConfigured => "no_candidates_configured",
@@ -81,7 +81,7 @@ impl DegradeReason {
   }
 }
 
-/// 候选解析结果（评审 P2-2：reason 结构化返回，不经由错误 context）。
+/// 候选解析结果（评审结论：reason 结构化返回，不经由错误 context）。
 #[derive(Debug, Clone)]
 pub struct CandidatesResult {
   /// 有序候选列表（可能为空）。
@@ -106,13 +106,12 @@ pub struct Candidate {
 /// 降级路由表。
 ///
 /// 由配置方构建后注入网关；查询侧（[`RouteMap::candidates`]）只读。
-/// 规则经 `insert_fallback_rules` 写入；`same_provider` 隐式链由 D3
-/// 「models 声明序」推导写入。
+/// 规则经 `insert_fallback_rules` 写入；`same_provider` 隐式链由「models 声明序」推导写入。
 #[derive(Debug, Clone, Default)]
 pub struct RouteMap {
   /// 有序降级规则（声明顺序 = 优先级）。
   rules: Vec<FallbackRule>,
-  /// D3 隐式链：模型名 → 同 provider 内其余模型（声明序，不含自身）。
+  /// 隐式链：模型名 → 同 provider 内其余模型（声明序，不含自身）。
   same_provider: HashMap<ModelId, Vec<ModelId>>,
 }
 
@@ -122,26 +121,26 @@ impl RouteMap {
     self.rules = rules;
   }
 
-  /// 写入 D3 隐式链（模型名 → 同 provider 其余模型声明序）。
+  /// 写入 隐式链（模型名 → 同 provider 其余模型声明序）。
   pub fn insert_same_provider(&mut self, model: ModelId, chain: Vec<ModelId>) {
     self.same_provider.insert(model, chain);
   }
 
-  /// 解析降级候选列表（24 号方案 v1.3 / D4–D6）。
+  /// 解析降级候选列表。
   ///
   /// 处理流程：
   ///
   /// 1. 错误不可降级 → 空结果（reason `None`，调用方不降级）；
-  /// 2. **隐式同 provider 链**（D3，先于规则）：`AUTH_FAILED` 时跳过
+  /// 2. **隐式同 provider 链**（先于规则）：`AUTH_FAILED` 时跳过
   ///    （同 api_key 换模型必然复现 401），其余可降级错误按声明序产出
   ///    主 provider 内的备选；
   /// 3. **fallback 规则列表**：按声明顺序，第一条 `match` 命中的规则生效；
   ///    `targets` 元素按序解析——`Model` 形态直用（`AUTH_FAILED` 仍尝试，
   ///    尊重用户显式声明），`Provider` 形态走「同名 → 目标默认」两级解析
-  ///    （`AUTH_FAILED` 时跳过，见 D5）；
-  /// 4. **窗口过滤**（D6）：`context_window < min_context_window` 的候选
+  ///    （`AUTH_FAILED` 时跳过，详见 `DegradeReason`）；
+  /// 4. **窗口过滤**：`context_window < min_context_window` 的候选
   ///    滤除（`min = 0` 不过滤；调用方传「估算 × 1.1」）；
-  /// 5. 零候选时按序判定 reason（互斥，见 D9）。
+  /// 5. 零候选时按序判定 reason（互斥，见 `DegradeReason`）。
   ///
   /// 重复与自我映射的候选会被剔除（[`push_candidate`]）。
   pub fn candidates(
@@ -161,7 +160,7 @@ impl RouteMap {
     let auth_failed = err.code() == AUTH_FAILED;
     let mut out: Vec<Candidate> = Vec::new();
 
-    // ===== 1. 隐式同 provider 链（D3；AUTH_FAILED 时跳过）=====
+    // ===== 1. 隐式同 provider 链（；AUTH_FAILED 时跳过）=====
     if !auth_failed && let Some(chain) = self.same_provider.get(&primary.id) {
       for m in chain {
         if let Some(m) = catalog.model(&primary.provider, m) {
@@ -181,13 +180,13 @@ impl RouteMap {
       for target in &rule.targets {
         match target {
           FallbackTarget::Model { provider, model } => {
-            // 显式二元组：AUTH_FAILED 仍尝试（用户意志，D5）
+            // 显式二元组：AUTH_FAILED 仍尝试（用户意志）
             if let Some(m) = catalog.model(provider, model) {
               push_candidate(primary, &mut out, provider.clone(), m);
             }
           }
           FallbackTarget::Provider(provider) => {
-            // AUTH_FAILED 跳过（本质仍是"同 key 下换模型"，D5）
+            // AUTH_FAILED 跳过（本质仍是"同 key 下换模型"）
             if auth_failed {
               continue;
             }
@@ -205,7 +204,7 @@ impl RouteMap {
       break; // 首条命中规则生效，后续规则不再评估
     }
 
-    // ===== 3. 窗口过滤（D6：min=0 不过滤）=====
+    // ===== 3. 窗口过滤（min=0 不过滤）=====
     let mut window_filtered = false;
     if min_context_window > 0 {
       let before = out.len();
@@ -213,7 +212,7 @@ impl RouteMap {
       window_filtered = before > 0 && out.is_empty();
     }
 
-    // ===== 4. reason 判定（互斥按序，D9）=====
+    // ===== 4. reason 判定（互斥按序）=====
     let reason = if !out.is_empty() {
       None
     } else if window_filtered {
@@ -493,7 +492,7 @@ mod tests {
     let out =
       route.candidates(&model("p1", "m1"), &rate_limited(), &catalog, 0);
     // 第三 target Provider(p1) 同名解析 = 失败模型自身 → 主候选去重剔除；
-    // 同 provider 内其他模型由 D3 隐式链负责（本测试未配置）
+    // 同 provider 内其他模型由 隐式链负责（本测试未配置）
     assert_eq!(ids(&out), vec!["p2/m2", "p3/m1"]);
     assert_eq!(out.reason, None);
   }
@@ -571,7 +570,7 @@ mod tests {
     assert_eq!(out.reason, None);
   }
 
-  // ===== D3 隐式链 =====
+  // ===== 隐式链 =====
 
   /// 场景：隐式同 provider 链按声明序产出（先于 fallback 规则候选）。
   #[test]
@@ -636,7 +635,7 @@ mod tests {
     assert_eq!(out.reason, None);
   }
 
-  /// 场景（P1-2 回归）：AUTH_FAILED + targets 全是 `{ provider }` 形态
+  /// 场景（回归）：AUTH_FAILED + targets 全是 `{ provider }` 形态
   /// → 全部跳过 → 规则视为未命中 → reason `no_candidates_configured`。
   #[test]
   fn auth_failed_all_provider_targets_skipped_yields_no_candidates() {
@@ -657,7 +656,7 @@ mod tests {
     assert_eq!(out.reason, Some(DegradeReason::NoCandidatesConfigured));
   }
 
-  // ===== D6 窗口过滤 =====
+  // ===== 窗口过滤 =====
 
   /// 场景：窗口过滤边界——`window == min` 通过，`window < min` 滤除。
   #[test]
@@ -807,7 +806,7 @@ mod tests {
       provider: provider_id("other"),
       model: None,
     };
-    // 通配覆盖精确 ✅；精确不覆盖通配 ❌；完全重复 ✅；不同 provider ❌
+    // 通配覆盖精确：是；精确不覆盖通配：否；完全重复：是；不同 provider：否
     assert!(shadows(&wildcard, &precise));
     assert!(!shadows(&precise, &wildcard));
     assert!(shadows(&wildcard, &wildcard));

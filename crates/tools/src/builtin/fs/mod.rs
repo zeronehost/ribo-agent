@@ -38,7 +38,7 @@ pub struct FsRoot {
   /// 规范化后的工作区根目录。
   root: PathBuf,
   /// 具名根表（v3 fs.mounts）：scheme → 独立 FsRoot（只读）。
-  /// 与主根同等的 P1 校验（词法 + canonicalize 归属），域间不渗透。
+  /// 与主根同等的 校验（词法 + canonicalize 归属），域间不渗透。
   /// 空表 = 无挂载点，行为与单根一致。
   named_roots: HashMap<String, FsRoot>,
   /// 本域是否只读（v3 挂载点恒为 true）。仅对具名域有意义；
@@ -52,7 +52,7 @@ impl FsRoot {
   /// 创建沙箱根：canonicalize 规范化根目录。
   ///
   /// 域根本身是"域选择器"（允许绝对路径，如 CI 的 `--root /tmp/build`），
-  /// 不参与域内路径的 P1 词法校验；此处只做 canonicalize + 存在性检查。
+  /// 不参与域内路径的 词法校验；此处只做 canonicalize + 存在性检查。
   ///
   /// # Errors
   ///
@@ -128,8 +128,8 @@ impl FsRoot {
   /// 开始 canonicalize，再拼回剩余组件，确保符号链接 / Windows 目录联接
   /// 不能把路径导向沙箱外（详见 [`Self::resolve_canonical`]）。
   ///
-  /// **`scheme://` 前缀**（19_ Step 3）：`dataset://a/b.jpg` 取 scheme
-  /// `dataset` 查具名域根，剩余相对部分按该域的 P1 规则解析；无前缀路径
+  /// **`scheme://` 前缀**：`dataset://a/b.jpg` 取 scheme
+  /// `dataset` 查具名域根，剩余相对部分按该域的 规则解析；无前缀路径
   /// 仍走主根，行为与 Step 2 完全一致。具名域内部不再解析前缀（防串联）。
   ///
   /// # Errors
@@ -146,7 +146,7 @@ impl FsRoot {
           "fs.resolve.scheme",
         )
       })?;
-      // 域内路径必须词法安全（拒绝绝对 / `..` / 空）——P1 每域一遍
+      // 域内路径必须词法安全（拒绝绝对 / `..` / 空）——每域一遍
       if !is_lexically_safe(Path::new(rest)) {
         return Err(path_invalid(
           format!("invalid path inside domain `{scheme}`: {rest}"),
@@ -289,7 +289,7 @@ impl FsRoot {
   }
 }
 
-/// 拆分 `scheme://rest` 前缀（19_ Step 3）。
+/// 拆分 `scheme://rest` 前缀。
 ///
 /// scheme 须匹配 `^[a-z][a-z0-9_]*$`（与域 id 约束一致，长度上限由装配层
 /// 校验）；无前缀 / 格式不合法返回 `None`（按普通相对路径处理）。
@@ -428,7 +428,7 @@ mod tests {
   }
 
   /// 场景（T4b）：主沙箱内 `.ribo/` 内部子树（trusted_keys.json、
-  /// sessions/ 等）读写均被拒——D3 黑名单，签名公钥 / 会话 / 插件
+  /// sessions/ 等）读写均被拒——黑名单，签名公钥 / 会话 / 插件
   /// 对模型不可见。
   #[test]
   fn t4b_ribo_internal_subtree_is_forbidden() {
@@ -563,7 +563,7 @@ mod tests {
     );
   }
 
-  /// 场景：具名域内 `..` / 绝对路径词法拒绝（P1 每域一遍）。
+  /// 场景：具名域内 `..` / 绝对路径词法拒绝（每域一遍）。
   #[test]
   fn named_root_rejects_escaping_domain_paths() {
     let main_tmp = TempRoot::new("named-escape-main");

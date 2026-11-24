@@ -59,7 +59,7 @@ cargo run -p ra-cli        # 命令行 REPL
 cargo run -p ra-tui        # 全屏终端 TUI
 ```
 
-> **Mock 模式**：未指定 `--config` 且当前目录不存在 `ribo.toml` 时，整个请求链路回退为本地模拟器（`mock-model`），可零配置体验交互与工具流程。
+> **Mock 模式**：未指定 `--config` 且当前目录不存在 `ribo.toml` 时，整个请求链路回退为本地模拟器（`mock-model`），可零配置体验交互与工具流程（`cargo run` 为 debug 构建）。release 构建下此降级被禁止：无 provider 或存在占位配置会直接报错退出（`config.no_providers_in_release` / `config.placeholder_in_release`）。
 
 ---
 
@@ -69,7 +69,7 @@ cargo run -p ra-tui        # 全屏终端 TUI
 
 | 参数 | 说明 |
 | :--- | :--- |
-| `-c, --config <PATH>` | 配置文件路径。未指定时自动探测当前目录的 `ribo.toml`，缺失则进入 Mock 模式。 |
+| `-c, --config <PATH>` | 配置文件路径。未指定时自动探测当前目录的 `ribo.toml`，缺失则进入 Mock 模式（debug 构建；release 下无 provider 报错退出）。 |
 | `--root <PATH>` | 覆盖配置中的工作空间根目录（`harness` 层 `root`，默认进程 cwd）。 |
 | `--global-dir <PATH>` | 覆盖全局域目录（默认平台配置目录 + `/ribo`）。 |
 | `--allow-duplicate-plugin-id` | 允许跨源重复的 plugin_id（首声明胜出）；默认拒绝并启动致命。 |

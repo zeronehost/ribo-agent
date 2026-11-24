@@ -11,12 +11,8 @@
 
 ## 两档信任
 
-设计上刻意区分两类资源：
-
-- **配置信任**（默认开启，无需记录）：`ribo.toml` / `AGENTS.md` / `skills/` 等**文档级**资源。加载它们只让模型看到更多上下文，不执行代码，默认信任是安全的。
+- **配置信任**（默认开启，无需记录）：`ribo.toml` / `AGENTS.md` / `skills/` 等**文档级**资源。加载只让模型看到更多上下文，不执行代码（clone 仓库后默认加载 `AGENTS.md` 无风险）。
 - **代码信任**（默认关闭，须显式授予）：`plugins/` 里的 `.wasm` 等**可执行**资源。
-
-这一区分的原因：clone 一个仓库后，`AGENTS.md` 是文档，默认加载无风险；但 `plugins/` 里的 `.wasm` 会执行代码，必须用户确认后才能加载。
 
 ## 代码信任的判定
 
@@ -26,7 +22,7 @@ Project 插件可加载  = code_trust(project) == true
 签名校验            = 既有 Ed25519 链（production 策略下 require_signature）
 ```
 
-关键安全点：项目 `.wasm` 必须用户在 `trusted_projects.toml [projects]` 显式授予（或 TUI gate 确认）——项目不能自授代码信任。v3 已移除插件域信任（`[plugin_domains]`），代码信任只看项目记录。
+项目 `.wasm` 必须用户在 `trusted_projects.toml [projects]` 显式授予（或 TUI gate 确认），项目不能自授代码信任。代码信任只看项目记录，不再支持插件域信任（`[plugin_domains]`）。
 
 ## 未信任时的行为
 
@@ -37,8 +33,6 @@ WARN project `/path/to/proj` has plugins but is not code-trusted.
      Run `ribo trust add /path/to/proj` after reviewing the plugins.
      Skills and AGENTS.md are still loaded.
 ```
-
-注意：**技能与 AGENTS.md 仍照常加载**——它们属文档级资源，不受代码信任闸门影响。这是域故障隔离（P3）的一部分。
 
 ## 授予与撤销信任
 

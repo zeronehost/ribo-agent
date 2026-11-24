@@ -6,7 +6,7 @@
 //! [`RiboError`](ra_core::error::RiboError)——不新增错误变体、不引入
 //! 第二套对外错误类型，语义分级由稳定错误码（`code()`）区分。
 //!
-//! 错误码总览（对应设计文档 18_ §1.2 / §5.3）：
+//! 错误码总览：
 //!
 //! | 错误码 | 语义 | 熔断记账 |
 //! | :-- | :-- | :-- |
@@ -71,7 +71,7 @@ pub fn plugin_exec_failed(
 /// 构造插件系统级超时 / 中断错误（Severity: Error）。
 ///
 /// `trap_reason` 记录中断来源（如 `epoch_exhausted` / `memory_limit`），
-/// 该类错误在 `ToolManager` 白名单下**不计熔断**（18_ §1.3）。
+/// 该类错误在 `ToolManager` 白名单下**不计熔断**。
 pub fn plugin_timeout(
   plugin_id: &str,
   tool_name: &str,
@@ -93,7 +93,7 @@ pub fn plugin_timeout(
 /// 构造越权错误（Severity: Warning——配置/权限问题，非工具故障）。
 ///
 /// `capability` 为**纯能力名**（如 `storage` / `url_policy`），该类错误
-/// 在 `ToolManager` 白名单下**不计熔断**（18_ §1.3）。
+/// 在 `ToolManager` 白名单下**不计熔断**。
 pub fn plugin_forbidden(plugin_id: &str, capability: &str) -> RiboError {
   RiboError::new(
     DOMAIN,
@@ -211,7 +211,7 @@ pub fn plugin_batch_failed(plugin_id: &str, reason: &str) -> RiboError {
   .with_context("reason", reason)
 }
 
-/// 按 UTF-8 字符边界截断错误文本（设计文档 18_ §1.2）。
+/// 按 UTF-8 字符边界截断错误文本。
 ///
 /// guest 返回的 `error` 字段必须截断到上限（默认 4KB）再回灌 / 入日志，
 /// 避免巨型错误文本爆 token 预算。截断点按 [`str::is_char_boundary`]
