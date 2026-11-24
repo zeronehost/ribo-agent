@@ -1,0 +1,146 @@
+# ra-cli 配置模板（与 crates/cli/src/config/schema.rs 各层一一对应）
+#
+# 用法：
+#   复制本文件为 ribo.toml（配置文件探测的默认文件名）并填入真实端点
+#   与密钥，或用 --config 指定任意路径；密钥一律走 "$ENV_NAME" 占位，
+#   不落盘。
+#
+# 配置文件选择（D2 四档优先级）：
+#   显式 --config 指向不存在的文件 → 启动报错 config.config_file_missing；
+#   未指定 --config → 向上探测 ribo.toml（至 .git 边界），找到即加载；
+#   否则走全默认（ribo 与 ribo-tui 同规则）。
+#
+# 降级语义（启动横幅会打印 mode 与 warnings）：
+#   - debug 构建：无 provider / 占位配置（your-* / example.com）/
+#     [routing].default 悬空 → 整体回退 Mock 模式；
+#   - release 构建（D7）：上述三类一律启动致命（*_in_release 错误码）；
+#   - 某个 $ENV 密钥未设置 → 局部降级：该 provider 跳过注册，
+#     降级规则中引用它的目标一并剔除；若 default 因此悬空 →
+#     debug 回退 Mock，release 启动致命；
+#   - 单个配置层解析失败（未知字段忽略除外）→ 该层保留默认 + warning。
+#
+# 各层相互独立、层间零交叉；下方各层值与代码 Default 一致。
+
+# ── provider 层 ─────────────────────────────────────────────
+# adapter 白名单：openai-chat | openai-responses | anthropic
+# api_key 支持 "$ENV_NAME" 占位（运行时读环境变量，未设置则跳过该 provider）。
+# 一个 provider 可挂多个模型（models 数组）；窗口随模型走。
+[[providers]]
+provider_id = "chat-primary"
+adapter = "openai-chat"
+base_url = "https://your-endpoint.example.com"
+api_key = "$OPENAI_API_KEY"
+
+[[providers.models]]
+id = "your-model-name"
+context_window = 131072       # 可选，默认 8192；按模型供应商文档填写
+                                # 用途：状态行 ctx 占比分母 + 压缩触发预算
+
+[[providers]]
+provider_id = "anthropic-backup"
+adapter = "anthropic"
+base_url = "https://your-anthropic-endpoint.example.com"
+api_key = "$ANTHROPIC_API_KEY"
+
+[[providers.models]]
+id = "your-model-name"
+
+# ── routing 层（默认入口 + 降级规则）─────────────────────────
+# default 为显式二元组：引用上面某通道 models 中的模型。
+[routing]
+default = { provider = "chat-primary", model = "your-model-name" }
+
+# 降级规则：按声明顺序，首条 match 命中的规则生效。
+# match 两形态：{ provider, model } 精确 / { provider } 通配；
+# targets 两形态：{ provider, model } 显式 / { provider } 同名→目标默认。
+# 当前模型失败时，先按通道内 models 声明序切备选（隐式链），再走下列规则。
+[[routing.fallback]]
+match = { provider = "chat-primary" }
+targets = [
+  { provider = "anthropic-backup" },
+]
+
+# ── retry 层（GatewayConfig.retry）──────────────────────────
+# 未配置字段显式取 RetryPolicy::default()（max_backoff 30s、multiplier 2.0）。
+[retry]
+max_retries = 3                # 默认 3（不含首次请求）
+initial_backoff_ms = 500       # 默认 500，首次重试基础退避
+jitter_ratio = 0.25            # 默认 0.25，延迟 ±25% 随机抖动
+
+# ── compression 层（ContextConfig.compaction，运行期唯一真值）──
+[compression]
+enabled = false                # 默认 false：未显式开启绝不丢弃历史
+trigger_ratio = 0.75           # 默认 0.75，估算 token 超过 context_window × 比例触发
+keep_recent_turns = 4          # 默认 4，保留最近 4 个 user 轮
+# summarizer_model = "..."     # Option 字段：注释掉即 None（默认），无摘要模型时
+#                              # 压缩退化为纯滑窗；填写则用该模型生成摘要
+max_summary_chars = 2048       # 默认 2048，摘要按字符截断
+hysteresis_ratio = 1.10        # 默认 1.10，估算需达到上次触发的该倍数才重摘要（范围 1–10）
+cooldown_turns = 2             # 默认 2，触发后冷却轮数（冷却期复用摘要、不调 LLM，≤100）
+enable_incremental = true      # 默认 true，增量压缩（false = 每次全量摘要）
+incremental_rebuild_every = 8  # 默认 8，每 N 次增量强制全量重建（范围 1–32；1 = 每次全量）
+# max_summary_input_tokens = 0 # 默认 0 = 自动取摘要模型窗口 70%；>0 手动指定摘要输入上限
+
+# ── session 层（REPL 会话状态）──────────────────────────────
+[session]
+default_key = "default"        # 默认 "default"，REPL 启动会话键（/sessions <名称> 切换）
+history_lines = 10             # 默认 10；/history 缺省条数当前固定为 10，不读取此配置（字段保留备用，TUI 无 /history 命令）
+
+# ── tools 层（ToolManager 注册）─────────────────────────────
+# fs 沙箱 = harness.root（v3：无独立 fs_root 配置；项目外数据走挂载点）。
+[tools]
+builtin_enabled = true         # 默认 true，注册全部内置工具
+
+# ── harness 层（会话存储与技能）─────────────────────────────
+[harness]
+root = "."                     # 默认 "."（进程 cwd），内部产物集中 .ribo/：
+                               # .ribo/skills/、.ribo/plugins/、.ribo/sessions/、
+                               # .ribo/trusted_keys.json；可被 --root 覆盖
+include_environment = true     # 默认 true，系统提示注入 <environment> 段
+
+# ── global 层（全局域，跨项目共享；默认启用）─────────────────
+# [global]
+# enabled = true                 # 默认 true；目录不存在时自动禁用（非致命）
+# dir = "/home/you/.config/ribo" # 可选；须绝对路径（~ 不会被展开）；命令行 --global-dir 优先；
+#                                # 未设置时用平台默认配置目录 + /ribo。
+#                                # 全局配置 settings.toml、auth.toml 与信任记录
+#                                # trusted_projects.toml 位于该目录。
+#
+# ── plugins 层（WASM 插件装配，默认关闭）─────────────────────
+# enabled = true 时启动期加载插件：固定扫描 .ribo/plugins/ 下全部 *.wasm
+#（缺失 = 软跳过；最小权限：无注入 config、ACL 全关）+ 逐条加载 entries
+# 显式清单（可声明 ACL 与注入 config）。任一插件加载 / 注册失败 →
+# 启动致命错误（禁止半装配）。
+# [plugins]
+# enabled = false
+#
+# [plugins.verify]               # 来源校验（默认 require_signature = false）
+# require_signature = true       # 生产须开启：每条插件都要有有效 Ed25519 签名；
+#                                # 公钥白名单固定为 .ribo/trusted_keys.json
+#                                #（缺失 → plugin_trusted_keys_missing 启动致命）
+#
+# [[plugins.entries]]            # 显式清单：可逐插件声明 ACL 与 config
+# path = "plugins/demo.wasm"     # 相对 harness.root；绝对路径 / ".." 逃逸 → 启动致命
+# manifest = "manifest.json"     # 权威清单（guest 自述降级为交叉校验）
+# provenance = "provenance.json" # 侧载签名块（require_signature = true 时必需）
+#                                #   {"signer_id":"release","signature":"<128 hex>","wasm_digest":"<64 hex>"}
+#
+# [plugins.entries.acl]          # 能力由宿主注入，不信任 guest 自述（默认全关）
+# log = true
+# storage = true
+# http = true
+# http_hosts = ["api.example.com"]  # http 出站白名单（空 = 实际不可出站）
+# memory_limit_bytes = 16777216     # 可选：线性内存覆写（只能收紧 32MB）
+# storage_quota_bytes = 262144      # 可选：storage 配额覆写（只能收紧 1MB）
+# timeout_ceiling_ms = 5000         # 可选：单工具超时上限覆写（只能收紧 60s）
+#
+# [plugins.entries.config]       # 注入插件的 config（args 信封，18_ §9）
+# greeting_prefix = "你好"
+#
+# ── 只读挂载点（[fs.mounts]，仅全局 settings.toml）────────
+# 模型默认只能读工作目录内文件。项目外共享数据在全局配置声明挂载点；
+# 项目 ribo.toml 无权声明（写了会被 warning + 忽略）：
+# [fs.mounts]
+# datasets = "/mnt/company-data"   # 绝对路径、必须存在、不能在工作目录内
+# read("datasets://a/b.jpg") 只读访问；write 返回 plugin.plugin_forbidden
+# 保留字：ribo / resources / fs / http / https 不可用作挂载名

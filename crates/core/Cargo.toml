@@ -1,0 +1,20 @@
+[package]
+name = "ra-core"
+description = "Ribo Agent 核心库：统一错误处理与对话消息模型"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

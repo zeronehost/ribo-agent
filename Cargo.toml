@@ -1,0 +1,131 @@
+[workspace]
+members = [
+  "crates/*",
+  "examples/*",
+  "internals/git-hook"
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+authors = ["jinbin <1447281971@qq.com>"]
+edition = "2024"
+publish = false
+repository = "https://gitee.com/zeronehost/ribo-agent.git"
+readme = "README.md"
+license = "MulanPSL-2.0"
+
+[workspace.dependencies]
+# # 序列化
+# serde = { version = "1", features = ["derive"] }
+# serde_json = "1"
+
+# # 异步
+# async-trait = "0.1"
+# futures = "0.3"
+# tokio = { version = "1", features = ["full"] }
+# tokio-util = "0.7"
+# async-stream = "0.3"
+
+# # 网络请求
+# reqwest = { version = "0.13.4", features = ["json", "stream"] }
+
+# # 错误处理及日志
+# thiserror = "2"
+# tracing = "0.1"
+# # # tracing-subscriber = "0.3"
+
+# # 工具
+# uuid = { version = "1.23", features = ["serde", "v4"] }
+# chrono = { version = "0.4", features = ["serde"] }
+# dashmap = "6.2"
+
+async-trait = "0.1"
+# futures = "0.3"
+reqwest = { version = "0.13", features = ["json"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-appender = "0.2"
+# 本地时间日志（OffsetTime::local_rfc_3339 用；tracing-subscriber local-time 已启用）
+time = { version = "0.3", features = ["local-offset"] }
+# local-time：日志时间戳用本地时区（RFC3339 带偏移，默认 UTC）
+tracing-subscriber = { version = "0.3", features = ["time", "local-time"] }
+# uuid = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+jiff = "0.2"
+rand = "0.10"
+dashmap = "6.2"
+tempfile = "3"
+
+jsonschema = "0.60"
+glob = "0.3"
+regex = "1"
+evalexpr = "13.1"
+toml = "1.2"
+# 全局配置目录发现（跨平台）：Linux $XDG_CONFIG_HOME/~/.config、macOS ~/Library/Application Support、Windows %APPDATA%
+# toml_edit: 保留注释地改写用户可编辑配置
+toml_edit = "0.23"
+dirs = "6"
+clap = { version = "4", features = ["derive"] }
+# 密钥无回显输入（auth login 交互提示）
+rpassword = "7"
+
+# TUI（阶段 5b，ra-tui 专用）
+# crossterm 固定 0.28：tui-textarea 0.7 的 From<KeyEvent> 绑定 0.28
+# 版本三角锁定：tui-textarea 0.7 依赖 ratatui 0.29 + crossterm 0.28，
+# ra-tui 必须与之对齐（0.30 的 Widget trait 不兼容其 impl）
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+anyhow = "1"
+once_cell = "1"
+unicode-width = "0.2"
+portable-pty = "0.9"
+
+url = "2"
+
+# 阶段 6 Step B（18_ §0.3 依赖锁定，2026-11-13）：
+# wasmtime 仅开放 cranelift（JIT 编译后端）+ runtime（实例运行），
+# 关闭默认 feature（anyhow/wat/cache/pooling-allocator 等）控制编译与体积成本（R9）。
+# 最新稳定为 50.x（51.0.0 仍为 rc 且要求 rust 1.97，暂不采用）。
+# 升级 wasmtime 时必须重跑 §13.1 的 trap 分类回归测试（错误消息文本可能变化）。
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime"] }
+blake3 = "1"
+# Ed25519 来源签名验证（已在 lockfile 中为 reqwest/rustls 的传递依赖）
+ring = "0.17"
+# ModuleCache LRU 容量淘汰（已在 lockfile 中，作为传递依赖存在）
+lru = "0.12"
+# 测试用 WAT 解析（仅 dev-dependencies 使用）
+wat = "1"
+
+# 
+# 阶段 6 Step B：Rust PDK 宏（ra-plug-pdk-macro 专用）
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+ra-core = { path = "./crates/core" }
+ra-provider = { path = "./crates/provider" }
+ra-tools = { path = "./crates/tools" }
+ra-agent = { path = "./crates/agent" }
+ra-harness = { path = "./crates/harness" }
+ra-cli = { path = "./crates/cli" }
+ra-plugins = { path = "./crates/plugins" }
+ra-plug-pdk = { path = "./crates/pdk" }
+ra-plug-pdk-macro = { path = "./crates/pdk-macro" }
+
+# release 体积优化（GitHub Actions 多平台产物，见 .github/workflows/release.yml）：
+# 四项组合通常可减 30-50% 体积（wasmtime 这类大依赖受益最明显）。
+[profile.release]
+opt-level = "z"       # 体积优先优化：网关/CLI 为 IO 密集型，性能影响可忽略
+lto = true            # fat LTO：跨 crate 内联与死代码消除
+codegen-units = 1     # 单编译单元：更充分的优化、更少的重复代码
+strip = true          # 剥离 debuginfo 与符号表（等价 strip symbols）
+# 不设 panic = "abort"：项目依赖 unwind 语义——spawn_blocking / 宿主线程中的
+# panic 由 tokio JoinError 捕获转为错误传播（见 plugins/src/wasm/runtime.rs
+# poisoned_module_cache 测试的注释）；abort 会把它升级为进程级崩溃。
+# 构建命令：cargo build --release --locked -p ra-cli -p ra-tui
+# 产物：target/release/ribo 与 ribo-tui

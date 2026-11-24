@@ -1,0 +1,9 @@
+[book]
+title = "Ribo Agent 使用指南"
+authors = ["jinbin"]
+language = "zh-CN"
+description = "Ribo Agent 的分层配置、三层信任域、技能与插件系统使用文档"
+
+[output.html]
+default-theme = "light"
+git-repository-url = ""

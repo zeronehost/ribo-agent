@@ -1,0 +1,13 @@
+[package]
+name = "git-hook"
+description = "ribo-agent 工作空间内部 Git 钩子工具（提交前质量门禁）"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[build-dependencies]
+monk = "0.3.4"

@@ -1,0 +1,45 @@
+[package]
+name = "ra-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+description = "Ribo Agent 命令行交互层：REPL、流式渲染与分层配置"
+
+[[bin]]
+name = "ribo"
+path = "src/main.rs"
+
+[dependencies]
+ra-core = { workspace = true }
+ra-agent = { workspace = true }
+ra-provider = { workspace = true }
+ra-harness = { workspace = true }
+ra-tools = { workspace = true }
+ra-plugins = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+jiff = { workspace = true }
+dirs = { workspace = true }
+rpassword = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+time.workspace = true
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# 签名来源校验的装配测试：生成 Ed25519 密钥 / 摘要与 WAT guest
+ring = { workspace = true }
+blake3 = { workspace = true }
+wat = { workspace = true }
+# start_paused 虚拟时钟（APP-01 E2E）必需：full 不含 test-util
+tokio = { workspace = true, features = ["test-util"] }
