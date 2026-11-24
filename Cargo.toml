@@ -116,3 +116,16 @@ ra-cli = { path = "./crates/cli" }
 ra-plugins = { path = "./crates/plugins" }
 ra-plug-pdk = { path = "./crates/pdk" }
 ra-plug-pdk-macro = { path = "./crates/pdk-macro" }
+
+# release 体积优化（GitHub Actions 多平台产物，见 .github/workflows/release.yml）：
+# 四项组合通常可减 30-50% 体积（wasmtime 这类大依赖受益最明显）。
+[profile.release]
+opt-level = "z"       # 体积优先优化：网关/CLI 为 IO 密集型，性能影响可忽略
+lto = true            # fat LTO：跨 crate 内联与死代码消除
+codegen-units = 1     # 单编译单元：更充分的优化、更少的重复代码
+strip = true          # 剥离 debuginfo 与符号表（等价 strip symbols）
+# 不设 panic = "abort"：项目依赖 unwind 语义——spawn_blocking / 宿主线程中的
+# panic 由 tokio JoinError 捕获转为错误传播（见 plugins/src/wasm/runtime.rs
+# poisoned_module_cache 测试的注释）；abort 会把它升级为进程级崩溃。
+# 构建命令：cargo build --release --locked -p ra-cli -p ra-tui
+# 产物：target/release/ribo 与 ribo-tui

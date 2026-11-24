@@ -1,4 +1,4 @@
-# 依赖安全审计（B2.3，17_ 阶段6 §4.3）：wasmtime 等依赖的 CVE 周检。
+# 依赖安全审计：wasmtime 等依赖的 CVE 周检。
 name: security-audit
 
 on:

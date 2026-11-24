@@ -1,4 +1,4 @@
-# 阶段 6 插件端到端演示 CI（18_ §13.2，决策 10）：
+# 阶段 6 插件端到端演示 CI：
 # 仅在插件链路相关文件变更时运行 + 每晚 cron 防破窗。
 # plugin-demo 现为根 workspace 成员（`examples/*`），e2e 内部调用
 # `cargo build --target wasm32` 构建 PDK guest；这条独立 workflow 作为

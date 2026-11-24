@@ -1,4 +1,4 @@
-# 主质量门禁 CI（B2.2，AGENTS.md §质量门禁）：PR 必过四门禁。
+# 主质量门禁 CI：PR 必过四门禁。
 # Rust 工具链在本文件显式固定为 1.99.1（本仓库无 rust-toolchain.toml）。
 # plugin-demo 已为 workspace 成员，cargo test --workspace 会执行其 e2e
 # （内部 cargo build --target wasm32），故必须安装 wasm32 target。

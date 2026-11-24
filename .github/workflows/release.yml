@@ -1,0 +1,118 @@
+name: release
+
+# 打 tag（v*）或手动触发：编译 Windows / Linux / macOS 的二进制并发布到
+# GitHub Release。
+#
+# Linux 采用 musl 静态链接：单一二进制不依赖系统 glibc，可直接运行于
+# 全部主流发行版（Debian / Ubuntu / RHEL / Alpine 等），x64 与 arm64 双架构。
+#   Linux  x64    x86_64-unknown-linux-musl   （ubuntu-22.04 + musl-tools）
+#   Linux  arm64  aarch64-unknown-linux-musl  （ubuntu-24.04-arm + musl-tools）
+#   macOS  x64    x86_64-apple-darwin         （macos-15-intel）
+#   macOS  arm64  aarch64-apple-darwin        （macos-14，Apple Silicon）
+#   Windows x64   x86_64-pc-windows-msvc      （windows-latest）
+#
+# 依赖为纯 Rust TLS（rustls），无 OpenSSL 等系统库依赖；
+# wasmtime cranelift 与 ring 均支持上述全部 target（含 musl）。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl toolchain (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }} -p ra-cli -p ra-tui
+
+      - name: Strip binaries
+        if: runner.os != 'Windows'
+        run: |
+          strip target/${{ matrix.target }}/release/ribo
+          strip target/${{ matrix.target }}/release/ribo-tui
+
+      - name: Stage and pack (unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DIR="ribo-${VERSION}-${{ matrix.target }}"
+          mkdir -p "$DIR"
+          cp target/${{ matrix.target }}/release/ribo "$DIR/"
+          cp target/${{ matrix.target }}/release/ribo-tui "$DIR/"
+          cp README.md LICENSE "$DIR/"
+          tar czf "${DIR}.tar.gz" "$DIR"
+
+      - name: Stage and pack (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v',''
+          $dir = "ribo-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/ribo.exe" $dir
+          Copy-Item "target/${{ matrix.target }}/release/ribo-tui.exe" $dir
+          Copy-Item "README.md" $dir
+          Copy-Item "LICENSE" $dir
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: ribo-*.*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
