@@ -74,6 +74,16 @@ pub struct CompactionConfig {
   pub summarizer_model: Option<ModelId>,
   /// 摘要最大字符数（超出按字符截断，不按 token）。
   pub max_summary_chars: usize,
+  /// 滞回比率：估算需达到上次触发的该倍数才重算（默认 1.10，范围 [1,10]）。
+  pub hysteresis_ratio: f64,
+  /// 触发压缩后的冷却轮数（默认 2）：冷却期复用摘要、不调用 LLM。
+  pub cooldown_turns: u32,
+  /// 是否启用增量压缩（默认 true）；关闭则每次全量摘要。
+  pub enable_incremental: bool,
+  /// 每 N 次增量后强制全量重建（默认 8，范围 [1,32]；1 = 每次全量）。
+  pub incremental_rebuild_every: u32,
+  /// 摘要输入 token 上限（默认 0 = 自动取模型窗口 70%）。
+  pub max_summary_input_tokens: usize,
 }
 
 impl Default for CompactionConfig {
@@ -85,6 +95,11 @@ impl Default for CompactionConfig {
       keep_recent_turns: 4,
       summarizer_model: None,
       max_summary_chars: 2048,
+      hysteresis_ratio: 1.10,
+      cooldown_turns: 2,
+      enable_incremental: true,
+      incremental_rebuild_every: 8,
+      max_summary_input_tokens: 0,
     }
   }
 }
@@ -102,6 +117,12 @@ mod tests {
     assert_eq!(config.keep_recent_turns, 4);
     assert!(config.summarizer_model.is_none());
     assert_eq!(config.max_summary_chars, 2048);
+    // D7 新增字段默认值
+    assert!((config.hysteresis_ratio - 1.10).abs() < f64::EPSILON);
+    assert_eq!(config.cooldown_turns, 2);
+    assert!(config.enable_incremental);
+    assert_eq!(config.incremental_rebuild_every, 8);
+    assert_eq!(config.max_summary_input_tokens, 0);
   }
 
   /// 默认 `ContextConfig` 的环境段开启、压缩配置默认。

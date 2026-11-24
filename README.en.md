@@ -11,7 +11,7 @@ Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ri
 
 ## Features
 
-- **Two interfaces**: `ribo` is a streaming REPL; `ribo-tui` is a five-zone full-screen TUI (input, output, status line, tool status, help overlay).
+- **Two interfaces**: `ribo` is a streaming REPL; `ribo-tui` is a full-screen TUI (left status sidebar + right dialog / loading / input panes + help overlay); tool calls are inlined in the chat stream, and the sidebar is hidden when terminal width < 60.
 - **Multi-model & multi-provider**: built-in `openai-chat`, `openai-responses`, and `anthropic` adapters plus a `mock` simulator, with cross-provider fallback chains.
 - **Tool calling**: 9 built-in tools (echo, calculator, current time, and a six-piece filesystem family), with the filesystem tools confined to a sandbox root.
 - **Gateway resilience**: request retries (exponential backoff + jitter), first-token timeout, cross-provider fallback, circuit breaking, and admission control.
@@ -82,36 +82,35 @@ One-shot subcommands (`auth` / `trust` / `config` / `plugins list`) are document
 
 Inside the REPL / TUI, a line starting with `/` is treated as a command; any other line is sent to the model as a user message.
 
-| Command | Alias | Description |
-| :--- | :--- | :--- |
-| `/help` | `/?` | Show the command list. |
-| `/new [name]` | — | Rotate the session key; auto-rotates when `name` is omitted. |
-| `/stop` | `/cancel` | Cancel the in-flight turn. |
-| `/skills` | — | List loaded skills and diagnostics. |
-| `/sessions` | — | List session keys. |
-| `/status` | — | Status summary (session / mode / in-flight). |
-| `/history [n]` | — | Show the last `n` transcripts; defaults to 10. |
-| `/exit` | `/quit` | Quit. |
+| Command | Alias | Target | Description |
+| :--- | :--- | :--- | :--- |
+| `/help` | `/?` | CLI + TUI | Show the command list. |
+| `/stop` | `/cancel` | CLI + TUI | Cancel the in-flight turn. |
+| `/skills` | — | CLI + TUI | List loaded skills and diagnostics. |
+| `/sessions [name]` | — | CLI + TUI | List session keys (→ marks current); switch to or create a session when named. |
+| `/status` | — | CLI only | Status summary (session / mode / in-flight / token / context triplet / warnings); always shown in the TUI sidebar. |
+| `/history [n]` | — | CLI only | Show the last `n` history records; fixed default of 10; TUI chat area is the full history. |
+| `/exit` | `/quit` | CLI + TUI | Quit. |
 
 ---
 
 ## Configuration
 
-Configuration uses a **six-layer schema**; each layer is independent with zero cross-layer coupling. The root-level field `query_model` is the gateway query entry model.
+Configuration uses a **multi-layer schema**; each layer is independent with zero cross-layer coupling. `[routing].default` is an explicit `(provider, model)` entry: one provider can declare multiple models via its `models` array, with automatic fallback through the implicit same-provider chain and `[[routing.fallback]]` rules.
 
 | Layer | Key fields | Defaults |
 | :--- | :--- | :--- |
-| `provider` | `query_model`, `[[providers]]` (adapter / base_url / api_key / model), `[routing.cross_provider]` | `query_model = "mock-model"`, no providers |
+| `provider` / `routing` | `[[providers]]` (adapter / base_url / api_key / `[[providers.models]]`), `[routing].default`, `[[routing.fallback]]` | default = mock/mock-model, no providers, no rules |
 | `retry` | `max_retries`, `initial_backoff_ms`, `jitter_ratio` | 3 / 500ms / 0.25 |
-| `compression` | `enabled`, `trigger_ratio`, `keep_recent_turns`, `summarizer_model`, `max_summary_chars` | off / 0.75 / 4 / None / 2048 |
+| `compression` | `enabled`, `trigger_ratio`, `keep_recent_turns`, `summarizer_model`, `max_summary_chars`, `hysteresis_ratio`, `cooldown_turns`, `enable_incremental`, `incremental_rebuild_every`, `max_summary_input_tokens` | off / 0.75 / 4 / None / 2048 / 1.10 / 2 / true / 8 / 0 |
 | `session` | `default_key`, `history_lines` | `"default"` / 10 |
-| `tools` | `builtin_enabled`, `fs_root` | true / sandbox = harness.root |
-| `harness` | `root`, `skills_roots`, `include_environment` | `"."` / `["skills"]` / true |
+| `tools` | `builtin_enabled` | true / sandbox is always harness.root (no `fs_root` setting) |
+| `harness` | `root`, `include_environment` | `"."` / true (skills fixed at `.ribo/skills/`) |
 
 - **Secrets never hit disk**: `api_key` is always written as a `"$ENV_NAME"` placeholder, resolved from the environment at runtime; an unset variable causes that provider to be skipped.
 - **Degradation semantics**:
   - Template left in placeholder state (`your-*` / `example.com`) → whole stack falls back to Mock.
-  - A missing `$ENV` key → local degradation; routing candidates that reference it are dropped, and if `query_model` becomes dangling the whole stack falls back to Mock.
+  - A missing `$ENV` key → local degradation; fallback targets referencing it are dropped, and if `default` becomes dangling the whole stack falls back to Mock.
   - A single layer failing to parse (except ignored unknown fields) → that layer keeps its defaults and prints a warning.
 - **Config selection**: an explicit `--config` wins; when omitted, `ribo.toml` is loaded only if present, otherwise fully-defaulted Mock mode is used.
 
@@ -119,17 +118,25 @@ A complete, copyable template is [`ribo_example.toml`](ribo_example.toml): copy 
 
 ```toml
 # ribo.toml excerpt
-query_model = "your-model-name"
+[routing]
+default = { provider = "chat-primary", model = "your-model-name" }
 
 [[providers]]
-provider_id  = "chat-primary"
-adapter      = "openai-chat"
-base_url     = "https://your-endpoint.example.com"
-api_key      = "$OPENAI_API_KEY"
-model        = "your-model-name"
+provider_id = "chat-primary"
+adapter     = "openai-chat"
+base_url    = "https://your-endpoint.example.com"
+api_key     = "$OPENAI_API_KEY"
 
-[routing.cross_provider]
-"chat-primary" = ["anthropic-backup"]
+  [[providers.models]]
+  id             = "your-model-name"
+  context_window = 131072       # optional, default 8192
+
+  [[providers.models]]          # same-provider fallback model
+  id             = "your-model-lite"
+
+[[routing.fallback]]            # rules are matched in declaration order
+match = { provider = "chat-primary" }
+targets = [{ provider = "anthropic-backup" }]
 ```
 
 ---
@@ -206,14 +213,14 @@ Registered via `ra_tools::builtin::register_builtin`, **9** in total:
 | `echo` | Echo the input. | — |
 | `calculator` | Expression evaluation (`evalexpr`). | — |
 | `current_time` | Current time (`jiff`). | — |
-| `read` | Read a file's contents. | limited to `fs_root` |
-| `write` | Write a file. | limited to `fs_root` |
-| `edit` | Edit a file in place. | limited to `fs_root` |
-| `ls` | List a directory. | limited to `fs_root` |
-| `glob` | Glob-match paths. | limited to `fs_root` |
-| `grep` | Search file contents. | limited to `fs_root` |
+| `read` | Read a file's contents. | sandbox / read-only mounts |
+| `write` | Write a file. | sandbox |
+| `edit` | Edit a file in place. | sandbox |
+| `ls` | List a directory. | sandbox / read-only mounts |
+| `glob` | Glob-match paths. | sandbox / read-only mounts |
+| `grep` | Search file contents. | sandbox / read-only mounts |
 
-The filesystem tools (read / write / edit / ls / glob / grep) share a single sandbox root `fs_root`; all paths are resolved inside the sandbox and out-of-bounds access is rejected.
+The filesystem tools (read / write / edit / ls / glob / grep) share a single sandbox root `harness.root`; paths outside the project are available only through read-only `[fs.mounts]` declared in global settings.
 
 ---
 
@@ -229,7 +236,7 @@ description: an example skill
 skill body……
 ```
 
-- Scanned from `harness.skills_roots` (defaults to `["skills"]`, resolved relative to `root`, multiple roots allowed and loaded in order).
+- Scanned from fixed directories `<harness.root>/.ribo/skills/` (project) and `skills/` in the global domain; project skills take priority. The old `harness.skills_roots` setting has been removed.
 - Load diagnostics (missing `SKILL.md`, read failure, frontmatter parse failure, etc.) are **non-fatal**: the loader returns the usable set plus diagnostics, and the caller logs them and continues assembly.
 - Use the `/skills` command at runtime to inspect loaded skills and diagnostics.
 

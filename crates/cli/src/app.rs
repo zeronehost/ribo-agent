@@ -5,7 +5,7 @@
 //!   的 `Result`）；`AgentEnd` 仅作渲染权威——它早于落盘完成
 //!   （agent_loop 事件 emit 先于 `store.append`），若由它复位会在
 //!   append 进行中放行下一轮并吞掉落盘失败；
-//! - 在途回合与当前会话键解耦：`/new` 只影响后续回合；
+//! - 在途回合与当前会话键解耦：`/sessions <name>` 只影响后续回合；
 //! - stdout 只承载对话渲染与提示，tracing 日志由 logging 落文件。
 
 use std::future::Future;
@@ -47,10 +47,8 @@ pub struct Repl<S: LineSource> {
   session: CliSession,
   renderer: Box<dyn Renderer + Send>,
   turn: TurnState,
-  /// 当前会话键（`/new` 轮换）。
+  /// 当前会话键（`/sessions <name>` 切换）。
   current_key: String,
-  /// `/new` 缺省时的自动轮换计数（`{default_key}-{n}`）。
-  new_counter: usize,
   /// prompt 任务结果通道（复位唯一权威）；每回合重建。
   /// `None`（全部 Sender 释放且无值）= 任务 panic 或被杀，异常终止。
   turn_done_rx: mpsc::Receiver<Result<(), ra_core::error::RiboError>>,
@@ -72,7 +70,6 @@ impl<S: LineSource + Send + 'static> Repl<S> {
       renderer,
       turn: TurnState::Idle,
       current_key,
-      new_counter: 0,
       turn_done_rx: rx,
     }
   }
@@ -199,19 +196,36 @@ impl<S: LineSource + Send + 'static> Repl<S> {
     }
   }
 
-  /// `/new`：轮换会话键；在途回合时拒绝（概设 B3——在途 key 与当前
-  /// 会话键解耦，轮换只影响后续回合，但串行回合期间轮换会让「在途」
-  /// 与「当前」分离，v1 直接拒绝保持语义简单）。
-  fn handle_new(&mut self, name: Option<String>) {
+  /// `/sessions [name]`：无参列出会话；带参切换会话（不存在则新建）。
+  ///
+  /// 在途回合时拒绝切换（概设 B3——串行回合期间切换会让「在途」与
+  /// 「当前」分离，保持语义简单）。
+  async fn handle_sessions(&mut self, name: Option<String>) {
+    let Some(name) = name else {
+      self.print_sessions().await;
+      return;
+    };
     if matches!(self.turn, TurnState::Running { .. }) {
-      println!("回合进行中：/stop 取消后再轮换会话。");
+      println!("回合进行中：/stop 取消后再切换会话。");
       return;
     }
-    self.current_key = name.unwrap_or_else(|| {
-      self.new_counter += 1;
-      format!("{}-{}", self.session.default_key, self.new_counter)
-    });
-    println!("已切换到会话 {}", self.current_key);
+    if name == self.current_key {
+      println!("已在会话 {name}。");
+      return;
+    }
+    let existed = self
+      .session
+      .harness
+      .list_sessions()
+      .await
+      .iter()
+      .any(|k| k == &name);
+    self.current_key = name.clone();
+    if existed {
+      println!("已切换到会话 {name}");
+    } else {
+      println!("会话 {name} 不存在，已新建（空白历史）。");
+    }
   }
 
   /// 复位在途回合：`turn_done` 结果三分支（复位唯一权威）。
@@ -247,35 +261,78 @@ impl<S: LineSource + Send + 'static> Repl<S> {
     match cmd {
       Command::Chat(_) => unreachable!("Chat 已在主循环分流"),
       Command::Help => print_help(),
-      Command::New(name) => self.handle_new(name),
       Command::Stop | Command::Cancel => self.handle_stop().await,
       Command::Skills => self.print_skills(),
-      Command::Sessions => self.print_sessions().await,
-      Command::Status => self.print_status(),
+      Command::Sessions(name) => self.handle_sessions(name).await,
+      Command::Status => self.print_status().await,
       Command::History(n) => self.print_history(n).await,
       Command::Exit => unreachable!("Exit 已在主循环分流"),
     }
   }
 
-  /// `/status`：状态摘要（会话键 / 模式 / 在途回合）。
+  /// `/status`：状态摘要（会话键 / 模式 / 在途回合 / 上下文三态）。
   ///
-  /// token 累计与上下文占比为 TUI 状态行专属（CLI 事件流不做累计），
-  /// 此处仅输出 REPL 已持有的事实。
-  fn print_status(&self) {
+  /// 上下文三态（v1.6 用户需求：总量 / 已压缩 / 当前）读自最近一次
+  /// 上下文装配写入会话的统计；未装配过显示 ctx: —。
+  async fn print_status(&mut self) {
     let in_flight = matches!(self.turn, TurnState::Running { .. });
     let mode = match self.session.mode {
       ConfigMode::Real => "real",
       ConfigMode::Mock => "mock",
     };
+    tracing::info!(
+      session_key = %self.current_key,
+      mode,
+      in_flight,
+      "status command invoked"
+    );
     println!(
       "session: {} | mode: {mode} | in_flight: {in_flight} | warnings: {}",
       self.current_key,
       self.session.warnings.len()
     );
+    // 三态：总量 token；已压缩占总量百分比；当前 token + 占窗口百分比
+    match self
+      .session
+      .harness
+      .session_compaction_stats(&self.current_key)
+      .await
+    {
+      Some(stats) => {
+        let compressed_pct = if stats.total_tokens > 0 {
+          stats.compressed_tokens as f64 / stats.total_tokens as f64 * 100.0
+        } else {
+          0.0
+        };
+        let window = self.session.context_window;
+        let current_part = if window > 0 {
+          format!(
+            " ({:.0}%)",
+            stats.current_tokens as f64 / window as f64 * 100.0
+          )
+        } else {
+          String::new()
+        };
+        println!(
+          "ctx: total={} tokens | compressed={:.0}% | current={}{}",
+          stats.total_tokens,
+          compressed_pct,
+          stats.current_tokens,
+          current_part
+        );
+      }
+      None => println!("ctx: —"),
+    }
   }
 
   /// `/skills`：技能名 + 装配期诊断。
   fn print_skills(&self) {
+    tracing::info!(
+      session_key = %self.current_key,
+      skills = self.session.skills.len(),
+      diagnostics = self.session.skill_diagnostics.len(),
+      "skills command invoked"
+    );
     if self.session.skills.is_empty()
       && self.session.skill_diagnostics.is_empty()
     {
@@ -317,7 +374,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
     println!("{}", keys.join(", "));
   }
 
-  /// `/history [n]`：当前会话最近 n 条转录。
+  /// `/history [n]`：当前会话最近 n 条历史记录。
   async fn print_history(&mut self, n: usize) {
     let messages = match self
       .session
@@ -378,7 +435,7 @@ fn print_help() {
   println!("其余输入作为消息发送给模型。");
 }
 
-/// 转录消息单行摘要：角色 + 首个文本块（`/history` 输出）。
+/// 历史记录单行摘要：角色 + 首个文本块（`/history` 输出）。
 fn summarize_message(message: &ra_core::message::Message) -> String {
   match message {
     ra_core::message::Message::User(user) => {

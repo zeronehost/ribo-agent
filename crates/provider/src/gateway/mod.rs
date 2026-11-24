@@ -22,9 +22,18 @@ mod utils;
 
 // `GatewayConfig` / `RouteMap` 是 `Gateway` 公开方法（`new` / `with_routes`）
 // 的参数类型，定义在私有子模块中；必须在此再导出，否则 crate 外部无法命名。
-pub use self::{fallback::RouteMap, option::GatewayConfig};
+pub use self::{
+  fallback::{
+    Candidate, CandidatesResult, DegradeReason, FallbackMatch, FallbackRule,
+    FallbackTarget, RouteMap,
+  },
+  option::GatewayConfig,
+};
 
-use std::sync::{Arc, RwLock};
+use std::sync::{
+  Arc, RwLock,
+  atomic::{AtomicBool, Ordering},
+};
 
 use dashmap::DashMap;
 use ra_core::{
@@ -46,9 +55,7 @@ use crate::{
   traits::{Provider, ProviderCatalog, ProviderErrorExt},
 };
 
-use self::{
-  fallback::Candidate, router::CatalogIndex, utils::validate_provider,
-};
+use self::{router::CatalogIndex, utils::validate_provider};
 
 /// 多提供方网关：统一入口，负责路由、熔断、重试与降级。
 ///
@@ -72,6 +79,8 @@ pub struct Gateway {
   route: RouteMap,
   /// 全局在途请求配额；permit 由 `ObservedStream` 持有至流终结。
   semaphore: Arc<Semaphore>,
+  /// 首次降级 stderr 提示已输出（24 号方案 D7：进程内一次，AtomicBool 防重复）。
+  stderr_fallback_warned: AtomicBool,
 }
 
 impl Gateway {
@@ -82,6 +91,7 @@ impl Gateway {
       config,
       catalog: RwLock::new(CatalogIndex::default()),
       breakers: DashMap::new(),
+      stderr_fallback_warned: AtomicBool::new(false),
       route: RouteMap::default(),
       semaphore,
     }
@@ -218,14 +228,34 @@ impl Gateway {
     }];
     let mut fallbacks_resolved = false;
     let mut last_err: Option<RiboError> = None;
+    // D9：尝试记录——(候选 key, 重试次数, 末次失败码)；同候选合并
+    let mut attempt_log: Vec<(String, u32, String)> = Vec::new();
+    // D9：摘要条目（circuit-open / attempts / switched 按发生序穿插）
     let mut chain_summary: Vec<String> = Vec::new();
+    // D6：窗口过滤下限（调用方传估算 ×1.1；0 = 不过滤）
+    let min_context_window = effective_options.min_context_window;
+    // D6：零候选解析原因（经 CandidatesResult 结构化返回，D9 摘要用）
+    let mut degrade_reason: Option<DegradeReason> = None;
+    // D8：软警告——遍历超 60s 时 warn 一次（不中断，防"以为死锁"）
+    let fallback_started = std::time::Instant::now();
+    let mut long_fallback_warned = false;
     let mut idx = 0usize;
 
     // ===== 候选链循环 =====
     // 外层遍历候选（主候选 + 惰性解析的 fallback），内层对每个
     // 候选按策略做建流重试；`last_err` 保留最后一次可降级错误。
-    while let Some(candidate) = chain.get(idx) {
+    while let Some(candidate_ref) = chain.get(idx) {
+      let candidate = candidate_ref.clone();
       idx += 1;
+      // D8：总耗时软警告（达到阈值 warn 一次并继续，不中断）
+      if !long_fallback_warned
+        && fallback_started.elapsed() >= std::time::Duration::from_secs(60)
+      {
+        long_fallback_warned = true;
+        tracing::warn!(
+          "provider fallback taking long, consider narrowing the chain"
+        );
+      }
       // 候选的提供方必定已在目录中（候选由目录解析得出），不存在时视为内部错误。
       let cand_provider = {
         let catalog = self.catalog.read().expect("catalog lock poisoned");
@@ -290,7 +320,7 @@ impl Gateway {
               breaker.record_failure();
               accounted = true;
             }
-            chain_summary.push(format!("{} {}", candidate.provider, e.code()));
+            record_attempt(&mut attempt_log, &candidate, &e);
 
             match effective_retry.decide(&e, attempt) {
               RetryDecision::Retry { delay, .. } => {
@@ -319,14 +349,41 @@ impl Gateway {
                 // 可降级 → 惰性解析 fallback 后尝试下一候选
                 if e.is_degradable() {
                   if !fallbacks_resolved {
-                    let fallbacks = self.route.candidates(
+                    let result = self.route.candidates(
                       &primary_model,
                       &e,
                       &*self.catalog.read().expect("catalog lock poisoned"),
+                      min_context_window,
                     );
-                    chain.extend(fallbacks);
+                    degrade_reason = result.reason;
+                    if let Some(next) = result.candidates.first() {
+                      // D9 switched 条目（切换到的候选；其失败由它自己的
+                      // attempts 条目承载）
+                      chain_summary.push(format!(
+                        "switched: {}/{}",
+                        next.provider, next.model.id
+                      ));
+                      // D7：首次降级 stderr 提示（进程内一次）
+                      if !self
+                        .stderr_fallback_warned
+                        .swap(true, Ordering::Relaxed)
+                      {
+                        eprintln!(
+                          "WARN model fallback: {}/{} unavailable ({}), switching candidates",
+                          primary_id,
+                          primary_model.id,
+                          e.code()
+                        );
+                      }
+                    }
+                    chain.extend(result.candidates);
                     fallbacks_resolved = true;
                   }
+                  push_attempts_entry(
+                    &mut chain_summary,
+                    &candidate,
+                    &attempt_log,
+                  );
                   last_err = Some(e);
                   break; // 下一候选
                 }
@@ -347,7 +404,7 @@ impl Gateway {
             );
             // 合成的 TIMEOUT 恒为熔断触发项，直接记一次失败。
             breaker.record_failure();
-            chain_summary.push(format!("{} timeout", candidate.provider));
+            record_attempt(&mut attempt_log, &candidate, &e);
 
             match effective_retry.decide(&e, attempt) {
               RetryDecision::Retry { delay, .. } => {
@@ -370,14 +427,38 @@ impl Gateway {
                 // 超时合成的 TIMEOUT 恒为可降级错误，且已在循环前计入熔断，
                 // 此处直接解析候选并切换到下一候选。
                 if !fallbacks_resolved {
-                  let fallbacks = self.route.candidates(
+                  let result = self.route.candidates(
                     &primary_model,
                     &e,
                     &*self.catalog.read().expect("catalog lock poisoned"),
+                    min_context_window,
                   );
-                  chain.extend(fallbacks);
+                  degrade_reason = result.reason;
+                  if let Some(next) = result.candidates.first() {
+                    chain_summary.push(format!(
+                      "switched: {}/{}",
+                      next.provider, next.model.id
+                    ));
+                    if !self
+                      .stderr_fallback_warned
+                      .swap(true, Ordering::Relaxed)
+                    {
+                      eprintln!(
+                        "WARN model fallback: {}/{} unavailable ({}), switching candidates",
+                        primary_id,
+                        primary_model.id,
+                        e.code()
+                      );
+                    }
+                  }
+                  chain.extend(result.candidates);
                   fallbacks_resolved = true;
                 }
+                push_attempts_entry(
+                  &mut chain_summary,
+                  &candidate,
+                  &attempt_log,
+                );
                 last_err = Some(e);
                 break;
               }
@@ -390,19 +471,56 @@ impl Gateway {
     let err = last_err.unwrap_or_else(|| {
       pre_stream(CIRCUIT_OPEN, "all candidates rejected by circuit breakers")
     });
-    Err(with_chain_summary(err, &chain_summary))
+    Err(with_chain_summary(err, &chain_summary, degrade_reason))
   }
 }
 
-/// 把降级链摘要附加到最终错误上。
+/// 把一次候选尝试记入尝试日志（D9：同候选合并 ×N，末次失败码）。
+fn record_attempt(
+  log: &mut Vec<(String, u32, String)>,
+  candidate: &Candidate,
+  err: &RiboError,
+) {
+  let key = format!("{}/{}", candidate.provider, candidate.model.id);
+  if let Some(entry) = log.iter_mut().find(|(k, _, _)| *k == key) {
+    entry.1 += 1;
+    entry.2 = err.code().to_string();
+  } else {
+    log.push((key, 1, err.code().to_string()));
+  }
+}
+
+/// 把某候选的 attempts 条目写入摘要（D9：`attempts: key ×N (code)`）。
+fn push_attempts_entry(
+  summary: &mut Vec<String>,
+  candidate: &Candidate,
+  log: &[(String, u32, String)],
+) {
+  let key = format!("{}/{}", candidate.provider, candidate.model.id);
+  if let Some((k, count, code)) = log.iter().find(|(k, _, _)| *k == key) {
+    summary.push(format!("attempts: {k} ×{count} ({code})"));
+  }
+}
+
+/// 把降级链摘要附加到最终错误上（D9：区分 attempts / switched / degraded）。
 ///
-/// 不改错误码，仅在 message 末尾追加 `fallback chain: ...`，
-/// 并保留原错误的全部 context，供上层继续分类与排障。
-fn with_chain_summary(err: RiboError, chain: &[String]) -> RiboError {
-  let mut rebuilt = pre_stream(
-    err.code(),
-    format!("{}; fallback chain: {}", err.message(), chain.join("; ")),
-  );
+/// 不改错误码，仅在 message 末尾追加摘要段，并保留原错误的全部
+/// context，供上层继续分类与排障。`degraded: none (reason)` 仅在
+/// 零候选（解析期落空）时追加。
+fn with_chain_summary(
+  err: RiboError,
+  chain: &[String],
+  reason: Option<DegradeReason>,
+) -> RiboError {
+  let mut message = err.message().to_string();
+  if !chain.is_empty() {
+    message.push_str("; fallback chain: ");
+    message.push_str(&chain.join("; "));
+  }
+  if let Some(reason) = reason {
+    message.push_str(&format!("; degraded: none ({})", reason.as_str()));
+  }
+  let mut rebuilt = pre_stream(err.code(), message);
   if let Some(ctx) = err.context() {
     for (k, v) in ctx.iter() {
       rebuilt = rebuilt.with_context(k, v.clone());
@@ -1071,7 +1189,7 @@ mod tests {
     let err = ra_core::error::RiboError::new("provider", SERVER_ERROR, "boom");
     assert!(err.context().is_none());
 
-    let out = with_chain_summary(err, &["p1 timeout".to_string()]);
+    let out = with_chain_summary(err, &["p1 timeout".to_string()], None);
 
     assert_eq!(out.code(), SERVER_ERROR);
     assert!(out.message().contains("fallback chain: p1 timeout"));

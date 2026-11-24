@@ -10,7 +10,9 @@ use std::{
 use dashmap::DashMap;
 use ra_agent::error::{context_build_error, session_create_failed};
 use ra_core::{error::RiboResult, message::Message, utils::time::now_ms};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::compaction_state::CompactionCache;
 use tokio::{
   fs::{self, OpenOptions},
   io::AsyncWriteExt,
@@ -38,6 +40,8 @@ pub struct SessionReplay {
   pub messages: Vec<Message>,
   /// 破损行 / 未知版本 / 未知记录类型的诊断。
   pub diagnostics: Vec<ReplayDiagnostic>,
+  /// 最后一条有效的摘要旁路记录（D11）：不进 `messages`，不决定读取起点。
+  pub compaction: Option<CompactionCache>,
 }
 
 /// 单条回放诊断。
@@ -56,10 +60,12 @@ pub enum ReplayDiagnosticCode {
   TornTail,
   /// 非末行的解析失败（手工编辑损坏，或与 append 并发读取时的跨批次半行）。
   CorruptLine,
-  /// `type` 字段不在 `meta` / `message` 之中。
+  /// `type` 字段不在 `meta` / `message` / `compaction` 之中。
   UnknownRecordType,
   /// 版本号高于当前支持版本，按 v1 尽力回放。
   UnsupportedVersion,
+  /// `compaction` 摘要记录损坏 / 字段缺失（忽略记录，不中断回放，D11）。
+  StaleCompaction,
 }
 
 impl JsonlSessionStore {
@@ -99,7 +105,21 @@ impl JsonlSessionStore {
       session_create_failed(key, format!("create sessions dir: {err}"))
     })?;
 
-    let created = !fs::try_exists(&path).await.unwrap_or(false);
+    // 先打开再判断是否需要 meta 首行：以「文件当前长度」为准，
+    // 不用 `try_exists` 预判（预判与写入之间存在竞态窗口）。
+    let mut file = OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(&path)
+      .await
+      .map_err(|err| {
+        session_create_failed(key, format!("open session file: {err}"))
+      })?;
+    let created = file
+      .metadata()
+      .await
+      .map(|meta| meta.len() == 0)
+      .unwrap_or(false);
 
     // 单次 write_all 尽量压低「写入一半」的窗口，但不承诺单系统调用
     // （write_all 内部可能多次 write）；并发 load 读到跨批次半行时由
@@ -121,14 +141,6 @@ impl JsonlSessionStore {
       buffer.push('\n');
     }
 
-    let mut file = OpenOptions::new()
-      .create(true)
-      .append(true)
-      .open(&path)
-      .await
-      .map_err(|err| {
-        session_create_failed(key, format!("open session file: {err}"))
-      })?;
     file.write_all(buffer.as_bytes()).await.map_err(|err| {
       session_create_failed(key, format!("append session file: {err}"))
     })?;
@@ -140,6 +152,142 @@ impl JsonlSessionStore {
       "session transcript appended"
     );
     Ok(())
+  }
+
+  /// 追加一条摘要旁路记录（D11）。
+  ///
+  /// 与 `append` 共用逐键写锁；首轮（文件不存在）时先写 meta 首行。
+  /// 摘要记录**不写回转录**：不截断、不删除任何 `message`。
+  ///
+  /// # Errors
+  ///
+  /// 键编码 / 目录创建 / 序列化 / 写入失败 → `agent.session_create_failed`。
+  pub async fn append_compaction(
+    &self,
+    key: &str,
+    cache: &CompactionCache,
+  ) -> RiboResult<()> {
+    let encoded = SessionKeyCodec::encode(key)?;
+    let path = self.root.join(format!("{encoded}.jsonl"));
+    let lock = self.write_lock(&encoded);
+    let _guard = lock.lock().await;
+
+    fs::create_dir_all(&self.root).await.map_err(|err| {
+      session_create_failed(key, format!("create sessions dir: {err}"))
+    })?;
+
+    let record = WriteRecord {
+      v: RECORD_VERSION,
+      body: WriteBody::Compaction {
+        summary: &cache.last_summary,
+        checkpoint: cache.checkpoint_fingerprint.to_string(),
+        model: &cache.summarizer_model,
+        ts: cache.generated_at,
+      },
+    };
+    let line = serde_json::to_string(&record).map_err(|err| {
+      session_create_failed(key, format!("serialize compaction record: {err}"))
+    })?;
+
+    // 先打开再判断是否需要 meta 首行：以「文件当前长度」为准，
+    // 不用 `try_exists` 预判（预判与写入之间存在竞态，且新建空文件
+    // 与已存在文件都可能误判）。
+    let mut file = OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(&path)
+      .await
+      .map_err(|err| {
+        session_create_failed(key, format!("open session file: {err}"))
+      })?;
+    let needs_meta = file
+      .metadata()
+      .await
+      .map(|meta| meta.len() == 0)
+      .unwrap_or(true);
+
+    let mut buffer = String::new();
+    if needs_meta {
+      buffer.push_str(&self.render_meta(key)?);
+    }
+    buffer.push_str(&line);
+    buffer.push('\n');
+
+    file.write_all(buffer.as_bytes()).await.map_err(|err| {
+      session_create_failed(key, format!("append compaction record: {err}"))
+    })?;
+    // 显式同步：确保随后的读（回放 / 冷启动统计）立即看到完整内容
+    file.sync_all().await.map_err(|err| {
+      session_create_failed(key, format!("sync session file: {err}"))
+    })?;
+
+    tracing::info!(
+      session_key = %key,
+      checkpoint = %cache.checkpoint_fingerprint,
+      "compaction record appended"
+    );
+    Ok(())
+  }
+
+  /// 读取最后一条有效的摘要旁路记录（D11）。
+  ///
+  /// 损坏 / 字段非法 / 指纹解析失败的记录记 `StaleCompaction` 诊断并跳过，
+  /// 返回最后一条有效记录；不存在返回 `Ok(None)`。
+  ///
+  /// # Errors
+  ///
+  /// 文件读取失败 → `agent.context_build_error`。
+  pub async fn load_compaction(
+    &self,
+    key: &str,
+  ) -> RiboResult<Option<CompactionCache>> {
+    let encoded = SessionKeyCodec::encode(key)?;
+    let path = self.root.join(format!("{encoded}.jsonl"));
+    if !fs::try_exists(&path).await.unwrap_or(false) {
+      return Ok(None);
+    }
+    let content = fs::read_to_string(&path).await.map_err(|err| {
+      context_build_error(key, format!("read session file: {err}"))
+    })?;
+
+    let mut latest = None;
+    for raw in content.lines() {
+      let trimmed = raw.trim();
+      if trimmed.is_empty() {
+        continue;
+      }
+      let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        tracing::debug!(session_key = %key, "non-JSON line skipped in compaction scan");
+        continue;
+      };
+      if value.get("type").and_then(serde_json::Value::as_str)
+        != Some("compaction")
+      {
+        continue;
+      }
+      match serde_json::from_value::<CompactionRecord>(value) {
+        Ok(record) => match record.checkpoint.parse::<u64>() {
+          Ok(checkpoint) => {
+            latest = Some(CompactionCache {
+              last_summary: record.summary,
+              checkpoint_fingerprint: checkpoint,
+              summarizer_model: record.model,
+              generated_at: record.ts,
+            });
+          }
+          Err(_) => tracing::warn!(
+            session_key = %key,
+            "compaction record has invalid checkpoint fingerprint"
+          ),
+        },
+        Err(err) => tracing::warn!(
+          session_key = %key,
+          error = %err,
+          "compaction record corrupt; ignored"
+        ),
+      }
+    }
+    Ok(latest)
   }
 
   /// 回放会话。
@@ -213,6 +361,45 @@ impl JsonlSessionStore {
               line: index + 1,
               code: ReplayDiagnosticCode::CorruptLine,
             }),
+          }
+        }
+        // D11：摘要旁路记录——不进 messages、不决定读取起点，只存最后一条。
+        Some("compaction") => {
+          match serde_json::from_value::<CompactionRecord>(value.clone()) {
+            Ok(record) => match record.checkpoint.parse::<u64>() {
+              Ok(checkpoint) => {
+                replay.compaction = Some(CompactionCache {
+                  last_summary: record.summary,
+                  checkpoint_fingerprint: checkpoint,
+                  summarizer_model: record.model,
+                  generated_at: record.ts,
+                });
+              }
+              Err(err) => {
+                tracing::warn!(
+                  session_key = %key,
+                  line = index + 1,
+                  error = %err,
+                  "stale compaction checkpoint ignored during replay"
+                );
+                replay.diagnostics.push(ReplayDiagnostic {
+                  line: index + 1,
+                  code: ReplayDiagnosticCode::StaleCompaction,
+                });
+              }
+            },
+            Err(err) => {
+              tracing::warn!(
+                session_key = %key,
+                line = index + 1,
+                error = %err,
+                "stale compaction record ignored during replay"
+              );
+              replay.diagnostics.push(ReplayDiagnostic {
+                line: index + 1,
+                code: ReplayDiagnosticCode::StaleCompaction,
+              });
+            }
           }
         }
         _ => replay.diagnostics.push(ReplayDiagnostic {
@@ -455,8 +642,32 @@ struct WriteRecord<'a> {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WriteBody<'a> {
-  Meta { key: &'a str, created_at: i64 },
-  Message { ts: i64, message: &'a Message },
+  Meta {
+    key: &'a str,
+    created_at: i64,
+  },
+  Message {
+    ts: i64,
+    message: &'a Message,
+  },
+  /// D11 摘要旁路记录：纯缓存，不截断 / 不删除任何 message，
+  /// 也不决定模型读取起点。`v` 保持 1（硬切换不靠版本号区分）。
+  Compaction {
+    summary: &'a str,
+    /// 指纹以十进制字符串写入，避免 JSON 数字精度问题。
+    checkpoint: String,
+    model: &'a str,
+    ts: i64,
+  },
+}
+
+/// 读侧摘要记录载荷（D11）：与 `WriteBody::Compaction` 字段一一对应。
+#[derive(Deserialize)]
+struct CompactionRecord {
+  summary: String,
+  checkpoint: String,
+  model: String,
+  ts: i64,
 }
 
 #[cfg(test)]
@@ -626,6 +837,90 @@ mod tests {
     let store = JsonlSessionStore::new(dir.clone());
     store.append("empty", &[]).await.unwrap();
     assert!(!store.exists("empty").await);
+  }
+
+  /// D11：append_compaction 写入旁路记录，load_compaction 读回四字段，
+  /// 且不污染 message 转录（不截断 / 不删除）。
+  #[tokio::test]
+  async fn compaction_record_roundtrip_does_not_touch_messages() {
+    let dir = crate::test_util::test_dir(
+      "compaction_record_roundtrip_does_not_touch_messages",
+    );
+    let store = JsonlSessionStore::new(dir.clone());
+    store
+      .append("s1", &[user_msg("q1"), assistant_msg("a1")])
+      .await
+      .unwrap();
+
+    let cache = CompactionCache {
+      last_summary: "kept decisions".to_string(),
+      checkpoint_fingerprint: 12_345,
+      summarizer_model: "glm-4.5-flash".to_string(),
+      generated_at: 999,
+    };
+    store.append_compaction("s1", &cache).await.unwrap();
+
+    // 记录在原消息之后
+    let file = dir.join("s1.jsonl");
+    let content = std::fs::read_to_string(file).unwrap();
+    assert!(content.contains("\"type\":\"compaction\""));
+    assert!(content.contains("\"checkpoint\":\"12345\""));
+
+    // 回放：messages 不含摘要记录
+    let replay = store.load("s1").await.unwrap();
+    assert_eq!(replay.messages.len(), 2);
+    assert_eq!(replay.compaction, Some(cache.clone()));
+    assert!(replay.diagnostics.is_empty());
+
+    // 专用读取最后一条
+    assert_eq!(store.load_compaction("s1").await.unwrap(), Some(cache));
+  }
+
+  /// D11：首轮（无 message）直接写摘要记录时自动补 meta 首行。
+  #[tokio::test]
+  async fn compaction_record_first_creates_meta_line() {
+    let dir =
+      crate::test_util::test_dir("compaction_record_first_creates_meta_line");
+    let store = JsonlSessionStore::new(dir.clone());
+    let cache = CompactionCache {
+      last_summary: "s".to_string(),
+      checkpoint_fingerprint: 1,
+      summarizer_model: "m".to_string(),
+      generated_at: 2,
+    };
+    store.append_compaction("solo", &cache).await.unwrap();
+
+    let content = std::fs::read_to_string(dir.join("solo.jsonl")).unwrap();
+    let meta_count = content
+      .lines()
+      .filter(|l| l.contains("\"type\":\"meta\""))
+      .count();
+    assert_eq!(meta_count, 1);
+    assert_eq!(store.load_compaction("solo").await.unwrap(), Some(cache));
+  }
+
+  /// D11：损坏的 compaction 记录记 StaleCompaction 诊断，不中断回放。
+  #[tokio::test]
+  async fn load_marks_stale_compaction_record() {
+    let dir = crate::test_util::test_dir("load_marks_stale_compaction_record");
+    let store = JsonlSessionStore::new(dir.clone());
+    let mut content = String::new();
+    content.push_str(
+      "{\"v\":1,\"type\":\"meta\",\"key\":\"s1\",\"created_at\":1}\n",
+    );
+    content.push_str("{\"v\":1,\"type\":\"compaction\",\"summary\":\"s\",\"checkpoint\":\"not-a-number\",\"model\":\"m\",\"ts\":2}\n");
+    content.push_str("{\"v\":1,\"type\":\"message\",\"ts\":3,\"message\":{\"role\":\"user\",\"content\":\"hi\",\"timestamp\":0}}\n");
+    std::fs::write(dir.join("s1.jsonl"), content).unwrap();
+
+    let replay = store.load("s1").await.unwrap();
+    assert_eq!(replay.messages.len(), 1);
+    assert!(replay.compaction.is_none());
+    assert!(
+      replay
+        .diagnostics
+        .iter()
+        .any(|d| d.code == ReplayDiagnosticCode::StaleCompaction)
+    );
   }
 
   /// 补充：多次 append 只产生一行 meta。

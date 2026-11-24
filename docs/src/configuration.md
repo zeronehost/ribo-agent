@@ -2,13 +2,14 @@
 
 ## 配置层次
 
-配置采用七层 schema，各层相互独立、层间零交叉；根级字段 `query_model` 为网关查询入口模型。完整可复制模板见仓库根目录的 `ribo_example.toml`。
+配置采用多层 schema，各层相互独立、层间零交叉；`[routing].default` 是网关查询入口的显式 `(provider, model)` 二元组。完整可复制模板见仓库根目录的 `ribo_example.toml`。
 
 | 层 | 关键字段 | 默认值 |
 | :--- | :--- | :--- |
-| `provider` | `query_model`、`[[providers]]`、`[routing.cross_provider]` | `query_model = "mock-model"`、无 provider |
+| `provider` | `[[providers]]`（`provider_id`/`adapter`/`base_url`/`api_key`）、`[[providers.models]]`（`id`/`context_window`） | 无 provider；窗口默认 8192 |
+| `routing` | `[routing].default`（`provider`/`model` 二元组）、`[[routing.fallback]]`（`match`/`targets`） | default = mock/mock-model、无规则 |
 | `retry` | `max_retries`、`initial_backoff_ms`、`jitter_ratio` | 3 / 500ms / 0.25 |
-| `compression` | `enabled`、`trigger_ratio`、`keep_recent_turns`、`summarizer_model`、`max_summary_chars` | 关闭 / 0.75 / 4 / None / 2048 |
+| `compression` | `enabled`、`trigger_ratio`、`keep_recent_turns`、`summarizer_model`、`max_summary_chars`、`hysteresis_ratio`、`cooldown_turns`、`enable_incremental`、`incremental_rebuild_every`、`max_summary_input_tokens` | 关闭 / 0.75 / 4 / None / 2048 / 1.10 / 2 / true / 8 / 0（自动取模型窗口 70%） |
 | `session` | `default_key`、`history_lines` | `"default"` / 10 |
 | `tools` | `builtin_enabled` | true |
 | `harness` | `root`、`include_environment` | `"."` / true |
@@ -16,38 +17,58 @@
 
 此外，`[plugins]`（插件加载条目）与 `[fs.mounts]`（只读挂载点）是两组独立配置，见[插件系统](./plugins.md)。
 
-## 配置文件选择（D2 四档优先级）
+## 配置文件选择
 
 - 显式 `--config <PATH>`：指向不存在的文件 → 启动报错 `config.config_file_missing`（v3.4）；
 - 未指定时向上探测 `ribo.toml`（至 `.git` 边界），找到即加载；
 - 否则全默认。
 
+工作目录另有四档优先级（`--root` > `[harness].root` > 配置文件所在目录 > 当前目录），见 `harness.root` 说明。
+
 ## 降级语义
 
 启动横幅会打印当前模式与全部降级原因：
 
-- debug 构建：无 provider / 占位配置 / `query_model` 悬空 → 整体回退 Mock + warning；
+- debug 构建：无 provider / 占位配置 / `default` 悬空 → 整体回退 Mock + warning；
 - **release 构建（D7）**：上述三类一律启动致命（`*_in_release` 错误码），不再静默降级；
-- 某 `$ENV` 密钥未设置 → 局部降级：该 provider 跳过注册，引用它的路由候选一并剔除；
+- 某 `$ENV` 密钥未设置 → 局部降级：该 provider 跳过注册，引用它的降级目标一并剔除；
 - 单个配置层解析失败 → 该层保留默认并打印 warning。
 
-## provider 配置
+## provider 与 routing 配置
+
+一个 provider 是**通道声明**（base_url / api_key / adapter），可挂多个模型；
+`context_window` 随模型走（状态行 ctx 占比与压缩预算共用，默认 8192）。
 
 ```toml
-query_model = "your-model-name"
+[routing]
+default = { provider = "chat-primary", model = "your-model-name" }
 
 [[providers]]
 provider_id = "chat-primary"
 adapter     = "openai-chat"          # openai-chat | openai-responses | anthropic
 base_url    = "https://your-endpoint.example.com"
 api_key     = "$OPENAI_API_KEY"      # 环境变量占位，不落盘
-model       = "your-model-name"
 
-[routing.cross_provider]
-"chat-primary" = ["anthropic-backup"]
+  [[providers.models]]
+  id             = "your-model-name"
+  context_window = 131072
+
+  [[providers.models]]               # 同通道备选（models 声明序即隐式降级序）
+  id             = "your-model-lite"
+
+[[routing.fallback]]                 # 规则按声明顺序，首条 match 命中生效
+match = { provider = "chat-primary" }
+targets = [{ provider = "anthropic-backup" }]
 ```
 
 `api_key` 支持 `$ENV_NAME` 占位；也接受直接写值（不推荐，会落盘）。adapter 类型固定为三种白名单值。
+
+**降级顺序**：`default` 模型失败 → 同通道内其他模型（按 `models` 声明序，
+即隐式链）→ 首条命中的 `[[routing.fallback]]` 规则的 `targets`（按序尝试）。
+`match` 支持精确二元组 `{ provider, model }` 与 provider 级通配 `{ provider }`；
+`target` 支持显式二元组 `{ provider, model }` 与 `{ provider }`（同名 → 目标默认）。
+规则声明顺序即优先级——精确规则应写在通配规则之前（通配遮蔽会产生 warning）。
+窗口不足的候选会被过滤（估算 token × 1.1 作为下限），防止降级到装不下当前对话的小模型。
 
 ## 全局域
 

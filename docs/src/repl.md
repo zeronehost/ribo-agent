@@ -4,19 +4,19 @@
 
 ## 命令清单
 
-| 命令 | 说明 |
-| :--- | :--- |
-| `/help` | 显示命令清单 |
-| `/new [name]` | 轮换会话键（`name` 缺省自动轮换） |
-| `/skills` | 列出已加载技能及其来源 / 诊断 |
-| `/sessions` | 列出全部会话键（内存 ∪ 磁盘） |
-| `/status` | 状态行摘要（token 累计 / 在途 / 上下文占比） |
-| `/history [n]` | 最近 n 条转录（默认取配置的 `history_lines`） |
-| `/stop` | 取消在途回合 |
-| `/cancel` | `/stop` 的同义命令 |
-| `/exit` / `/quit` | 退出 |
+| 命令 | 适用端 | 说明 |
+| :--- | :--- | :--- |
+| `/help`（`/?`） | CLI + TUI | 显示命令清单 |
+| `/skills` | CLI + TUI | 列出已加载技能及其来源 / 诊断 |
+| `/sessions [name]` | CLI + TUI | 无参列出全部会话键（内存 ∪ 磁盘，→ 标记当前）；带参切换到指定会话，不存在则新建 |
+| `/stop`（`/cancel`） | CLI + TUI | 取消在途回合 |
+| `/status` | **仅 CLI** | 状态摘要（会话 / 模式 / 在途 / token / 上下文三态：总量 / 已压缩 / 当前 / 警告数）；TUI 侧栏常驻展示，无需命令。输出示例：`ctx: total=… \| compressed=…% \| current=… (…)`；未装配时为 `ctx: —` |
+| `/history [n]` | **仅 CLI** | 最近 n 条历史记录（默认固定 10，不读取配置）；TUI 对话区即完整历史，PgUp/PgDn 翻页 |
+| `/exit`（`/quit`） | CLI + TUI | 退出 |
 
 > 注意：REPL 内的 `/status` 是**会话状态**命令，与一次性子命令 `ribo auth status`（查看凭证）无关。
+
+TUI 输入 CLI-only 命令时会显示指引浮层（例如「对话区即完整历史，PgUp/PgDn 翻页查看」），不会静默忽略。
 
 ## 技能来源显示
 
@@ -31,9 +31,9 @@ skill: company-guide（来自全局技能）
 
 ## 会话与历史
 
-- 会话按 key 持久化到 `harness.root/sessions/`（JSONL）；
-- `/new` 轮换当前 key，实现"新会话"；
-- `/history` 读取当前会话的转录；
+- 会话按 key 持久化到 `<harness.root>/.ribo/sessions/`（JSONL）；
+- `/sessions <名称>` 切换到指定会话（旧 `/new` 命令已合并至此），不存在则新建空白会话；
+- `/history [n]` 读取当前会话的历史记录（仅 CLI，默认固定 10 条）；
 - 上下文压缩（compression 层）在达到阈值时自动触发（摘要或滑窗）。
 
 ## 中断与退出

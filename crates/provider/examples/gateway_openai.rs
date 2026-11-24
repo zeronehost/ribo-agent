@@ -399,6 +399,15 @@ async fn run_offline() {
 /// 初始化 `tracing` 订阅者：示例默认输出 INFO 及以上级别的英文日志。
 fn init_tracing() {
   tracing_subscriber::fmt()
+    .with_timer(
+      tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339()
+        .unwrap_or_else(|_| {
+          tracing_subscriber::fmt::time::OffsetTime::new(
+            time::UtcOffset::UTC,
+            time::format_description::well_known::Rfc3339,
+          )
+        }),
+    )
     .with_max_level(tracing::Level::INFO)
     .init();
 }

@@ -30,7 +30,10 @@ use ra_provider::{
   adapters::mock::{MockProvider, MockStep},
   context::Context,
   error::{RATE_LIMITED, SERVER_ERROR, pre_stream},
-  gateway::{Gateway, GatewayConfig, RouteMap},
+  gateway::{
+    FallbackMatch, FallbackRule, FallbackTarget, Gateway, GatewayConfig,
+    RouteMap,
+  },
   ids::{ModelId, ProviderId},
   model::Model,
   options::StreamOptions,
@@ -170,13 +173,18 @@ async fn main() {
   );
 
   // ===== 降级路由表 =====
-  // 同提供方链：alpha-main 失败 → alpha-backup；
-  // 跨提供方链：beta 失败 → gamma（gamma 无同名 beta-model，
-  // 走"主链 ∩ 目标目录"命中 gamma-model）。
+  // 隐式同提供方链：alpha-main 失败 → alpha-backup（D3，声明序）；
+  // fallback 规则：beta 通道失败 → gamma 通道（{ provider } 形态 =
+  // 同名 → 目标默认两级解析，命中 gamma-model）。
   let mut routes = RouteMap::default();
   routes.insert_same_provider(mid("alpha-main"), vec![mid("alpha-backup")]);
-  routes.insert_same_provider(mid("beta-model"), vec![mid("gamma-model")]);
-  routes.insert_cross_provider(pid("beta"), vec![pid("gamma")]);
+  routes.insert_fallback_rules(vec![FallbackRule {
+    match_: FallbackMatch {
+      provider: pid("beta"),
+      model: None, // provider 级通配
+    },
+    targets: vec![FallbackTarget::Provider(pid("gamma"))],
+  }]);
 
   let mut gateway = Gateway::new(base_config()).with_routes(routes);
   let alpha_arc = Arc::new(alpha);

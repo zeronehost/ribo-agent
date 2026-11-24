@@ -22,6 +22,9 @@ pub fn submit(
   input_view::clear_editor(app);
   app.turn = TurnState::Running { key, handle };
   app.status.in_flight = true;
+  // 主动发起回合 = 想看新输出：解除上滚状态、恢复粘底，
+  // 否则回合中新增内容全部落在视口外（「剩余内容渲染不出来」）
+  app.scroll.follow_end = true;
   true
 }
 
@@ -40,53 +43,7 @@ pub async fn request_stop(
   }
 }
 
-/// `/new`：轮换会话键（在途拒绝，对齐 CLI `handle_new`）。
-///
-/// 缺省自动轮换：已带 `-N` 后缀的键递增（`default-2` → `default-3`），
-/// 否则追加 `-1`（`default` → `default-1`）。
-pub fn rotate_key(app: &mut AppState, name: Option<String>) {
-  if matches!(app.turn, TurnState::Running { .. }) {
-    return; // 在途拒绝（16 §9）
-  }
-  let next = match name {
-    Some(custom) => custom,
-    None => {
-      let current = &app.status.session_key;
-      match current.rsplit_once('-') {
-        Some((prefix, n)) if n.parse::<usize>().is_ok() => {
-          format!("{prefix}-{}", n.parse::<usize>().unwrap_or(0) + 1)
-        }
-        _ => format!("{current}-1"),
-      }
-    }
-  };
-  app.status.session_key = next;
-}
-
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use ra_cli::config::ConfigMode;
-
-  fn test_state() -> AppState {
-    AppState::new(ConfigMode::Mock, Vec::new(), "default".into())
-  }
-
-  // 场景：rotate_key 缺省自动轮换（无后缀 → -1；带后缀递增）。
-  #[test]
-  fn rotate_key_auto_increments_suffix() {
-    let mut app = test_state();
-    rotate_key(&mut app, None);
-    assert_eq!(app.status.session_key, "default-1");
-    rotate_key(&mut app, None);
-    assert_eq!(app.status.session_key, "default-2");
-  }
-
-  // 场景：rotate_key 显式命名生效。
-  #[test]
-  fn rotate_key_explicit_name() {
-    let mut app = test_state();
-    rotate_key(&mut app, Some("work".into()));
-    assert_eq!(app.status.session_key, "work");
-  }
+  // （/sessions 合并原 /new 后无本模块单测；命令解析见 ra-cli commands）
 }

@@ -15,13 +15,26 @@ pub type SharedToolResult = Arc<ToolExecutionResult>;
 /// Agent 循环生命周期事件。
 ///
 /// 发射顺序（正常完成回合）：
-/// `AgentStart → TurnStart → MessageStart/End(prompt) → MessageUpdate ×n →
-/// MessageEnd(assistant) → ToolExecutionStart ×n → ToolExecutionEnd ×n →
-/// MessageStart/End(tool_result) ×n → TurnEnd → AgentEnd`。
+/// `Compaction? → AgentStart → TurnStart → MessageStart/End(prompt) →
+/// MessageUpdate ×n → MessageEnd(assistant) → ToolExecutionStart ×n →
+/// ToolExecutionEnd ×n → MessageStart/End(tool_result) ×n → TurnEnd → AgentEnd`。
 ///
-/// 变体顺序即生命周期顺序（AgentStart 最先、AgentEnd 最后）。
+/// 变体顺序即生命周期顺序（Compaction 最先且可选、AgentEnd 最后）。
+/// `Compaction` 在 `AgentStart` 前发射；提示是对话流中的持久痕迹
+///（TUI 气泡 / CLI 一行），`AgentStart` 不复位、痕迹保留。
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+  /// 本轮执行了上下文压缩（`failed` 区分成功摘要 / 失败回退；不携带摘要内容）。
+  ///
+  /// 压缩在 `ContextProvider::build` 内完成（早于本事件），事件于
+  /// `AgentStart` 前发射；显示端把它转化为对话流中的持久痕迹
+  ///（CLI 单行提示 / TUI 系统气泡）。`failed == true` 表示摘要调用失败、
+  /// 本轮已回退滑窗（v1.6 用户拍板：失败也留痕，让用户知道发生过什么）；
+  /// 冷却抑制 / 复用摘要仍不发射。
+  Compaction {
+    /// 是否失败回退（`false` = 摘要成功）。
+    failed: bool,
+  },
   /// 一次 `run_agent_loop` 开始（TurnStart 之前发射一次）。
   AgentStart,
   /// 每轮开始（一轮 = 一次助手响应 + 其工具批）。
@@ -92,6 +105,7 @@ impl AgentEvent {
   /// 事件类型标签（snake_case，供日志、测试断言与未来序列化使用）。
   pub fn type_tag(&self) -> &'static str {
     match self {
+      Self::Compaction { .. } => "compaction",
       Self::AgentStart => "agent_start",
       Self::TurnStart => "turn_start",
       Self::MessageStart { .. } => "message_start",
@@ -162,10 +176,11 @@ mod tests {
     }
   }
 
-  /// 按生命周期顺序构造全部 10 个变体样本。
+  /// 按生命周期顺序构造全部 11 个变体样本。
   fn all_variants() -> Vec<AgentEvent> {
     let user_message = sample_user_message();
     vec![
+      AgentEvent::Compaction { failed: false },
       AgentEvent::AgentStart,
       AgentEvent::TurnStart,
       AgentEvent::MessageStart {
@@ -204,11 +219,12 @@ mod tests {
     ]
   }
 
-  // 场景：type_tag 覆盖全部 10 个变体。
+  // 场景：type_tag 覆盖全部 11 个变体。
   // 预期：每个变体的标签与生命周期 snake_case 命名一一对应。
   #[test]
   fn type_tag_covers_all_variants() {
     let expected = [
+      "compaction",
       "agent_start",
       "turn_start",
       "message_start",

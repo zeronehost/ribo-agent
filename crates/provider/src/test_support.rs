@@ -20,6 +20,15 @@ pub(crate) fn init() {
   static ONCE: Once = Once::new();
   ONCE.call_once(|| {
     let subscriber = tracing_subscriber::fmt()
+      .with_timer(
+        tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339()
+          .unwrap_or_else(|_| {
+            tracing_subscriber::fmt::time::OffsetTime::new(
+              time::UtcOffset::UTC,
+              time::format_description::well_known::Rfc3339,
+            )
+          }),
+      )
       .with_max_level(tracing::Level::TRACE)
       .with_writer(std::io::sink)
       .finish();

@@ -22,12 +22,7 @@
 //! 离线模式的桩只接受一次连接，因此两种模式都只演示**一轮**对话 +
 //! 重启回放；多轮对话见 [`harness_session`]。
 
-use std::{
-  collections::{HashMap, HashSet},
-  path::Path,
-  sync::Arc,
-  time::Duration,
-};
+use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
 
 use ra_agent::{
   adapter::ToolManagerAdapter, agent::BaseAgent, types::LoopDeps,
@@ -69,26 +64,53 @@ struct ProviderEntry {
   base_url: String,
   /// 鉴权密钥。
   api_key: String,
-  /// 真实模型名：同时作为网关模型 ID 与请求线格式中的 `model` 字段。
+  /// 该通道可用的模型清单。
+  models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelEntry {
+  id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FallbackRuleCfg {
+  #[serde(rename = "match")]
+  match_rule: MatchCfg,
+  targets: Vec<TargetCfg>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MatchCfg {
+  provider: String,
+  #[serde(default)]
+  model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetCfg {
+  provider: String,
+  #[serde(default)]
+  model: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct Routing {
+  #[serde(default)]
+  default: Option<ModelRefCfg>,
+  #[serde(default)]
+  fallback: Vec<FallbackRuleCfg>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelRefCfg {
+  provider: String,
   model: String,
 }
 
-/// 路由段：跨提供方降级链表。
-#[derive(Debug, Deserialize, Default)]
-struct Routing {
-  /// 主提供方 ID → 候选提供方 ID 列表。
-  #[serde(default)]
-  cross_provider: HashMap<String, Vec<String>>,
-}
-
-/// 根配置。
 #[derive(Debug, Deserialize)]
 struct RealConfig {
-  /// 网关查询入口模型名：必须是某个 provider 真实暴露的 `model`。
-  query_model: String,
-  /// 提供方列表（至少一个）。
   providers: Vec<ProviderEntry>,
-  /// 可选的降级路由表。
   #[serde(default)]
   routing: Routing,
 }
@@ -136,7 +158,7 @@ fn base_config() -> GatewayConfig {
 
 /// 尝试从候选路径读取并解析 `harness_fallback.toml`。
 ///
-/// 文件不存在 / 解析失败 / 任一 provider 字段为空 / `query_model` 未被
+/// 文件不存在 / 解析失败 / 任一 provider 字段为空 / `default` 未被
 /// 任何 provider 暴露 / 路由引用未注册的 provider_id → 返回 `None`
 /// （回退离线桩）。
 fn load_config() -> Option<RealConfig> {
@@ -174,7 +196,8 @@ fn load_config() -> Option<RealConfig> {
       || p.adapter.trim().is_empty()
       || p.base_url.trim().is_empty()
       || p.api_key.trim().is_empty()
-      || p.model.trim().is_empty()
+      || p.models.is_empty()
+      || p.models.iter().any(|m| m.id.trim().is_empty())
     {
       tracing::warn!(
         provider = %p.provider_id,
@@ -203,13 +226,15 @@ fn load_config() -> Option<RealConfig> {
       return None;
     }
   }
-  if cfg.query_model.trim().is_empty()
-    || !cfg.providers.iter().any(|p| p.model == cfg.query_model)
-  {
-    tracing::warn!(
-      query_model = %cfg.query_model,
-      "query_model is not provided by any provider, using offline stubs"
-    );
+  let Some(default) = &cfg.routing.default else {
+    tracing::warn!("[routing].default missing, using offline stubs");
+    return None;
+  };
+  if !cfg.providers.iter().any(|p| {
+    p.provider_id == default.provider
+      && p.models.iter().any(|m| m.id == default.model)
+  }) {
+    tracing::warn!("default model not provided, using offline stubs");
     return None;
   }
   // 路由引用的 from / 候选 provider_id 必须都存在于 providers 列表。
@@ -218,21 +243,22 @@ fn load_config() -> Option<RealConfig> {
     .iter()
     .map(|p| p.provider_id.as_str())
     .collect();
-  for (from, chain) in &cfg.routing.cross_provider {
-    if !ids.contains(from.as_str())
-      || chain.iter().any(|c| !ids.contains(c.as_str()))
+  for rule in &cfg.routing.fallback {
+    if !ids.contains(rule.match_rule.provider.as_str())
+      || rule
+        .targets
+        .iter()
+        .any(|t| !ids.contains(t.provider.as_str()))
     {
       tracing::warn!(
-        from = %from,
-        "routing references unregistered provider, using offline stubs"
+        "fallback rule references unregistered provider, using offline stubs"
       );
       return None;
     }
   }
   tracing::info!(
     providers = cfg.providers.len(),
-    routes = cfg.routing.cross_provider.len(),
-    query_model = %cfg.query_model,
+    rules = cfg.routing.fallback.len(),
     "config validated"
   );
   Some(cfg)
@@ -242,17 +268,16 @@ fn load_config() -> Option<RealConfig> {
 fn build_adapter(
   entry: &ProviderEntry,
 ) -> Arc<dyn ra_provider::traits::Provider> {
-  let adapter_model = model(
-    &entry.provider_id,
-    &entry.model,
-    &entry.model,
-    entry.base_url.clone(),
-  );
+  let models: Vec<ra_provider::model::Model> = entry
+    .models
+    .iter()
+    .map(|m| model(&entry.provider_id, &m.id, &m.id, entry.base_url.clone()))
+    .collect();
   let api_key = Some(entry.api_key.clone());
   match entry.adapter.as_str() {
     "openai-chat" => Arc::new(OpenAiCompatibleAdapter::new(
       pid(&entry.provider_id),
-      vec![adapter_model],
+      models,
       reqwest::Client::new(),
       api_key,
     )) as Arc<dyn ra_provider::traits::Provider>,
@@ -260,7 +285,7 @@ fn build_adapter(
     // 配置里出现时按 openai-chat 兼容端点处理并提示。
     "openai-responses" | "anthropic" => Arc::new(AnthropicProvider::new(
       pid(&entry.provider_id),
-      vec![adapter_model],
+      models,
       reqwest::Client::new(),
       api_key,
     ))
@@ -502,7 +527,15 @@ async fn run_offline(data_dir: &Path) -> RiboResult<()> {
     )))
     .expect("register backup");
   let mut routes = RouteMap::default();
-  routes.insert_cross_provider(pid("chat-primary"), vec![pid("chat-backup")]);
+  routes.insert_fallback_rules(vec![ra_provider::gateway::FallbackRule {
+    match_: ra_provider::gateway::FallbackMatch {
+      provider: pid("chat-primary"),
+      model: None,
+    },
+    targets: vec![ra_provider::gateway::FallbackTarget::Provider(pid(
+      "chat-backup",
+    ))],
+  }]);
   let gateway = Arc::new(gateway.with_routes(routes));
   tracing::info!(
     route = "chat-primary -> chat-backup",
@@ -528,28 +561,54 @@ async fn run_real(cfg: RealConfig, data_dir: &Path) -> RiboResult<()> {
     tracing::info!(
       provider = %entry.provider_id,
       adapter = %entry.adapter,
-      model = %entry.model,
       "provider registered"
     );
   }
   let mut routes = RouteMap::default();
-  for (from, chain) in &cfg.routing.cross_provider {
-    routes
-      .insert_cross_provider(pid(from), chain.iter().map(|c| pid(c)).collect());
-    tracing::info!(from = %from, candidates = ?chain, "fallback route registered");
-  }
+  let rules: Vec<ra_provider::gateway::FallbackRule> = cfg
+    .routing
+    .fallback
+    .iter()
+    .map(|r| ra_provider::gateway::FallbackRule {
+      match_: ra_provider::gateway::FallbackMatch {
+        provider: pid(&r.match_rule.provider),
+        model: r.match_rule.model.as_ref().map(|m| mid(m)),
+      },
+      targets: r
+        .targets
+        .iter()
+        .map(|t| match &t.model {
+          Some(m) => ra_provider::gateway::FallbackTarget::Model {
+            provider: pid(&t.provider),
+            model: mid(m),
+          },
+          None => {
+            ra_provider::gateway::FallbackTarget::Provider(pid(&t.provider))
+          }
+        })
+        .collect(),
+    })
+    .collect();
+  routes.insert_fallback_rules(rules);
+  tracing::info!("fallback rules registered");
   let gateway = Arc::new(gateway.with_routes(routes));
 
-  // Compactor 的 context_window 估算基准：用主候选模型的合理默认值。
+  // Compactor 的 context_window 估算基准：用 default 二元组指定的主模型。
+  let default = cfg.routing.default.as_ref().expect("default 已校验");
   let primary = cfg
     .providers
     .iter()
-    .find(|p| p.model == cfg.query_model)
-    .expect("已校验");
+    .find(|p| p.provider_id == default.provider)
+    .expect("default provider 已校验");
+  let primary_model = primary
+    .models
+    .iter()
+    .find(|m| m.id == default.model)
+    .expect("default model 已校验");
   let compactor_model = model(
     &primary.provider_id,
-    &primary.model,
-    &primary.model,
+    &primary_model.id,
+    &primary_model.id,
     primary.base_url.clone(),
   );
   run_session(gateway, compactor_model, data_dir).await?;
@@ -558,7 +617,17 @@ async fn run_real(cfg: RealConfig, data_dir: &Path) -> RiboResult<()> {
 
 /// 初始化 `tracing` 订阅者：示例默认输出 INFO 及以上级别的英文日志。
 fn init_tracing() {
-  let _ = tracing_subscriber::fmt().try_init();
+  let _ = tracing_subscriber::fmt()
+    .with_timer(
+      tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339()
+        .unwrap_or_else(|_| {
+          tracing_subscriber::fmt::time::OffsetTime::new(
+            time::UtcOffset::UTC,
+            time::format_description::well_known::Rfc3339,
+          )
+        }),
+    )
+    .try_init();
 }
 
 #[tokio::main]

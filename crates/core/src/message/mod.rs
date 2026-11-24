@@ -89,6 +89,89 @@ impl From<ToolResultMessage> for Message {
   }
 }
 
+/// 判定字符是否属于 CJK 统一表意文字（D2 加权口径：1.0 token/char）。
+///
+/// 覆盖基本区、扩展 A/B-F 与兼容表意文字；不含日文假名与韩文音节
+/// （二者归入"其他 Unicode"档，按 0.5 计）。
+fn is_cjk_ideograph(c: char) -> bool {
+  matches!(
+    c,
+    '\u{3400}'..='\u{4DBF}'
+      | '\u{4E00}'..='\u{9FFF}'
+      | '\u{F900}'..='\u{FAFF}'
+      | '\u{20000}'..='\u{2FA1F}'
+  )
+}
+
+/// 单字符 token 权重，放大 4 倍的定点整数（避免浮点误差，D2）。
+///
+/// ASCII 1（=0.25）、CJK 表意文字 4（=1.0）、其他 Unicode 2（=0.5）。
+fn char_token_weight(c: char) -> usize {
+  if c.is_ascii() {
+    1
+  } else if is_cjk_ideograph(c) {
+    4
+  } else {
+    2
+  }
+}
+
+/// 按加权字符口径估算任意文本的 token 数（D2，压缩 overhead 复用此口径）。
+///
+/// 权重：ASCII 0.25、CJK 表意文字 1.0、其他 Unicode（含 Emoji）0.5
+/// token/char。内部以放大 4 倍的定点整数累加后统一整除，避免逐字符舍入。
+/// 不承诺与真实 tokenizer 对齐——目标是"不系统性低估"。
+///
+/// # Examples
+///
+/// ```
+/// use ra_core::message::estimate_tokens_from_chars;
+///
+/// // 8 个 ASCII 字符：8 × 0.25 = 2 token
+/// assert_eq!(estimate_tokens_from_chars("abcdefgh"), 2);
+/// // 5 个汉字：5 × 1.0 = 5 token
+/// assert_eq!(estimate_tokens_from_chars("上下文压缩"), 5);
+/// ```
+pub fn estimate_tokens_from_chars(text: &str) -> usize {
+  text.chars().map(char_token_weight).sum::<usize>() / 4
+}
+
+/// 按加权字符口径估算消息序列的 token 占用（P6 唯一真值，D2）。
+///
+/// 口径：各文本块加权字符数之和 / 4 + 每条消息 4 token 附加；
+/// 内联图片与工具调用占位不计（base64 会严重高估）。压缩触发、
+/// agent_loop 降级窗口（24 号方案 D6）、TUI ctx 占比三处共用此函数。
+/// ASCII 场景下与旧口径 `chars/4` 完全等价（定点累加后统一整除）。
+pub fn estimate_context_tokens(messages: &[Message]) -> usize {
+  fn content_weight(content: &Content) -> usize {
+    match content {
+      Content::Text(t) => t.content.chars().map(char_token_weight).sum(),
+      Content::Thinking(t) => t.content.chars().map(char_token_weight).sum(),
+      // 图片与工具调用占位不计（内联图片 base64 会严重高估）
+      Content::Image(_) | Content::ToolCall(_) => 0,
+    }
+  }
+  // 各段返回放大 4 倍的定点权重，全局累加后一次整除——与旧 chars/4 对齐
+  let mut weighted = 0usize;
+  for msg in messages {
+    weighted += match msg {
+      Message::User(user) => match &user.content {
+        UserContent::Text(s) => s.chars().map(char_token_weight).sum::<usize>(),
+        UserContent::Blocks(blocks) => {
+          blocks.iter().map(content_weight).sum::<usize>()
+        }
+      },
+      Message::Assistant(assistant) => {
+        assistant.content.iter().map(content_weight).sum::<usize>()
+      }
+      Message::ToolResult(result) => {
+        result.content.iter().map(content_weight).sum::<usize>()
+      }
+    };
+  }
+  weighted / 4 + 4 * messages.len()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -231,5 +314,42 @@ mod tests {
       added_tool_names: Vec::new(),
     };
     assert_eq!(Message::from(tool.clone()), Message::ToolResult(tool));
+  }
+
+  // 场景：D2 加权口径——ASCII 0.25 / CJK 1.0 / 其他 0.5（定点 ×4 累加后整除）。
+  // 预期：中文不再按 /4 低估（"上下文压缩" 5 汉字 = 5 token，旧口径为 1）。
+  #[test]
+  fn estimate_tokens_from_chars_weights_categories() {
+    assert_eq!(estimate_tokens_from_chars("abcdefgh"), 2); // 8 ASCII / 4
+    assert_eq!(estimate_tokens_from_chars("上下文压缩"), 5); // 5 CJK × 1.0
+    // 4 个 Emoji（其他档 0.5）：定点 4×2=8，/4 = 2
+    assert_eq!(estimate_tokens_from_chars("🙂🙂🙂🙂"), 2);
+    // 混合：1 汉字(4) + 4 ASCII(4) = 定点 8 / 4 = 2
+    assert_eq!(estimate_tokens_from_chars("中abcd"), 2);
+  }
+
+  // 场景：estimate_context_tokens 在 ASCII 场景与旧口径 chars/4 等价，
+  // 且每条消息附加 4 token；ToolCall/Image 占位不计入字符。
+  // 预期：整段 8 ASCII 字符 → 8/4 + 4×1条 = 2 + 4 = 6。
+  #[test]
+  fn estimate_context_tokens_ascii_matches_legacy_and_adds_overhead() {
+    let messages = vec![Message::User(UserMessage {
+      content: UserContent::Text("abcdefgh".to_string()),
+      timestamp: 0,
+    })];
+    assert_eq!(estimate_context_tokens(&messages), 6);
+  }
+
+  // 场景：中文消息不再系统性低估（验收标准 2 的边界样本）。
+  // 预期：100 个汉字 → 100 token，远大于旧口径的 25。
+  #[test]
+  fn estimate_context_tokens_cjk_not_underestimated() {
+    let text = "中".repeat(100);
+    let messages = vec![Message::User(UserMessage {
+      content: UserContent::Text(text),
+      timestamp: 0,
+    })];
+    let tokens = estimate_context_tokens(&messages);
+    assert_eq!(tokens, 100 + 4); // 100 CJK + 4×1条 消息开销
   }
 }

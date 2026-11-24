@@ -27,6 +27,6 @@ dashmap.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # 覆盖率测试需要启用 tracing 订阅者，以执行日志宏内的字段表达式。
 tracing-subscriber.workspace = true
+time.workspace = true
 # 示例用 TOML 解析真实 API 配置（仅 examples 构建启用）。
 toml.workspace = true
-serde = { workspace = true, features = ["derive"] }

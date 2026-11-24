@@ -11,13 +11,13 @@ Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端
 
 ## 特性
 
-- **双交互界面**：`ribo` 是流式渲染的 REPL 命令行，`ribo-tui` 是五区全屏 TUI（输入、输出、状态行、工具状态、帮助叠加）。
+- **双交互界面**：`ribo` 是流式渲染的 REPL 命令行，`ribo-tui` 是全屏 TUI（左侧状态侧栏 + 右侧对话 / 加载 / 输入三区 + 帮助浮层）；工具调用内联在对话流，终端宽度 < 60 时隐藏侧栏。
 - **多模型与多提供方**：内置 `openai-chat`、`openai-responses`、`anthropic` 三种适配器与 `mock` 模拟器，支持跨提供方降级链。
 - **工具调用**：内置 9 个工具（echo、计算器、当前时间、文件系统六件套），文件系统工具带沙箱根限制。
 - **网关韧性**：请求重试（指数退避 + 抖动）、首 token 超时、跨提供方降级、熔断与准入控制。
 - **会话与上下文**：会话持久化、可配置的上下文压缩（摘要 / 滑窗）、系统提示与环境注入。
 - **技能系统**：从扫描根加载 `SKILL.md` 技能，加载诊断不致命。
-- **分层配置**：provider / retry / compression / session / tools / harness 六层相互独立，未配置时整体回退 Mock 模式；另有 Project / Global 两级信任域与两档信任（文档默认信任、代码须显式授权），项目外数据经全局 `[fs.mounts]` 只读挂载。
+- **分层配置**：provider（通道 + 多模型）/ routing（默认二元组 + 降级规则）/ retry / compression / session / tools / harness / global 等层相互独立，未配置时按层降级或回退 Mock；另有 Project / Global 两级信任域与两档信任（文档默认信任、代码须显式授权），项目外数据经全局 `[fs.mounts]` 只读挂载。
 
 ---
 
@@ -82,36 +82,35 @@ cargo run -p ra-tui        # 全屏终端 TUI
 
 进入 REPL / TUI 后，以 `/` 开头的行被视为命令，其余整行作为用户消息发送给模型。
 
-| 命令 | 别名 | 说明 |
-| :--- | :--- | :--- |
-| `/help` | `/?` | 显示命令清单。 |
-| `/new [name]` | — | 轮换会话键；省略 `name` 自动轮换。 |
-| `/stop` | `/cancel` | 取消在途回合。 |
-| `/skills` | — | 列出已加载技能与诊断信息。 |
-| `/sessions` | — | 列出会话键。 |
-| `/status` | — | 状态摘要（会话 / 模式 / 在途）。 |
-| `/history [n]` | — | 显示最近 `n` 条转录，默认 10。 |
-| `/exit` | `/quit` | 退出。 |
+| 命令 | 别名 | 适用端 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `/help` | `/?` | CLI + TUI | 显示命令清单。 |
+| `/stop` | `/cancel` | CLI + TUI | 取消在途回合。 |
+| `/skills` | — | CLI + TUI | 列出已加载技能与诊断信息。 |
+| `/sessions [name]` | — | CLI + TUI | 无参列出会话键（→ 标记当前）；带参切换或新建会话。 |
+| `/status` | — | 仅 CLI | 状态摘要（会话 / 模式 / 在途 / token / 上下文三态 / 告警数）；TUI 侧栏常驻。 |
+| `/history [n]` | — | 仅 CLI | 显示最近 `n` 条历史记录，默认固定 10；TUI 对话区即完整历史。 |
+| `/exit` | `/quit` | CLI + TUI | 退出。 |
 
 ---
 
 ## 配置
 
-配置采用**六层 schema**，各层相互独立、层间零交叉；根级字段 `query_model` 为网关查询入口模型。
+配置采用**多层 schema**，各层相互独立、层间零交叉；`[routing].default` 为网关查询入口的显式 `(provider, model)` 二元组，一个 provider 可经 `models` 数组声明多个模型，失败时按隐式链与 `[[routing.fallback]]` 规则自动降级。
 
 | 层 | 关键字段 | 默认值 |
 | :--- | :--- | :--- |
-| `provider` | `query_model`、`[[providers]]`（adapter / base_url / api_key / model）、`[routing.cross_provider]` | `query_model = "mock-model"`、无 provider |
+| `provider` / `routing` | `[[providers]]`（adapter / base_url / api_key / `[[providers.models]]`）、`[routing].default`、`[[routing.fallback]]` | default = mock/mock-model、无 provider、无规则 |
 | `retry` | `max_retries`、`initial_backoff_ms`、`jitter_ratio` | 3 / 500ms / 0.25 |
-| `compression` | `enabled`、`trigger_ratio`、`keep_recent_turns`、`summarizer_model`、`max_summary_chars` | 关闭 / 0.75 / 4 / None / 2048 |
+| `compression` | `enabled`、`trigger_ratio`、`keep_recent_turns`、`summarizer_model`、`max_summary_chars`、`hysteresis_ratio`、`cooldown_turns`、`enable_incremental`、`incremental_rebuild_every`、`max_summary_input_tokens` | 关闭 / 0.75 / 4 / None / 2048 / 1.10 / 2 / true / 8 / 0 |
 | `session` | `default_key`、`history_lines` | `"default"` / 10 |
-| `tools` | `builtin_enabled`、`fs_root` | true / 沙箱 = harness.root |
-| `harness` | `root`、`skills_roots`、`include_environment` | `"."` / `["skills"]` / true |
+| `tools` | `builtin_enabled` | true / 沙箱恒 = harness.root（无 fs_root 配置） |
+| `harness` | `root`、`include_environment` | `"."` / true（技能固定 `.ribo/skills/`） |
 
 - **密钥不落盘**：`api_key` 一律写 `"$ENV_NAME"` 占位，运行时读取环境变量；未设置则该 provider 跳过注册。
 - **降级语义**：
   - 模板保持占位状态（`your-*` / `example.com`）→ 整体回退 Mock；
-  - 某 `$ENV` 密钥未设置 → 局部降级，引用它的路由候选一并剔除，若 `query_model` 因此悬空则整体回退 Mock；
+  - 某 `$ENV` 密钥未设置 → 局部降级，引用它的降级目标一并剔除，若 `default` 因此悬空则整体回退 Mock；
   - 单个配置层解析失败（未知字段忽略除外）→ 该层保留默认并打印 warning。
 - **配置文件选择**：显式 `--config` 优先；未指定时仅当 `ribo.toml` 存在才加载，否则走全默认 Mock。
 
@@ -119,17 +118,25 @@ cargo run -p ra-tui        # 全屏终端 TUI
 
 ```toml
 # ribo.toml 示例（节选）
-query_model = "your-model-name"
+[routing]
+default = { provider = "chat-primary", model = "your-model-name" }
 
 [[providers]]
-provider_id  = "chat-primary"
-adapter      = "openai-chat"
-base_url     = "https://your-endpoint.example.com"
-api_key      = "$OPENAI_API_KEY"
-model        = "your-model-name"
+provider_id = "chat-primary"
+adapter     = "openai-chat"
+base_url    = "https://your-endpoint.example.com"
+api_key     = "$OPENAI_API_KEY"
 
-[routing.cross_provider]
-"chat-primary" = ["anthropic-backup"]
+  [[providers.models]]
+  id             = "your-model-name"
+  context_window = 131072       # 可选，默认 8192
+
+  [[providers.models]]          # 同通道备选模型（隐式降级链）
+  id             = "your-model-lite"
+
+[[routing.fallback]]            # 规则按声明顺序匹配
+match = { provider = "chat-primary" }
+targets = [{ provider = "anthropic-backup" }]
 ```
 
 ---
@@ -211,14 +218,14 @@ ribo plugins list                            # 列出插件条目（含只读挂
 | `echo` | 回显输入。 | — |
 | `calculator` | 表达式求值（`evalexpr`）。 | — |
 | `current_time` | 当前时间（`jiff`）。 | — |
-| `read` | 读取文件内容。 | 限 `fs_root` |
-| `write` | 写入文件。 | 限 `fs_root` |
-| `edit` | 就地编辑文件。 | 限 `fs_root` |
-| `ls` | 列出目录。 | 限 `fs_root` |
-| `glob` | 通配符匹配路径。 | 限 `fs_root` |
-| `grep` | 内容检索。 | 限 `fs_root` |
+| `read` | 读取文件内容。 | 沙箱内 / 只读挂载 |
+| `write` | 写入文件。 | 沙箱内 |
+| `edit` | 就地编辑文件。 | 沙箱内 |
+| `ls` | 列出目录。 | 沙箱内 / 只读挂载 |
+| `glob` | 通配符匹配路径。 | 沙箱内 / 只读挂载 |
+| `grep` | 内容检索。 | 沙箱内 / 只读挂载 |
 
-文件系统工具（read / write / edit / ls / glob / grep）共享同一沙箱根 `fs_root`，所有路径在沙箱内解析，越界即拒绝。
+文件系统工具（read / write / edit / ls / glob / grep）共享同一沙箱根 `harness.root`，所有路径在沙箱内解析，越界即拒绝；项目外数据经全局 `[fs.mounts]` 只读挂载点访问。
 
 ---
 
@@ -234,7 +241,7 @@ description: 一个示例技能
 技能正文……
 ```
 
-- 从配置 `harness.skills_roots`（默认 `["skills"]`，相对 `root` 解析，可多个、按序加载）扫描。
+- 从固定目录 `<harness.root>/.ribo/skills/`（项目）与全局域 `skills/`（全局）扫描，项目优先；`harness.skills_roots` 配置已移除。
 - 加载诊断（缺 `SKILL.md`、读取失败、frontmatter 解析失败等）**不致命**：返回可用集合 + 诊断，调用方写日志后继续装配。
 - 可用 `/skills` 命令在运行时查看已加载技能与诊断。
 

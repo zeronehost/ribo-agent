@@ -10,14 +10,12 @@
 //!    - `anthropic-primary` → [`AnthropicProvider`](ra_provider::adapters::anthropic::AnthropicProvider)
 //!      （Anthropic Messages API）。
 //!
-//!    每家适配器注册自己的**真实模型**（`model`，同时作为请求线
-//!    `model` 字段）；网关查询入口由配置项 `query_model` 指定。
-//!    多个提供方暴露同名模型时，网关按**注册顺序**取首个注册者为主候选，
-//!    因此配置文件把 `chat-primary` 放在首位。跨提供方降级要求各候选
-//!    提供方也暴露同名模型（本示例三家共用 `glm-4.5-flash`）。
+//!    每家适配器经 `models` 数组注册自己的**真实模型**（同时作为请求线
+//!    `model` 字段）；网关查询入口由 `[routing].default` 二元组指定。
+//!    降级规则写在 `[[routing.fallback]]` 列表（声明顺序即优先级）。
 //! 2. 真实 API 模式：从 `gateway_fallback.toml` 读取 provider 列表与路由；
-//!    任一 provider 的 `base_url` / `api_key` / `model` 缺失、`query_model`
-//!    未被任何 provider 暴露或路由引用无效，示例自动回退离线桩。
+//!    任一 provider 的 `base_url` / `api_key` / `models` 缺失、`default`
+//!    二元组悬空或路由引用无效，示例自动回退离线桩。
 //! 3. 离线演示模式：三个本地 HTTP 桩依次返回 429（RATE_LIMITED）、402（QUOTA_EXCEEDED）、401（AUTH_FAILED）——
 //!    这三种错误码都属于"可跨提供方降级"——网关沿跨链逐个尝试直到终极兜底桩返回 200 SSE 成功流。
 //! 4. 运行路径不依赖 MockProvider，所有降级都由真实适配器的建流错误驱动。
@@ -35,21 +33,24 @@
 //! 真实 API 模式配置文件示例（`crates/provider/examples/gateway_fallback.toml`）：
 //!
 //! ```text,ignore
-//! # 网关查询入口：必须是某个 provider 真实暴露的 model
-//! query_model = "glm-4.5-flash"
+//! [routing]
+//! default = { provider = "chat-primary", model = "glm-4.5-flash" }
 //!
 //! [[providers]]
 //! provider_id  = "chat-primary"
 //! adapter     = "openai-chat"
 //! base_url    = "https://open.bigmodel.cn/api/paas/v4"
 //! api_key     = "sk-..."
-//! model       = "glm-4.5-flash"
 //!
-//! [routing.cross_provider]
-//! "chat-primary" = ["responses-primary", "anthropic-primary"]
+//!   [[providers.models]]
+//!   id = "glm-4.5-flash"
+//!
+//! [[routing.fallback]]
+//! match = { provider = "chat-primary" }
+//! targets = [{ provider = "responses-primary" }, { provider = "anthropic-primary" }]
 //! ```
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use ra_core::message::{
   AssistantMessage, Content, Message, UserContent, UserMessage,
@@ -62,7 +63,10 @@ use ra_provider::{
     },
   },
   context::Context,
-  gateway::{Gateway, GatewayConfig, RouteMap},
+  gateway::{
+    FallbackMatch, FallbackRule, FallbackTarget, Gateway, GatewayConfig,
+    RouteMap,
+  },
   ids::{ModelId, ProviderId},
   model::Model,
   options::StreamOptions,
@@ -201,28 +205,64 @@ struct ProviderEntry {
   base_url: String,
   /// 鉴权密钥。
   api_key: String,
-  /// 真实模型名：同时作为网关模型 ID 与请求线格式中的 `model` 字段。
-  model: String,
+  /// 该通道可用的模型清单（声明顺序即备选序）。
+  models: Vec<ModelEntry>,
 }
 
-/// 路由段：跨提供方降级链表。
+/// `[[providers.models]]` 单条目。
+#[derive(Debug, Deserialize)]
+struct ModelEntry {
+  /// 真实模型名：同时作为网关模型 ID 与请求线格式中的 `model` 字段。
+  id: String,
+}
+
+/// `[[routing.fallback]]` 单条规则（24 号方案 D4）。
+#[derive(Debug, Deserialize)]
+struct FallbackRuleCfg {
+  /// 匹配条件（`model` 缺省 = provider 级通配）。
+  #[serde(rename = "match")]
+  match_rule: MatchCfg,
+  /// 有序目标列表。
+  targets: Vec<TargetCfg>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MatchCfg {
+  provider: String,
+  #[serde(default)]
+  model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetCfg {
+  provider: String,
+  #[serde(default)]
+  model: Option<String>,
+}
+
+/// routing 段：默认二元组 + 降级规则列表。
 #[derive(Debug, Deserialize, Default)]
 struct Routing {
-  /// 主提供方 ID → 候选提供方 ID 列表。
+  /// 默认模型二元组（缺省时回退 mock-model）。
   #[serde(default)]
-  cross_provider: HashMap<String, Vec<String>>,
+  default: Option<ModelRefCfg>,
+  /// 降级规则（声明顺序 = 优先级）。
+  #[serde(default)]
+  fallback: Vec<FallbackRuleCfg>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelRefCfg {
+  provider: String,
+  model: String,
 }
 
 /// 根配置。
 #[derive(Debug, Deserialize)]
 struct RealConfig {
-  /// 网关查询入口模型名：必须是某个 provider 真实暴露的 `model`。
-  ///
-  /// 多个提供方暴露同名模型时，注册顺序靠前者成为主候选。
-  query_model: String,
   /// 提供方列表（至少一个）。
   providers: Vec<ProviderEntry>,
-  /// 可选的降级路由表。
+  /// routing 段（默认二元组 + 降级规则）。
   #[serde(default)]
   routing: Routing,
 }
@@ -268,7 +308,8 @@ fn load_config() -> Option<RealConfig> {
       || p.adapter.trim().is_empty()
       || p.base_url.trim().is_empty()
       || p.api_key.trim().is_empty()
-      || p.model.trim().is_empty()
+      || p.models.is_empty()
+      || p.models.iter().any(|m| m.id.trim().is_empty())
     {
       tracing::warn!(
         provider = %p.provider_id,
@@ -288,13 +329,19 @@ fn load_config() -> Option<RealConfig> {
       return None;
     }
   }
-  // 查询入口必须是某个 provider 真实暴露的模型名。
-  if cfg.query_model.trim().is_empty()
-    || !cfg.providers.iter().any(|p| p.model == cfg.query_model)
-  {
+  // 默认二元组必须指向某个 provider 暴露的模型。
+  let Some(default) = &cfg.routing.default else {
+    tracing::warn!("[routing].default missing, using offline stubs");
+    return None;
+  };
+  if !cfg.providers.iter().any(|p| {
+    p.provider_id == default.provider
+      && p.models.iter().any(|m| m.id == default.model)
+  }) {
     tracing::warn!(
-      query_model = %cfg.query_model,
-      "query_model is not provided by any provider, using offline stubs"
+      provider = %default.provider,
+      model = %default.model,
+      "default model not provided by any provider, using offline stubs"
     );
     return None;
   }
@@ -304,35 +351,47 @@ fn load_config() -> Option<RealConfig> {
     .iter()
     .map(|p| p.provider_id.as_str())
     .collect();
-  for (from, chain) in &cfg.routing.cross_provider {
-    if !ids.contains(from.as_str()) {
+  for rule in &cfg.routing.fallback {
+    if !ids.contains(rule.match_rule.provider.as_str()) {
       tracing::warn!(
-        from = %from,
-        "routing source provider not registered, using offline stubs"
+        "fallback rule match provider not registered, using offline stubs"
       );
       return None;
     }
-    for candidate in chain {
-      if !ids.contains(candidate.as_str()) {
+    if rule.match_rule.model.as_ref().is_some_and(|m| {
+      !cfg.providers.iter().any(|p| {
+        p.provider_id == rule.match_rule.provider
+          && p.models.iter().any(|x| x.id == *m)
+      })
+    }) {
+      tracing::warn!(
+        "fallback rule match model not registered, using offline stubs"
+      );
+      return None;
+    }
+    for target in &rule.targets {
+      if !ids.contains(target.provider.as_str()) {
         tracing::warn!(
-          from = %from,
-          candidate = %candidate,
-          "routing candidate provider not registered, using offline stubs"
+          "fallback target provider not registered, using offline stubs"
+        );
+        return None;
+      }
+      if target.model.as_ref().is_some_and(|m| {
+        !cfg.providers.iter().any(|p| {
+          p.provider_id == target.provider
+            && p.models.iter().any(|x| x.id == *m)
+        })
+      }) {
+        tracing::warn!(
+          "fallback target model not registered, using offline stubs"
         );
         return None;
       }
     }
   }
-  let primary = cfg
-    .providers
-    .iter()
-    .find(|p| p.model == cfg.query_model)
-    .expect("query_model 已在前面校验存在");
   tracing::info!(
     providers = cfg.providers.len(),
-    routes = cfg.routing.cross_provider.len(),
-    query_model = %cfg.query_model,
-    primary_provider = %primary.provider_id,
+    rules = cfg.routing.fallback.len(),
     "config validated"
   );
   Some(cfg)
@@ -343,32 +402,40 @@ fn build_adapter(
   entry: &ProviderEntry,
 ) -> Arc<dyn ra_provider::traits::Provider> {
   let provider_id = pid(&entry.provider_id);
-  let display = entry.model.clone();
   let base_url = entry.base_url.clone();
   let api_key = entry.api_key.clone();
-
-  // 用真实模型名注册：它既是网关目录里的模型 ID，也是请求线 `model` 字段。
-  let model =
-    Model::new(provider_id.clone(), mid(&entry.model), display, base_url)
+  // 真实模型名注册：既是网关目录模型 ID，也是请求线 `model` 字段。
+  let models: Vec<Model> = entry
+    .models
+    .iter()
+    .map(|m| {
+      Model::new(
+        provider_id.clone(),
+        mid(&m.id),
+        m.id.clone(),
+        base_url.clone(),
+      )
       .with_context_window(8192)
-      .with_max_tokens(1024);
+      .with_max_tokens(1024)
+    })
+    .collect();
 
   match entry.adapter.as_str() {
     "openai-chat" => Arc::new(OpenAiCompatibleAdapter::new(
       provider_id,
-      vec![model],
+      models,
       reqwest::Client::new(),
       Some(api_key),
     )) as Arc<dyn ra_provider::traits::Provider>,
     "openai-responses" => Arc::new(OpenAiResponsesAdapter::new(
       provider_id,
-      vec![model],
+      models,
       reqwest::Client::new(),
       Some(api_key),
     )) as Arc<dyn ra_provider::traits::Provider>,
     "anthropic" => Arc::new(AnthropicProvider::new(
       provider_id,
-      vec![model],
+      models,
       reqwest::Client::new(),
       Some(api_key),
     )) as Arc<dyn ra_provider::traits::Provider>,
@@ -385,7 +452,16 @@ async fn run_real(cfg: RealConfig) {
     cfg.providers.len()
   );
   for p in &cfg.providers {
-    println!("  - {} ({}) → {}", p.provider_id, p.adapter, p.model);
+    println!(
+      "  - {} ({}) → {}",
+      p.provider_id,
+      p.adapter,
+      p.models
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+    );
   }
   tracing::info!(providers = cfg.providers.len(), "real api mode");
 
@@ -399,23 +475,36 @@ async fn run_real(cfg: RealConfig) {
     tracing::info!(
       provider = %entry.provider_id,
       adapter = %entry.adapter,
-      model = %entry.model,
       "provider registered"
     );
   }
 
-  // ===== 跨 provider 降级路由 =====
+  // ===== 跨 provider 降级路由（24 号方案 D4：统一 fallback 规则）=====
   let mut routes = RouteMap::default();
-  for (from, chain) in &cfg.routing.cross_provider {
-    let from_pid = pid(from);
-    let chain_pids: Vec<ProviderId> = chain.iter().map(|c| pid(c)).collect();
-    routes.insert_cross_provider(from_pid, chain_pids);
-    tracing::info!(
-      from = %from,
-      candidates = ?chain,
-      "cross-provider fallback route registered"
-    );
-  }
+  let rules: Vec<FallbackRule> = cfg
+    .routing
+    .fallback
+    .iter()
+    .map(|r| FallbackRule {
+      match_: FallbackMatch {
+        provider: pid(&r.match_rule.provider),
+        model: r.match_rule.model.as_ref().map(|m| mid(m)),
+      },
+      targets: r
+        .targets
+        .iter()
+        .map(|t| match &t.model {
+          Some(m) => FallbackTarget::Model {
+            provider: pid(&t.provider),
+            model: mid(m),
+          },
+          None => FallbackTarget::Provider(pid(&t.provider)),
+        })
+        .collect(),
+    })
+    .collect();
+  routes.insert_fallback_rules(rules);
+  tracing::info!("fallback rules registered");
   gateway = gateway.with_routes(routes);
 
   // ===== 构造上下文并发起请求 =====
@@ -428,16 +517,12 @@ async fn run_real(cfg: RealConfig) {
     })],
     ..Context::default()
   };
-  // 网关查询入口取配置里的真实模型名；同名模型中注册顺序靠前者为主候选。
-  let target = mid(&cfg.query_model);
-  let primary = cfg
-    .providers
-    .iter()
-    .find(|p| p.model == cfg.query_model)
-    .expect("query_model 已校验存在");
+  // 网关查询入口取配置里的 default 二元组（load_config 已校验）。
+  let default = cfg.routing.default.as_ref().expect("default 已校验");
+  let target = mid(&default.model);
   tracing::info!(
-    query_model = %target.as_str(),
-    primary_provider = %primary.provider_id,
+    model = %target.as_str(),
+    provider = %default.provider,
     "gateway stream requested"
   );
   match gateway
@@ -630,24 +715,40 @@ async fn run_offline() {
   let anthropic = Arc::new(anthropic_adapter_for(addr_3));
   let backup = Arc::new(chat_backup_adapter_for(addr_4));
 
-  // ===== 降级路由：链式跨 provider =====
+  // ===== 降级路由：统一 fallback 规则列表（24 号方案 D4）=====
+  // 每条规则按声明顺序匹配；targets 按序尝试（{ provider } 形态 =
+  // 同名 → 目标默认两级解析）
   let mut routes = RouteMap::default();
-  routes.insert_cross_provider(
-    pid("chat-primary"),
-    vec![
-      pid("responses-primary"),
-      pid("anthropic-primary"),
-      pid("chat-backup-success"),
-    ],
-  );
-  routes.insert_cross_provider(
-    pid("responses-primary"),
-    vec![pid("anthropic-primary"), pid("chat-backup-success")],
-  );
-  routes.insert_cross_provider(
-    pid("anthropic-primary"),
-    vec![pid("chat-backup-success")],
-  );
+  routes.insert_fallback_rules(vec![
+    FallbackRule {
+      match_: FallbackMatch {
+        provider: pid("chat-primary"),
+        model: Some(mid("chat-model")),
+      },
+      targets: vec![
+        FallbackTarget::Provider(pid("responses-primary")),
+        FallbackTarget::Provider(pid("anthropic-primary")),
+        FallbackTarget::Provider(pid("chat-backup-success")),
+      ],
+    },
+    FallbackRule {
+      match_: FallbackMatch {
+        provider: pid("responses-primary"),
+        model: Some(mid("responses-model")),
+      },
+      targets: vec![
+        FallbackTarget::Provider(pid("anthropic-primary")),
+        FallbackTarget::Provider(pid("chat-backup-success")),
+      ],
+    },
+    FallbackRule {
+      match_: FallbackMatch {
+        provider: pid("anthropic-primary"),
+        model: Some(mid("anthropic-model")),
+      },
+      targets: vec![FallbackTarget::Provider(pid("chat-backup-success"))],
+    },
+  ]);
 
   let mut gateway = Gateway::new(base_config()).with_routes(routes);
   gateway.register(chat).expect("chat-primary 应注册成功");
@@ -674,6 +775,15 @@ async fn run_offline() {
 /// 初始化 `tracing` 订阅者：示例默认输出 INFO 及以上级别的英文日志。
 fn init_tracing() {
   tracing_subscriber::fmt()
+    .with_timer(
+      tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339()
+        .unwrap_or_else(|_| {
+          tracing_subscriber::fmt::time::OffsetTime::new(
+            time::UtcOffset::UTC,
+            time::format_description::well_known::Rfc3339,
+          )
+        }),
+    )
     .with_max_level(tracing::Level::INFO)
     .init();
 }

@@ -8,13 +8,28 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use ra_agent::{
-  session::{Session, SessionManager},
+  session::{CompactionStats, Session, SessionManager},
   traits::SessionProvider,
 };
-use ra_core::error::RiboResult;
+use ra_core::{error::RiboResult, message::Message};
 use tokio::sync::Mutex;
 
 use crate::session_store::JsonlSessionStore;
+
+/// 会话上下文统计估算器（冷启动回放后填充压缩三态统计）。
+///
+/// 冷启动时尚未经过 `ContextProvider::build`，会话内没有压缩三态统计
+/// （侧栏显示「—」）。由宿主（[`crate::context::HarnessContext`]）按当前
+/// 转录做一次「不压缩」估算并写回会话，使 TUI 侧栏与 CLI `/status` 在
+/// 首次对话前即可显示。
+pub trait SessionStatsEstimator: Send + Sync {
+  /// 按给定转录估算压缩三态（总量 / 已压缩 / 当前）。
+  ///
+  /// 冷启动场景下不发生压缩：`compressed_tokens` 为 0；`current_tokens`
+  /// 为 0（本次进程尚未发起请求，窗口未被占用）——首次装配后由真实请求
+  /// 视图覆写。
+  fn estimate_stats(&self, messages: &[Message]) -> CompactionStats;
+}
 
 /// 组合式持久化会话 Provider：内存表 + JSONL 冷启动回放。
 ///
@@ -28,6 +43,8 @@ pub struct PersistentSessionProvider {
   store: Arc<JsonlSessionStore>,
   /// 逐键冷启动回放互斥（避免并发首次访问重复回放、重复双写消息）。
   init_locks: DashMap<String, Arc<Mutex<()>>>,
+  /// 可选的统计估算器：冷启动回放后写入压缩三态统计。
+  stats_estimator: Option<Arc<dyn SessionStatsEstimator>>,
 }
 
 impl PersistentSessionProvider {
@@ -37,7 +54,20 @@ impl PersistentSessionProvider {
       inner: SessionManager::new(),
       store,
       init_locks: DashMap::new(),
+      stats_estimator: None,
     }
+  }
+
+  /// 绑定统计估算器（builder 风格消费并返回自身）。
+  ///
+  /// 冷启动回放完成后按当前转录估算压缩三态并写回会话；未绑定时
+  /// 会话内无三态统计（显示端显示「—」）。
+  pub fn with_stats_estimator(
+    mut self,
+    estimator: Arc<dyn SessionStatsEstimator>,
+  ) -> Self {
+    self.stats_estimator = Some(estimator);
+    self
   }
 
   /// 取（必要时创建）某键的回放锁，返回克隆的 `Arc` 以便跨 await 使用。
@@ -81,6 +111,20 @@ impl SessionProvider for PersistentSessionProvider {
     let replay = self.store.load(key).await?;
     let session = self.inner.get_or_create(key).await?;
     session.append_messages(&replay.messages);
+
+    // 冷启动统计：回放完成后按当前转录估算压缩三态（不压缩）并写回会话，
+    // 使首次对话前显示端也有上下文数值（此前恒为「—」）。
+    if let Some(estimator) = &self.stats_estimator {
+      let stats = estimator.estimate_stats(&replay.messages);
+      session.set_compaction_stats(stats);
+      tracing::info!(
+        session_key = %key,
+        total = stats.total_tokens,
+        compressed = stats.compressed_tokens,
+        current = stats.current_tokens,
+        "cold start compaction stats backfilled"
+      );
+    }
 
     if !replay.diagnostics.is_empty() {
       tracing::warn!(
@@ -317,5 +361,41 @@ mod tests {
     let provider = PersistentSessionProvider::new(store);
     // get 不触发回放，内存未命中 → None
     assert!(provider.get("s1").await.is_none());
+  }
+
+  /// SP-05：绑定统计估算器 → 冷启动回放后写入压缩三态统计
+  /// （此前冷启动会话内无统计，显示端恒为「—」）。
+  #[tokio::test]
+  async fn cold_start_writes_stats_from_estimator() {
+    let dir =
+      crate::test_util::test_dir("cold_start_writes_stats_from_estimator");
+    let store = Arc::new(JsonlSessionStore::new(dir));
+    store
+      .append("s1", &[user_msg("hi"), assistant_msg("hello")])
+      .await
+      .unwrap();
+
+    /// 固定估算器：按消息条数给出可断言的三态。
+    struct Fixed;
+    impl SessionStatsEstimator for Fixed {
+      fn estimate_stats(&self, messages: &[Message]) -> CompactionStats {
+        CompactionStats {
+          total_tokens: messages.len(),
+          compressed_tokens: 0,
+          current_tokens: messages.len() + 10,
+        }
+      }
+    }
+
+    let provider = PersistentSessionProvider::new(store)
+      .with_stats_estimator(Arc::new(Fixed));
+    let session = provider.get_or_create("s1").await.unwrap();
+
+    let stats = session
+      .compaction_stats()
+      .expect("cold start must write stats");
+    assert_eq!(stats.total_tokens, 2);
+    assert_eq!(stats.compressed_tokens, 0);
+    assert_eq!(stats.current_tokens, 12);
   }
 }

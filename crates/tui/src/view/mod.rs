@@ -4,8 +4,8 @@
 pub mod dialog;
 pub mod help_overlay;
 pub mod input;
-pub mod status_line;
-pub mod tool_status;
+pub mod loading;
+pub mod sidebar;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -24,15 +24,18 @@ pub trait View {
   fn constraints(&self) -> Constraint;
 }
 
-/// 根布局：垂直切分「对话 / 工具 / 状态行 / 输入」四区（帮助浮层在
-/// 四区绘制后按全屏叠加）。
+/// 根布局：左侧状态面板 + 右侧「对话 / loading / 输入」三区
+///（工具调用已内联到对话气泡流；帮助浮层在绘制后按全屏叠加）。
+///
+/// 窄终端（< 60 列）自动隐藏侧栏，退化为纯纵向布局——状态信息仍可
+/// 由 `/status` 浮层查看。
 pub struct RootLayout {
-  /// 对话区（含粘底滚动 + Markdown 高亮）。
+  /// 左侧状态面板。
+  pub sidebar: sidebar::SidebarView,
+  /// 对话区（含粘底滚动 + Markdown 高亮 + 内联工具调用气泡）。
   pub dialog: dialog::DialogView,
-  /// 工具状态区。
-  pub tools: tool_status::ToolStatusView,
-  /// 状态行。
-  pub status: status_line::StatusLineView,
+  /// 对话区底部固定 loading 行。
+  pub loading: loading::LoadingView,
   /// 输入编辑器。
   pub input: input::InputView,
   /// 帮助浮层。
@@ -40,48 +43,80 @@ pub struct RootLayout {
 }
 
 impl RootLayout {
-  /// 构造默认五区。
+  /// 构造默认布局。
   pub fn new() -> Self {
     Self {
+      sidebar: sidebar::SidebarView,
       dialog: dialog::DialogView,
-      tools: tool_status::ToolStatusView,
-      status: status_line::StatusLineView,
+      loading: loading::LoadingView,
       input: input::InputView,
       help: help_overlay::HelpOverlayView,
     }
   }
 
+  /// 对话区**文本**有效宽度：终端宽减侧栏宽，再减 Block 边框 2 列。
+  ///
+  /// 必须与 `DialogView` 中 `Paragraph` 的 `text_area.width`（= area.width
+  /// 减 Block 边框）一致——`bubble_line_count` 的行数缓存与 offset
+  /// 均按此宽度计算，否则折行行数与 WordWrapper 实际渲染不符 →
+  /// 内容显示不全、滚动偏移错位（2026-11-21 布局改造回归）。
+  pub fn dialog_width(terminal_width: u16) -> u16 {
+    let show_sidebar = Self::sidebar_visible(terminal_width);
+    let sidebar_w = if show_sidebar {
+      sidebar::SIDEBAR_WIDTH.min(terminal_width / 3).max(24)
+    } else {
+      0
+    };
+    terminal_width
+      .saturating_sub(sidebar_w)
+      .saturating_sub(2) // Block 左右边框
+      .max(4)
+  }
+
+  /// 侧栏是否显示（与 `dialog_width` 同一判定，供渲染复用）。
+  pub fn sidebar_visible(terminal_width: u16) -> bool {
+    terminal_width >= 60
+  }
+
   /// 渲染一帧（动态约束 → 布局切分 → 逐区绘制 → 浮层叠加）。
   ///
-  /// 工具区高度按条目数动态（封顶 [`tool_status::MAX_TOOL_ROWS`]），
   /// 输入区高度按编辑器行数动态（封顶 [`input::MAX_INPUT_ROWS`]）——
-  /// `View::constraints` 签名不含状态，动态约束由根布局就地计算
-  ///（16 §6「`ToolLen`、`InputLen` 由 AppState 动态计算」）。
+  /// `View::constraints` 签名不含状态，动态约束由根布局就地计算。
   pub fn render(&self, frame: &mut Frame, state: &AppState) {
-    use tool_status::MAX_TOOL_ROWS;
-    let tool_rows = if state.tools.is_empty() {
-      0
-    } else {
-      state.tools.len().min(MAX_TOOL_ROWS) as u16 + 2
-    };
     let editor_rows = state.editor.borrow().lines().len() as u16;
     let input_rows = (editor_rows + 1).min(input::MAX_INPUT_ROWS as u16) + 2;
-    let chunks = ratatui::layout::Layout::vertical([
-      self.dialog.constraints(),
-      ratatui::layout::Constraint::Length(tool_rows),
-      ratatui::layout::Constraint::Length(1),
-      ratatui::layout::Constraint::Length(input_rows),
+
+    // 窄屏（< 60 列）隐藏侧栏：状态信息仍可由 /status 浮层查看
+    let area = frame.area();
+    let show_sidebar = Self::sidebar_visible(area.width);
+    let sidebar_w = if show_sidebar {
+      sidebar::SIDEBAR_WIDTH.min(area.width / 3).max(24)
+    } else {
+      0
+    };
+    let columns = ratatui::layout::Layout::horizontal([
+      Constraint::Length(sidebar_w),
+      Constraint::Min(0),
     ])
-    .split(frame.area());
-    self.dialog.render(frame, chunks[0], state);
-    self.tools.render(frame, chunks[1], state);
-    self.status.render(frame, chunks[2], state);
-    self.input.render(frame, chunks[3], state);
+    .split(area);
+    if show_sidebar {
+      self.sidebar.render(frame, columns[0], state);
+    }
+
+    let rows = ratatui::layout::Layout::vertical([
+      self.dialog.constraints(),
+      self.loading.constraints(),
+      Constraint::Length(input_rows),
+    ])
+    .split(columns[1]);
+    self.dialog.render(frame, rows[0], state);
+    self.loading.render(frame, rows[1], state);
+    self.input.render(frame, rows[2], state);
     if state.help_open {
-      self.help.render(frame, frame.area(), state);
+      self.help.render(frame, area, state);
     }
     if let Some(text) = &state.overlay_text {
-      render_text_overlay(frame, frame.area(), "提示", text);
+      render_text_overlay(frame, area, "提示", text);
     }
   }
 }

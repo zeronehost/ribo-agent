@@ -149,10 +149,12 @@ impl ContextProvider for PassthroughContextProvider {
   ) -> RiboResult<AgentContext> {
     let mut messages = session.snapshot();
     messages.extend(input);
-    Ok(AgentContext {
-      system_prompt: self.system_prompt.clone(),
+    Ok(AgentContext::new(
+      self.system_prompt.clone(),
       messages,
-    })
+      false,
+      false,
+    ))
   }
 }
 

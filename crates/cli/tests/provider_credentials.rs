@@ -8,10 +8,18 @@ use ra_cli::config::{ConfigMode, LoadOutcome};
 
 /// 写一个 provider 声明到 TOML 文本。
 fn provider_toml(entries: &[(&str, &str, &str)]) -> String {
-  let mut s = String::from("query_model = \"m\"\n");
-  for (id, _adapter, key_expr) in entries {
+  // default 指向首个通道（无条目时悬空——属 mock 回退的测试场景）
+  let mut s = String::new();
+  if let Some((first, _, _)) = entries.first() {
     s.push_str(&format!(
-      "\n[[providers]]\nprovider_id = \"{id}\"\nadapter = \"openai-chat\"\nbase_url = \"https://api.test.invalid\"\nmodel = \"m\"\n{key_expr}\n"
+      "[routing]\ndefault = {{ provider = \"{first}\", model = \"m\" }}\n"
+    ));
+  }
+  for (id, _adapter, key_expr) in entries {
+    // key_expr（api_key 行）必须在 [[providers.models]] 子表之前——
+    // 子表后的键值对属于 models，不属于通道条目
+    s.push_str(&format!(
+      "\n[[providers]]\nprovider_id = \"{id}\"\nadapter = \"openai-chat\"\nbase_url = \"https://api.test.invalid\"\n{key_expr}\n\n  [[providers.models]]\n  id = \"m\"\n"
     ));
   }
   s
@@ -143,7 +151,7 @@ fn t5_same_id_project_wins_whole_entry() {
   // global 声明同名 provider，不同 base_url + auth 有 key
   std::fs::write(
     global.join("settings.toml"),
-    "query_model = \"m\"\n[[providers]]\nprovider_id = \"same\"\nadapter = \"openai-chat\"\nbase_url = \"https://global.test.invalid\"\nmodel = \"m\"\n",
+    "[routing]\ndefault = { provider = \"same\", model = \"m\" }\n\n[[providers]]\nprovider_id = \"same\"\nadapter = \"openai-chat\"\nbase_url = \"https://global.test.invalid\"\n\n  [[providers.models]]\n  id = \"m\"\n",
   )
   .expect("write global");
   std::fs::write(
@@ -202,7 +210,7 @@ fn t9_disabled_global_skips_its_providers() {
   let project = dir.path().join("ribo.toml");
   std::fs::write(
     &project,
-    "[global]\nenabled = false\n\nquery_model = \"m\"\n",
+    "[global]\nenabled = false\n\n[routing]\ndefault = { provider = \"p1\", model = \"m\" }\n\n[[providers]]\nprovider_id = \"p1\"\nadapter = \"openai-chat\"\nbase_url = \"https://api.test.invalid\"\n\n  [[providers.models]]\n  id = \"m\"\n",
   )
   .expect("write project");
   std::fs::write(

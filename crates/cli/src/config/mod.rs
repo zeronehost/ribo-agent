@@ -771,20 +771,22 @@ impl LoadOutcome {
     });
     outcome.warnings.extend(prune_warnings);
 
-    // ===== query_model 悬空（唯一暴露者被跳过）→ 整体 mock =====
+    // ===== default 悬空（唯一暴露者被跳过）→ 整体 mock =====
     if outcome.provider.providers.is_empty()
-      || !outcome
-        .provider
-        .providers
-        .iter()
-        .any(|p| p.model == outcome.provider.query_model)
+      || !outcome.provider.providers.iter().any(|p| {
+        p.provider_id == outcome.provider.routing.default.provider
+          && p
+            .models
+            .iter()
+            .any(|m| m.id == outcome.provider.routing.default.model)
+      })
     {
       #[cfg(not(debug_assertions))]
       {
         outcome.fatal_error = Some(ra_core::error::RiboError::new(
           "config",
           "query_model_unavailable_in_release",
-          "query_model no longer exposed after skip (release build)",
+          "default model no longer exposed after skip (release build)",
         ));
         return outcome;
       }
@@ -792,7 +794,7 @@ impl LoadOutcome {
       {
         outcome
           .warnings
-          .push("query_model no longer exposed after skip".to_string());
+          .push("default model no longer exposed after skip".to_string());
         outcome.warnings.push("running in mock mode".to_string());
         outcome.mode = ConfigMode::Mock;
         return outcome;
@@ -809,20 +811,31 @@ impl LoadOutcome {
     // warning 先收集到局部再并入 outcome——闭包持有 routing 的可变
     // 借用，直接写 outcome.warnings 会撞 E0502。
     let mut prune_warnings = Vec::new();
-    outcome
-      .provider
-      .routing
-      .cross_provider
-      .retain(|from, chain| {
-        let ok = registered.contains(from.as_str())
-          && chain.iter().all(|c| registered.contains(c.as_str()));
-        if !ok {
-          prune_warnings.push(format!(
-            "routing from {from} references skipped provider, pruned"
-          ));
-        }
-        ok
-      });
+    let before = outcome.provider.routing.fallback.len();
+    outcome.provider.routing.fallback.retain(|rule| {
+      let ok = registered.contains(rule.match_rule.provider.as_str())
+        && rule.targets.iter().all(|t| match t {
+          crate::config::schema::FallbackTargetSchema::Model {
+            provider,
+            ..
+          } => registered.contains(provider.as_str()),
+          crate::config::schema::FallbackTargetSchema::Provider {
+            provider,
+          } => registered.contains(provider.as_str()),
+        });
+      if !ok {
+        prune_warnings.push(
+          "fallback rule references skipped provider, pruned".to_string(),
+        );
+      }
+      ok
+    });
+    if outcome.provider.routing.fallback.len() < before {
+      prune_warnings.push(format!(
+        "pruned {} fallback rule(s) referencing skipped providers",
+        before - outcome.provider.routing.fallback.len()
+      ));
+    }
     outcome.warnings.extend(prune_warnings);
     outcome
   }
@@ -957,15 +970,19 @@ mod tests {
     std::fs::write(
       &path,
       r#"
-query_model = "glm-4.5-flash"
 unknown_top_level = 1
+
+[routing]
+default = { provider = "chat-primary", model = "glm-4.5-flash" }
 
 [[providers]]
 provider_id = "chat-primary"
 adapter = "openai-chat"
 base_url = "https://real"
 api_key = "sk-1"
-model = "glm-4.5-flash"
+
+  [[providers.models]]
+  id = "glm-4.5-flash"
 
 [harness]
 root = "custom-data"
@@ -986,20 +1003,50 @@ history_lines = 5
     assert!(outcome.fs_mounts.mounts.is_empty());
     assert_eq!(outcome.session.history_lines, 5);
     assert_eq!(outcome.provider.providers.len(), 1);
+    assert_eq!(outcome.provider.providers[0].models[0].context_window, 8192); // 缺省
+
+    // 显式 context_window → 落位（状态行 ctx 分母 / 压缩预算共用）
+    std::fs::write(
+      &path,
+      r#"
+[routing]
+default = { provider = "p", model = "m" }
+
+[[providers]]
+provider_id = "p"
+adapter = "openai-chat"
+base_url = "https://real"
+api_key = "sk-1"
+
+  [[providers.models]]
+  id = "m"
+  context_window = 131072
+"#,
+    )
+    .expect("write");
+    let outcome = LoadOutcome::load(Some(&path), None);
+    assert_eq!(
+      outcome.provider.providers[0].models[0].context_window,
+      131072
+    );
 
     // 坏层（compression 写成字符串）→ 保留默认 + warning，其余层正常
     std::fs::write(
       &path,
       r#"
-query_model = "glm-4.5-flash"
 compression = "broken"
+
+[routing]
+default = { provider = "chat-primary", model = "glm-4.5-flash" }
 
 [[providers]]
 provider_id = "chat-primary"
 adapter = "openai-chat"
 base_url = "https://real"
 api_key = "sk-1"
-model = "glm-4.5-flash"
+
+  [[providers.models]]
+  id = "glm-4.5-flash"
 "#,
     )
     .expect("write");
@@ -1014,7 +1061,7 @@ model = "glm-4.5-flash"
     );
   }
 
-  /// 场景：$ENV 密钥、占位回退、query_model 悬空、--root 覆盖（CFG-02）。
+  /// 场景：$ENV 密钥、占位回退、默认模型悬空、--root 覆盖（CFG-02）。
   #[test]
   fn load_env_key_placeholder_and_root_override() {
     let dir = tempfile::tempdir().expect("temp");
@@ -1024,13 +1071,17 @@ model = "glm-4.5-flash"
     std::fs::write(
       &path,
       r#"
-query_model = "m"
+[routing]
+default = { provider = "p1", model = "m" }
+
 [[providers]]
 provider_id = "p1"
 adapter = "openai-chat"
 base_url = "https://api.example.com"
 api_key = "k"
-model = "m"
+
+  [[providers.models]]
+  id = "m"
 "#,
     )
     .expect("write");
@@ -1038,18 +1089,22 @@ model = "m"
     assert_eq!(outcome.mode, ConfigMode::Mock);
     assert!(outcome.warnings.iter().any(|w| w.contains("placeholder")));
 
-    // $ENV 未设置 → provider 跳过 → query_model 悬空 → Mock
+    // $ENV 未设置 → provider 跳过 → default 悬空 → Mock
     let path = dir.path().join("p2.toml");
     std::fs::write(
       &path,
       r#"
-query_model = "m"
+[routing]
+default = { provider = "p1", model = "m" }
+
 [[providers]]
 provider_id = "p1"
 adapter = "openai-chat"
 base_url = "https://real"
 api_key = "$RIBO_CLI_MISSING_KEY"
-model = "m"
+
+  [[providers.models]]
+  id = "m"
 "#,
     )
     .expect("write");
@@ -1059,7 +1114,7 @@ model = "m"
       outcome
         .warnings
         .iter()
-        .any(|w| w.contains("query_model no longer exposed"))
+        .any(|w| w.contains("default model no longer exposed"))
     );
 
     // $ENV 设置 → Real；--root 覆盖 harness 层（edition 2024 下
@@ -1072,13 +1127,17 @@ model = "m"
     std::fs::write(
       &path,
       r#"
-query_model = "m"
+[routing]
+default = { provider = "p1", model = "m" }
+
 [[providers]]
 provider_id = "p1"
 adapter = "openai-chat"
 base_url = "https://real"
 api_key = "$RIBO_CLI_CFG_KEY"
-model = "m"
+
+  [[providers.models]]
+  id = "m"
 "#,
     )
     .expect("write");
@@ -1342,18 +1401,23 @@ root = "./proj"
     std::fs::write(
       &path,
       r#"
-query_model = "m"
+[routing]
+default = { provider = "good", model = "m" }
+
 [[providers]]
 provider_id = "bad"
 adapter = "openai-chat"
 base_url = "https://x.invalid"
 api_key = "your-key-placeholder"
+
 [[providers]]
 provider_id = "good"
 adapter = "openai-chat"
 base_url = "https://ok.invalid"
-model = "m"
 api_key = "sk-real"
+
+  [[providers.models]]
+  id = "m"
 "#,
     )
     .expect("write");

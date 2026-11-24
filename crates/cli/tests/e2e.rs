@@ -244,12 +244,12 @@ async fn silent_turn_then_stop_renders_aborted() {
 
 // ===== APP-02：在途拒绝 + 结束后恢复 =====
 
-/// 场景：回合进行中再次 Chat 与 `/new` 被拒绝（不留转录痕迹）；
+/// 场景：回合进行中再次 Chat 与 `/sessions` 切换被拒绝（不留转录痕迹）；
 /// `/stop` 后两者恢复正常。
 ///
-/// 预期：挂起回合的 Chat 拒绝 → 转录仅 2 条 user 输入；`/new x`
+/// 预期：挂起回合的 Chat 拒绝 → 转录仅 2 条 user 输入；`/sessions x`
 /// 拒绝 → `x` 不出现在会话列表；停止后新回合成功（Complete 脚本）
-/// 且 `/new work` 生效（第三回合落在 work 键下）。
+/// 且 `/sessions work` 生效（第三回合落在 work 键下）。
 #[tokio::test(start_paused = true)]
 async fn concurrent_chat_and_new_are_rejected_while_running() {
   let (fx, _dir) = spawn_repl(vec![
@@ -263,16 +263,16 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
   // MessageStart = Silent 步骤已消费（/stop 必为流中取消，确定性收敛）
   wait_until(&fx.renderer, |r| r.starts >= 1).await;
   fx.tx.send("hi2".into()).expect("send"); // 在途 Chat → 拒绝
-  fx.tx.send("/new x".into()).expect("send"); // 在途 /new → 拒绝
+  fx.tx.send("/sessions x".into()).expect("send"); // 在途切换 → 拒绝
   fx.tx.send("/stop".into()).expect("send"); // 等待复位（内部阻塞）
 
   // ===== 阶段 2：停止后新回合（Complete 脚本）成功 =====
   // /stop 的 handle_stop 阻塞至复位，此行进入时必然 Idle
   fx.tx.send("fine".into()).expect("send");
-  // 等待第二回合收敛 + 复位落地后再轮换，避免在途 /new 误拒绝
+  // 等待第二回合收敛 + 复位落地后再切换，避免在途切换误拒绝
   wait_until(&fx.renderer, |r| r.agent_ends >= 2).await;
   settle().await;
-  fx.tx.send("/new work".into()).expect("send");
+  fx.tx.send("/sessions work".into()).expect("send");
 
   // ===== 阶段 3：work 键下的第三回合（验证轮换生效） =====
   fx.tx.send("third".into()).expect("send");
@@ -311,7 +311,7 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
     .unwrap_or_else(|| panic!("最后助手消息无文本，转录：\n{messages:#?}"));
   assert_eq!(final_text, "mock-ok");
 
-  // work 键真相：第三回合落在新键下（/new 轮换生效）
+  // work 键真相：第三回合落在新键下（/sessions 切换生效）
   let work_messages = fx
     .harness
     .session_messages("work")
@@ -332,15 +332,15 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
     .expect("work-ok in work transcript");
   assert_eq!(work_text, "work-ok");
 
-  // 会话真相："x" 未创建（在途 /new 被拒），"work" 已由第三回合登记
+  // 会话真相："x" 未创建（在途切换被拒），"work" 已由第三回合登记
   let keys = fx.harness.list_sessions().await;
-  assert!(!keys.iter().any(|k| k == "x"), "在途 /new 应被拒绝");
-  assert!(keys.iter().any(|k| k == "work"), "停止后 /new 应生效");
+  assert!(!keys.iter().any(|k| k == "x"), "在途切换应被拒绝");
+  assert!(keys.iter().any(|k| k == "work"), "停止后 /sessions 应生效");
 }
 
-// ===== APP-03：/new 轮换 + 转录隔离 =====
+// ===== APP-03：/sessions 轮换 + 转录隔离 =====
 
-/// 场景：`/new s2` 轮换会话键后，两键转录互相隔离。
+/// 场景：`/sessions s2` 切换会话键后，两键转录互相隔离。
 ///
 /// 预期：default 含第一回合（"hello" → reply-1）；s2 含第二回合
 /// （"world" → reply-2）；互不串写。
@@ -355,7 +355,7 @@ async fn new_key_rotates_and_history_is_isolated() {
   settle().await; // 复位落地后再轮换
 
   // ===== 阶段 2：轮换 + s2 回合 =====
-  fx.tx.send("/new s2".into()).expect("send");
+  fx.tx.send("/sessions s2".into()).expect("send");
   fx.tx.send("world".into()).expect("send");
   wait_until(&fx.renderer, |r| r.agent_ends >= 2).await;
   drop(fx.tx);
@@ -404,6 +404,15 @@ async fn logs_go_to_file_not_stdout() {
   // 每用例独立订阅器（with_default 作用域 + rolling::never 固定文件名），
   // 规避全局 try_init 的单次语义限制
   let subscriber = tracing_subscriber::fmt()
+    .with_timer(
+      tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339()
+        .unwrap_or_else(|_| {
+          tracing_subscriber::fmt::time::OffsetTime::new(
+            time::UtcOffset::UTC,
+            time::format_description::well_known::Rfc3339,
+          )
+        }),
+    )
     .with_writer(Mutex::new(tracing_appender::rolling::never(
       &logs_dir, "cli.log",
     )))

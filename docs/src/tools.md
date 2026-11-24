@@ -20,8 +20,8 @@
 
 fs 六件套（read / write / edit / ls / glob / grep）共用一个沙箱根：
 
-- 主沙箱根 = `harness.root` 下的 `tools.fs_root` 子目录；未配置时即 `harness.root` 本身；
-- `tools.fs_root` 必须是相对 `harness.root` 的路径（绝对路径或 `..` 逃逸组件会 warning 后回退 `harness.root`）。
+- 主沙箱根 = `harness.root` 本身（v3 起 `tools.fs_root` 配置已移除，无独立子目录设置）；
+- 项目外数据通过全局 `settings.toml` 的 `[fs.mounts]` 只读挂载点暴露（见下文），项目配置无权声明挂载。
 
 ### 路径校验（双层）
 
@@ -39,7 +39,7 @@ fs 六件套（read / write / edit / ls / glob / grep）共用一个沙箱根：
 
 ```text
 read("datasets://train/img001.jpg")
-  → 查名为 "dataset" 的挂载根（用户全局声明）
+  → 查名为 "datasets" 的挂载根（用户全局声明）
   → 相对部分在主沙箱相同的双层校验下解析
 ```
 

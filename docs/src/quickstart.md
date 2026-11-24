@@ -32,7 +32,7 @@ cargo run -p ra-tui
 ## 接入真实模型
 
 1. 复制配置模板：`cp ribo_example.toml ribo.toml`
-2. 填写 `query_model`、`[[providers]]` 的 `base_url` / `model`，并把 `api_key` 写成环境变量占位：
+2. 填写 `[routing].default` 二元组、`[[providers]]` 的 `base_url` 与 `[[providers.models]]` 的模型 `id`，并把 `api_key` 写成环境变量占位：
 
    ```toml
    api_key = "$OPENAI_API_KEY"
@@ -45,7 +45,7 @@ cargo run -p ra-tui
    cargo run -p ra-cli
    ```
 
-密钥一律以 `$ENV_NAME` 占位，**不落盘**。若某 provider 的密钥环境变量未设置，该 provider 被跳过；若因此导致 `query_model` 悬空，则整体回退 Mock 模式。
+密钥一律以 `$ENV_NAME` 占位，**不落盘**。若某 provider 的密钥环境变量未设置，该 provider 被跳过；若因此导致 `default` 二元组悬空，则整体回退 Mock 模式。
 
 > 说明：`ribo auth login` 管理的凭证存在于全局域的 `auth.toml`，用于凭证的查看与增删；provider 实际读取的密钥仍来自 `ribo.toml` 中的 `$ENV` 占位。
 

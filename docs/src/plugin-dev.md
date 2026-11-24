@@ -136,7 +136,7 @@ cargo build --manifest-path examples/plugin-demo/Cargo.toml \
 
 ## 宿主装配与能力授予
 
-把 wasm 放到项目内（如 `plugins/`），在 `ribo.toml` 声明：
+把 wasm 放到项目内 `<harness.root>/.ribo/plugins/`（或用 entries.path 显式声明其他项目内路径），在 `ribo.toml` 声明：
 
 ```toml
 [plugins]
@@ -164,7 +164,7 @@ greeting_prefix = "你好"
 - `http = true` 时须提供非空 `http_hosts`，否则实际不可出站；
 - 覆写类字段（内存 / 配额 / 超时）**只能收紧**，不能放大。
 
-也可以用 `roots = ["plugins"]` 扫描目录批量加载（最小权限，无 config/ACL），需要精细控制时用 `entries` 清单。
+目录扫描固定为 `<harness.root>/.ribo/plugins/` 下全部 `*.wasm`（最小权限，无 config/ACL）；需要精细控制（注入 config、声明 ACL、权威清单）时用 `[[plugins.entries]]` 清单。
 
 ## 权威清单与签名（生产）
 

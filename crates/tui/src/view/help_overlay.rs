@@ -22,6 +22,11 @@ impl View for HelpOverlayView {
     )));
     lines.push(Line::from(""));
     for meta in ra_cli::commands::COMMANDS {
+      // TUI 命令面过滤：CliOnly 命令（/history、/status）不展示——
+      // 对话区即完整历史、侧栏常驻状态，二者在 TUI 中冗余
+      if meta.target == ra_cli::commands::Target::CliOnly {
+        continue;
+      }
       let usage = if meta.args.is_empty() {
         meta.name.to_string()
       } else {

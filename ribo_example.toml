@@ -1,4 +1,4 @@
-# ra-cli 配置模板（与 crates/cli/src/config/schema.rs 六层 schema 一一对应）
+# ra-cli 配置模板（与 crates/cli/src/config/schema.rs 各层一一对应）
 #
 # 用法：
 #   复制本文件为 ribo.toml（配置文件探测的默认文件名）并填入真实端点
@@ -12,39 +12,53 @@
 #
 # 降级语义（启动横幅会打印 mode 与 warnings）：
 #   - debug 构建：无 provider / 占位配置（your-* / example.com）/
-#     query_model 悬空 → 整体回退 Mock 模式；
+#     [routing].default 悬空 → 整体回退 Mock 模式；
 #   - release 构建（D7）：上述三类一律启动致命（*_in_release 错误码）；
 #   - 某个 $ENV 密钥未设置 → 局部降级：该 provider 跳过注册，
-#     路由链中引用它的候选一并剔除；若 query_model 因此悬空 →
+#     降级规则中引用它的目标一并剔除；若 default 因此悬空 →
 #     debug 回退 Mock，release 启动致命；
 #   - 单个配置层解析失败（未知字段忽略除外）→ 该层保留默认 + warning。
 #
-# 六层 schema 相互独立、层间零交叉；下方各层值与代码 Default 一致。
+# 各层相互独立、层间零交叉；下方各层值与代码 Default 一致。
 
 # ── provider 层 ─────────────────────────────────────────────
-# 根级字段：网关查询入口，必须是某个 provider 暴露的 model；
-# 未配置时默认 "mock-model"。
-query_model = "your-model-name"
-
 # adapter 白名单：openai-chat | openai-responses | anthropic
 # api_key 支持 "$ENV_NAME" 占位（运行时读环境变量，未设置则跳过该 provider）。
+# 一个 provider 可挂多个模型（models 数组）；窗口随模型走。
 [[providers]]
 provider_id = "chat-primary"
 adapter = "openai-chat"
 base_url = "https://your-endpoint.example.com"
 api_key = "$OPENAI_API_KEY"
-model = "your-model-name"
+
+[[providers.models]]
+id = "your-model-name"
+context_window = 131072       # 可选，默认 8192；按模型供应商文档填写
+                                # 用途：状态行 ctx 占比分母 + 压缩触发预算
 
 [[providers]]
 provider_id = "anthropic-backup"
 adapter = "anthropic"
 base_url = "https://your-anthropic-endpoint.example.com"
 api_key = "$ANTHROPIC_API_KEY"
-model = "your-model-name"
 
-# 跨提供方降级链：主 provider → 候选列表（须引用已注册的 provider_id）。
-[routing.cross_provider]
-"chat-primary" = ["anthropic-backup"]
+[[providers.models]]
+id = "your-model-name"
+
+# ── routing 层（默认入口 + 降级规则）─────────────────────────
+# default 为显式二元组：引用上面某通道 models 中的模型。
+[routing]
+default = { provider = "chat-primary", model = "your-model-name" }
+
+# 降级规则：按声明顺序，首条 match 命中的规则生效。
+# match 两形态：{ provider, model } 精确 / { provider } 通配；
+# targets 两形态：{ provider, model } 显式 / { provider } 同名→目标默认。
+# 当前模型失败时，先按通道内 models 声明序切备选（隐式链），再走下列规则。
+[[routing.fallback]]
+match = { provider = "chat-primary" }
+targets = [
+  { provider = "anthropic-backup" },
+]
 
 # ── retry 层（GatewayConfig.retry）──────────────────────────
 # 未配置字段显式取 RetryPolicy::default()（max_backoff 30s、multiplier 2.0）。
@@ -61,11 +75,16 @@ keep_recent_turns = 4          # 默认 4，保留最近 4 个 user 轮
 # summarizer_model = "..."     # Option 字段：注释掉即 None（默认），无摘要模型时
 #                              # 压缩退化为纯滑窗；填写则用该模型生成摘要
 max_summary_chars = 2048       # 默认 2048，摘要按字符截断
+hysteresis_ratio = 1.10        # 默认 1.10，估算需达到上次触发的该倍数才重摘要（范围 1–10）
+cooldown_turns = 2             # 默认 2，触发后冷却轮数（冷却期复用摘要、不调 LLM，≤100）
+enable_incremental = true      # 默认 true，增量压缩（false = 每次全量摘要）
+incremental_rebuild_every = 8  # 默认 8，每 N 次增量强制全量重建（范围 1–32；1 = 每次全量）
+# max_summary_input_tokens = 0 # 默认 0 = 自动取摘要模型窗口 70%；>0 手动指定摘要输入上限
 
 # ── session 层（REPL 会话状态）──────────────────────────────
 [session]
-default_key = "default"        # 默认 "default"，REPL 启动会话键（/new 轮换基准）
-history_lines = 10             # 默认 10，/history 未带参数时的条数
+default_key = "default"        # 默认 "default"，REPL 启动会话键（/sessions <名称> 切换）
+history_lines = 10             # 默认 10，CLI `/history` 未带参数时的条数（TUI 无此命令）
 
 # ── tools 层（ToolManager 注册）─────────────────────────────
 # fs 沙箱 = harness.root（v3：无独立 fs_root 配置；项目外数据走挂载点）。

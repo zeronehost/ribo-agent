@@ -307,7 +307,7 @@ impl ToolManager {
         .prepare_arguments(call.arguments.clone())
         .inspect_err(|e| {
           tracing::warn!(
-            tool = %name, code = %e.code(),
+            tool = %name, code = %e.code(), error = %e.message(),
             "tool prepare_arguments failed"
           );
         })?;
@@ -321,7 +321,7 @@ impl ToolManager {
       // 校验失败同样属入参错误：warn 记录后原样返回，不计熔断
       schema::validate_arguments(name, v, &args).inspect_err(|e| {
         tracing::warn!(
-          tool = %name, code = %e.code(),
+          tool = %name, code = %e.code(), error = %e.message(),
           "tool arguments failed schema validation"
         );
       })?;
@@ -364,13 +364,13 @@ impl ToolManager {
             self.circuit.abort_probe();
           }
           tracing::warn!(
-            tool = %name, call_id = %call.id, code = %e.code(),
+            tool = %name, call_id = %call.id, code = %e.code(), error = %e.message(),
             "tool execution failed (non-counting code)"
           );
           return Err(e);
         }
         self.circuit.record_failure();
-        tracing::error!(tool = %name, call_id = %call.id, code = %e.code(), "tool execution failed");
+        tracing::error!(tool = %name, call_id = %call.id, code = %e.code(), error = %e.message(), "tool execution failed");
         Err(e) // 错误原样透传（D8：上层转为 is_error 结果回灌）
       }
       None => {

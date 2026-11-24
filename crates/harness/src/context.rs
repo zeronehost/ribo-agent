@@ -15,7 +15,10 @@ use ra_agent::{
   error::context_build_error, session::Session, traits::ContextProvider,
   types::AgentContext,
 };
-use ra_core::{error::RiboResult, message::Message};
+use ra_core::{
+  error::RiboResult,
+  message::{Content, Message},
+};
 use ra_provider::options::CancelToken;
 
 use crate::{
@@ -105,26 +108,30 @@ impl ContextProvider for HarnessContext {
       Some(compactor) => {
         let cancel = Some(CancelToken::from_token(session.cancel_token()));
         compactor
-          .compact(&messages, &self.config.compaction, cancel)
+          .compact(&session.key, &messages, &self.config.compaction, cancel)
           .await
       }
       None => {
         if self.config.compaction.enabled {
           tracing::warn!(
+            session_key = %session.key,
             "compaction enabled but compactor is None; skipping compaction"
           );
         }
-        CompactionOutcome {
-          messages,
-          summary: None,
-          truncated: 0,
-        }
+        CompactionOutcome::noop(
+          &messages,
+          crate::compaction::CompactionReason::Disabled,
+        )
       }
     };
 
-    // ===== 阶段 3：系统提示组装（template + env + skills + summary）=====
-    let system_prompt =
-      self.prompt.build(&self.skills, outcome.summary.as_deref());
+    // ===== 阶段 3：系统提示组装（template + env + skills + summary + 提示段）=====
+    let system_prompt = self.prompt.build_compaction(
+      &self.skills,
+      outcome.summary.as_deref(),
+      outcome.fallback_hint,
+      outcome.outdated_hint,
+    );
     if system_prompt.is_empty() {
       return Err(context_build_error(
         &session.key,
@@ -132,11 +139,80 @@ impl ContextProvider for HarnessContext {
       ));
     }
 
+    // ===== 阶段 3.5：system prompt 估算 + 回写 overhead 基准（D2 / P1-1）=====
+    // 循环依赖破解：本轮预算用上一轮的 last_overhead（在 compact 内读取），
+    // 本轮组装完成的实际 prompt 长度写回，作为下一轮的基准。
+    let prompt_tokens = estimate_prompt_tokens(&system_prompt);
+    if let Some(compactor) = &self.compactor {
+      compactor.set_last_overhead(&session.key, prompt_tokens);
+      tracing::debug!(
+        session_key = %session.key,
+        overhead = prompt_tokens,
+        "compaction overhead baseline updated"
+      );
+    }
+
+    // ===== 阶段 3.6：压缩三态统计（用户需求 v1.6：总量 / 已压缩 / 当前）=====
+    // 总量 = 压缩前完整历史（含本轮输入）；已压缩 = 被移出视图的 prefix；
+    // 当前 = 最近请求视图（outcome.messages）+ system prompt（含摘要注入）。
+    // 口径统一走 P6 唯一真值估算函数。
+    let stats = ra_agent::session::CompactionStats {
+      total_tokens: ra_core::message::estimate_context_tokens(&messages),
+      compressed_tokens: outcome.compressed_tokens,
+      current_tokens: prompt_tokens
+        + ra_core::message::estimate_context_tokens(&outcome.messages),
+    };
+    session.set_compaction_stats(stats);
+    tracing::debug!(
+      session_key = %session.key,
+      total = stats.total_tokens,
+      compressed = stats.compressed_tokens,
+      current = stats.current_tokens,
+      "compaction stats written to session"
+    );
+
     // ===== 阶段 4：产物 =====
-    Ok(AgentContext {
+    // compaction_triggered / compaction_failed 由压缩原因推导（互斥）；
+    // 冷却抑制 / 复用摘要二者皆为 false，不发射事件。
+    Ok(AgentContext::new(
       system_prompt,
-      messages: outcome.messages,
+      outcome.messages,
+      outcome.reason == crate::compaction::CompactionReason::Summarized,
+      outcome.reason == crate::compaction::CompactionReason::SummaryFailed,
+    ))
+  }
+}
+
+/// system prompt 的 token 估算（P6 唯一真值口径）。
+///
+/// 图片 / 工具调用占位在系统提示中不出现，保守计 0。
+fn estimate_prompt_tokens(system_prompt: &[Content]) -> usize {
+  system_prompt
+    .iter()
+    .map(|content| match content {
+      Content::Text(text) => {
+        ra_core::message::estimate_tokens_from_chars(&text.content)
+      }
+      _ => 0,
     })
+    .sum()
+}
+
+/// 冷启动统计估算（[`SessionStatsEstimator`] 实现）。
+///
+/// 冷启动尚未发生压缩：总量 = 当前转录估算，已压缩 = 0。
+/// 「当前使用量」为 **0**——本次进程尚未发起任何请求，窗口尚未被占用；
+/// 首次 `build` 后由真实请求视图覆写（v1.63 用户拍板：冷启动不预填当前量）。
+impl crate::session_provider::SessionStatsEstimator for HarnessContext {
+  fn estimate_stats(
+    &self,
+    messages: &[Message],
+  ) -> ra_agent::session::CompactionStats {
+    ra_agent::session::CompactionStats {
+      total_tokens: ra_core::message::estimate_context_tokens(messages),
+      compressed_tokens: 0,
+      current_tokens: 0,
+    }
   }
 }
 
@@ -405,5 +481,146 @@ mod tests {
       .expect_err("empty system prompt must fail");
 
     assert_eq!(err.code(), ra_agent::error::CONTEXT_BUILD_ERROR);
+  }
+
+  /// CT-08（D8/P1-4）：摘要成功 → `compaction_triggered` 置位（事件门控）。
+  #[tokio::test]
+  async fn compaction_triggered_flag_flows_into_agent_context() {
+    let session = Session::new("s1");
+    let msgs = padded_transcript();
+    session.append_messages(&msgs);
+
+    let compactor =
+      make_compactor_with(vec![text_step("kept decisions and paths")], 64);
+    let provider = HarnessContext::new(
+      builder("TPL"),
+      Some(compactor),
+      Vec::new(),
+      ContextConfig {
+        compaction: CompactionConfig {
+          enabled: true,
+          trigger_ratio: 0.75,
+          keep_recent_turns: 2,
+          summarizer_model: Some(ModelId::parse("mock-model").unwrap()),
+          ..CompactionConfig::default()
+        },
+        include_environment: false,
+      },
+    );
+
+    let ctx = provider.build(&session, Vec::new()).await.unwrap();
+    assert!(ctx.compaction_triggered, "摘要成功必须置位");
+  }
+
+  /// CT-10（v1.6）：压缩三态统计写入会话——总量 = 完整历史估算，
+  /// 已压缩 = 被移出 prefix 估算（>0），当前 = 请求视图 + system prompt。
+  #[tokio::test]
+  async fn compaction_stats_flow_into_session() {
+    let session = Session::new("s1");
+    let msgs = padded_transcript();
+    session.append_messages(&msgs);
+
+    let compactor = make_compactor(64); // 极小窗口 → 强制触发
+    let provider = HarnessContext::new(
+      builder("TPL"),
+      Some(compactor),
+      Vec::new(),
+      ContextConfig {
+        compaction: CompactionConfig {
+          enabled: true,
+          trigger_ratio: 0.75,
+          keep_recent_turns: 2,
+          summarizer_model: None,
+          ..CompactionConfig::default()
+        },
+        include_environment: false,
+      },
+    );
+
+    let ctx = provider.build(&session, Vec::new()).await.unwrap();
+    let stats = session
+      .compaction_stats()
+      .expect("build must write compaction stats");
+
+    // 总量 = 压缩前完整历史估算；已压缩 = prefix 估算（触发压缩 → >0）；
+    // 当前 = 压缩后视图 + system prompt 估算
+    let total_expected = ra_core::message::estimate_context_tokens(&msgs);
+    assert_eq!(stats.total_tokens, total_expected);
+    assert!(stats.compressed_tokens > 0);
+    assert!(
+      stats.compressed_tokens < stats.total_tokens,
+      "compressed must be a subset of total"
+    );
+    let view_expected =
+      ra_core::message::estimate_context_tokens(&ctx.messages);
+    assert!(
+      stats.current_tokens >= view_expected,
+      "current includes view plus system prompt: {} vs {view_expected}",
+      stats.current_tokens
+    );
+    // 未触发压缩时 compressed 归零口径：再次以大窗口 build → 无压缩
+  }
+
+  /// CT-09（D2/P1-1）：overhead 回写——摘要成功后第二次 build 仍正常
+  /// （budget 扣除 overhead 后若 ≤0 退化为 raw_budget，不因 overhead 而
+  /// 永不触发），且压缩状态被会话 key 隔离。
+  #[tokio::test]
+  async fn overhead_writeback_keeps_second_build_alive() {
+    let session = Session::new("s1");
+    let msgs = padded_transcript();
+    session.append_messages(&msgs);
+
+    // 只注入一步摘要：第二次 build 若再次调 LLM 会脚本耗尽失败回退——
+    // 但只要状态正确，第二次要么被冷却/滞回抑制（不调 LLM），要么回退滑窗。
+    let compactor =
+      make_compactor_with(vec![text_step("kept decisions and paths")], 64);
+    let provider = HarnessContext::new(
+      builder("TPL"),
+      Some(compactor),
+      Vec::new(),
+      ContextConfig {
+        compaction: CompactionConfig {
+          enabled: true,
+          trigger_ratio: 0.75,
+          keep_recent_turns: 2,
+          summarizer_model: Some(ModelId::parse("mock-model").unwrap()),
+          cooldown_turns: 2,
+          ..CompactionConfig::default()
+        },
+        include_environment: false,
+      },
+    );
+
+    let first = provider.build(&session, Vec::new()).await.unwrap();
+    assert!(first.compaction_triggered);
+    // 第二轮：冷却期内复用摘要，不调 LLM，状态位复位
+    let second = provider.build(&session, Vec::new()).await.unwrap();
+    assert!(!second.compaction_triggered, "冷却抑制不得置位状态位");
+    // 摘要仍注入（冷却期不丢 prefix 记忆，P0-2）
+    match &second.system_prompt[0] {
+      Content::Text(t) => {
+        assert!(t.content.contains("kept decisions and paths"));
+      }
+      _ => panic!("expected Text content"),
+    }
+  }
+
+  /// CT-11（冷启动统计）：估算口径——总量 = 转录估算，已压缩 = 0，
+  /// 当前 = 0（本次进程尚未发起请求，窗口未被占用）。
+  #[test]
+  fn cold_start_estimate_stats_has_zero_compressed() {
+    use crate::session_provider::SessionStatsEstimator;
+
+    let provider = HarnessContext::passthrough("system prompt text");
+    let messages = vec![user_text_message("hello")];
+    let stats = provider.estimate_stats(&messages);
+
+    assert_eq!(stats.compressed_tokens, 0);
+    assert_eq!(
+      stats.total_tokens,
+      ra_core::message::estimate_context_tokens(&messages)
+    );
+    // 冷启动未发起请求 → 当前使用量为 0（首次 build 后由真实视图覆写）
+    assert_eq!(stats.current_tokens, 0);
   }
 }

@@ -35,9 +35,31 @@ pub struct Session {
   pub running: AtomicBool,
   /// 创建时间（Unix 毫秒）。
   pub created_at: i64,
+  /// 最近一次上下文装配的压缩三态统计（用户需求：总量 / 已压缩 / 当前）；
+  /// `None` 表示本进程内既未装配也未被 estimator 回填——绑定估算器的
+  /// provider 在冷启动回放后即为 `Some`（total=转录估算 / compressed=0 /
+  /// current=0，表示本次进程尚未发起请求）。
+  compaction_stats: Mutex<Option<CompactionStats>>,
   /// 最近活跃时间（Unix 毫秒，`cleanup_expired` 依据；读经
   /// [`Session::last_active_at`]）。
   last_active_at: AtomicI64,
+}
+
+/// 最近一次上下文装配的压缩三态统计（token 估算，用户需求 2026-11-23）。
+///
+/// 由 `ContextProvider::build` 每次装配后写入会话；显示端（TUI 侧栏 /
+/// CLI `/status`）经 Harness 读取。估算口径统一走
+/// `estimate_context_tokens` / `estimate_tokens_from_chars`（P6 唯一真值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CompactionStats {
+  /// 使用总量：压缩前完整历史（含本轮输入）的估算 token。
+  pub total_tokens: usize,
+  /// 已压缩量：本轮被摘要替代移出视图的 prefix 估算 token
+  ///（未触发压缩 / 未切分为 0）。
+  pub compressed_tokens: usize,
+  /// 当前使用量：最近一次请求视图（保留轮次 + 本轮输入 + system prompt
+  /// 含摘要注入）的估算 token。
+  pub current_tokens: usize,
 }
 
 impl core::fmt::Debug for Session {
@@ -71,8 +93,21 @@ impl Session {
       follow_up_queue: Arc::new(Mutex::new(PendingMessageQueue::default())),
       running: AtomicBool::new(false),
       created_at: now,
+      compaction_stats: Mutex::new(None),
       last_active_at: AtomicI64::new(now),
     }
+  }
+
+  /// 写入最近一次上下文装配的压缩三态统计（`ContextProvider::build` 调用）。
+  ///
+  /// `&self` 即可写：内部为 `std::sync::Mutex`，与取消根同一并发纪律。
+  pub fn set_compaction_stats(&self, stats: CompactionStats) {
+    *self.compaction_stats.lock().expect("compaction stats lock") = Some(stats);
+  }
+
+  /// 读取最近一次装配的压缩三态统计（未装配过返回 `None`）。
+  pub fn compaction_stats(&self) -> Option<CompactionStats> {
+    *self.compaction_stats.lock().expect("compaction stats lock")
   }
 
   /// 触发会话取消：当前取消根 abort，级联到全部子令牌（`stop` 路径）。

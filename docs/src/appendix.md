@@ -9,29 +9,42 @@
 
 ```toml
 # ── provider 层 ─────────────────────────────────────────────
-# 根级字段：网关查询入口，必须是某个 provider 暴露的 model；
-# 未配置时默认 "mock-model"。
-query_model = "your-model-name"
-
 # adapter 白名单：openai-chat | openai-responses | anthropic
 # api_key 支持 "$ENV_NAME" 占位（运行时读环境变量，未设置则跳过该 provider）。
+# 一个 provider 可挂多个模型（models 数组）；窗口随模型走。
 [[providers]]
 provider_id = "chat-primary"
 adapter = "openai-chat"
 base_url = "https://your-endpoint.example.com"
 api_key = "$OPENAI_API_KEY"
-model = "your-model-name"
+
+  [[providers.models]]
+  id = "your-model-name"
+  context_window = 131072       # 可选，默认 8192；按模型供应商文档填写
+                                # 用途：状态行 ctx 占比分母 + 压缩触发预算
 
 [[providers]]
 provider_id = "anthropic-backup"
 adapter = "anthropic"
 base_url = "https://your-anthropic-endpoint.example.com"
 api_key = "$ANTHROPIC_API_KEY"
-model = "your-model-name"
 
-# 跨提供方降级链：主 provider → 候选列表（须引用已注册的 provider_id）。
-[routing.cross_provider]
-"chat-primary" = ["anthropic-backup"]
+  [[providers.models]]
+  id = "your-model-name"
+
+# ── routing 层（默认入口 + 降级规则）─────────────────────────
+# default 为显式二元组：引用上面某通道 models 中的模型。
+[routing]
+default = { provider = "chat-primary", model = "your-model-name" }
+
+# 降级规则：按声明顺序，首条 match 命中的规则生效。
+# match 两形态：{ provider, model } 精确 / { provider } 通配；
+# targets 两形态：{ provider, model } 显式 / { provider } 同名→目标默认。
+[[routing.fallback]]
+match = { provider = "chat-primary" }
+targets = [
+  { provider = "anthropic-backup" },
+]
 
 # ── retry 层 ────────────────────────────────────────────────
 # 未配置字段显式取 RetryPolicy::default()（max_backoff 30s、multiplier 2.0）。
@@ -48,11 +61,16 @@ keep_recent_turns = 4          # 默认 4，保留最近 4 个 user 轮
 # summarizer_model = "..."     # Option 字段：注释掉即 None（默认），无摘要模型时
 #                              # 压缩退化为纯滑窗；填写则用该模型生成摘要
 max_summary_chars = 2048       # 默认 2048，摘要按字符截断
+hysteresis_ratio = 1.10        # 默认 1.10，估算需达到上次触发的该倍数才重摘要（范围 1–10）
+cooldown_turns = 2             # 默认 2，触发后冷却轮数（冷却期复用摘要、不调 LLM，≤100）
+enable_incremental = true      # 默认 true，增量压缩（false = 每次全量摘要）
+incremental_rebuild_every = 8  # 默认 8，每 N 次增量强制全量重建（范围 1–32；1 = 每次全量）
+# max_summary_input_tokens = 0 # 默认 0 = 自动取摘要模型窗口 70%；>0 手动指定摘要输入上限
 
 # ── session 层 ──────────────────────────────────────────────
 [session]
-default_key = "default"        # 默认 "default"，REPL 启动会话键（/new 轮换基准）
-history_lines = 10             # 默认 10，/history 未带参数时的条数
+default_key = "default"        # 默认 "default"，REPL 启动会话键（/sessions <名称> 切换）
+history_lines = 10             # 默认 10，CLI `/history` 未带参数时的条数（TUI 无此命令）
 
 # ── tools 层 ────────────────────────────────────────────────
 # fs 沙箱 = harness.root（v3：无独立 fs_root 配置；项目外数据走挂载点）。
@@ -69,7 +87,7 @@ include_environment = true     # 默认 true，系统提示注入 <environment> 
 # ── global 层（全局域，跨项目共享；默认启用）─────────────────
 # [global]
 # enabled = true                 # 默认 true；目录不存在时自动禁用（非致命）
-# dir = "~/.config/ribo"         # 可选；命令行 --global-dir 优先；
+# dir = "/home/you/.config/ribo" # 可选；须绝对路径（~ 不展开）；--global-dir 优先；
 #                                # 未设置时用平台默认配置目录 + /ribo。
 #                                # 全局配置 settings.toml、auth.toml 与信任记录
 #                                # trusted_projects.toml 位于该目录。
@@ -153,14 +171,18 @@ include_environment = true     # 默认 true，系统提示注入 <environment> 
 **`[fs.mounts]` 仅在此文件声明有效**。
 
 ```toml
-query_model = "your-model-name"
+[routing]
+default = { provider = "chat-primary", model = "your-model-name" }
 
 [[providers]]
 provider_id = "chat-primary"
 adapter = "openai-chat"
 base_url = "https://your-endpoint.example.com"
 api_key = "$OPENAI_API_KEY"      # 留空时从 auth.toml 补充（Global 来源）
-model = "your-model-name"
+
+  [[providers.models]]
+  id             = "your-model-name"
+  context_window = 131072        # 可选，默认 8192；ctx 占比与压缩预算共用
 
 [retry]
 max_retries = 3

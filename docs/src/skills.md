@@ -6,7 +6,7 @@
 
 ### 文件布局
 
-技能扫描根由 `harness.skills_roots` 配置（默认 `["skills"]`，相对 `harness.root` 解析）。根目录内支持两种布局：
+技能扫描根固定为 `<harness.root>/.ribo/skills`（项目域，v3 起 `harness.skills_roots` 配置已移除）与全局域目录下的 `skills/`（全局域启用时）；项目技能优先。目录内支持两种布局：
 
 - 目录型：`<root>/<skill-name>/SKILL.md`
 - 扁平型：`<root>/<skill-name>.md`
@@ -36,11 +36,11 @@ frontmatter 解析失败、空正文、重名等问题只产生诊断（不致�
 
 技能按来源域聚合，优先级为 **Project > Global > Plugin**（Plugin 按声明序，先声明优先）。同名技能按优先级取首个，被覆盖者产生诊断提示。
 
-每个技能记录 `origin` 字段（`project` / `global`），在三处保持一致：
+每个技能记录 `origin` 字段（`project` / `global` / `plugin:<id>`），在三处保持一致：
 
 - 系统提示 `<skill ... origin="..."/>` 属性
 - 配置来源命令 `ribo config --show-origin`
-- REPL 命令 `/skills` 输出（显示"来自项目 / 来自全局"）
+- REPL 命令 `/skills` 输出（显示“来自项目 / 来自全局 / 来自插件 <id>”；技能与诊断皆空时显示“（无技能）”）
 
 ## AGENTS.md 指令文件
 

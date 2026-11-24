@@ -6,7 +6,7 @@ Ribo Agent 是一个以 Rust 构建的终端 AI Agent，提供 `ribo`（命令�
 
 | 概念 | 说明 |
 | :--- | :--- |
-| **分层配置** | provider / retry / compression / session / tools / harness / global 七层配置相互独立、层间零交叉；未配置时整体回退 Mock 模式 |
+| **分层配置** | provider（通道 + 多模型）/ routing（默认二元组 + 降级规则）/ retry / compression / session / tools / harness / global 等层相互独立、层间零交叉；另有 `[plugins]` 与全局 `[fs.mounts]` 两组独立配置；未配置或解析失败时按层降级（详见[配置详解](./configuration.md)） |
 | **两级配置域** | Project（项目域，`.ribo/` 集中目录）与 Global（全局域，用户目录）；项目外数据经 `[fs.mounts]` 只读挂载点 |
 | **两档信任** | 配置信任（文档级资源，默认开启）；代码信任（可执行资源，须显式授予） |
 | **技能（Skill）** | 带 frontmatter 的 Markdown 文件，装配期扫描并注入系统提示，可按域标记来源 |

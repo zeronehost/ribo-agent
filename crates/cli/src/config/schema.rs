@@ -1,7 +1,7 @@
 //! 分层配置 schema：每层独立、层间零交叉，聚合层负责拼接与校验
-//!（14 详细设计 §4；`query_model` 为 TOML 根级字段）。
+//!（14 详细设计 §4；默认模型为 `[routing].default` 二元组，24 号方案 D1）。
 
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
@@ -27,31 +27,37 @@ impl Default for GlobalSchema {
   }
 }
 
-/// provider 层：`query_model` 为 TOML 根级字段（与 harness_fallback.toml 同构），
-/// 反序列化时并入本层。
+/// provider 层（24 号方案 v1.3）：默认模型为 `[routing].default` 二元组，
+/// `[[providers]]` 条目经 `models` 数组声明多模型。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProviderSchema {
-  /// 网关查询入口模型名：必须是某 provider 暴露的 `model`（mock 模式默认 mock-model）。
-  pub query_model: String,
   /// 提供方列表。
   pub providers: Vec<ProviderEntry>,
-  /// 跨提供方降级链。
+  /// routing 段（默认二元组 + 降级规则）。
   pub routing: RoutingSchema,
 }
 
 impl Default for ProviderSchema {
-  /// 默认 = mock 模式：无 provider、query_model 用 mock 模型名。
+  /// 默认 = mock 模式：无 provider、default 指向 mock 通道。
   fn default() -> Self {
     Self {
-      query_model: "mock-model".to_string(),
       providers: Vec::new(),
       routing: RoutingSchema::default(),
     }
   }
 }
 
-/// `[[providers]]` 单条目。
+/// 默认模型二元组（D1）。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct RoutingRef {
+  /// 提供方 ID。
+  pub provider: String,
+  /// 模型 ID。
+  pub model: String,
+}
+
+/// `[[providers]]` 单条目（通道声明：base_url / api_key / adapter）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderEntry {
   /// 提供方 ID（用于注册与路由引用）。
@@ -64,8 +70,24 @@ pub struct ProviderEntry {
   /// 缺省为空串（Step 8）：Global 来源从 auth.toml 补、Project 必须显式。
   #[serde(default)]
   pub api_key: String,
-  /// 真实模型名：同时作为网关模型 ID 与请求线 `model` 字段。
-  pub model: String,
+  /// 该通道可用的模型清单（D2，必填非空）：声明顺序 = same_provider
+  /// 隐式备选序（D3）；第一个为该通道默认模型。
+  pub models: Vec<ModelEntry>,
+}
+
+/// 单模型声明（D2）：窗口随模型走。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelEntry {
+  /// 真实模型 ID：同时作为网关模型 ID 与请求线 `model` 字段。
+  pub id: String,
+  /// 模型上下文窗口（token）：状态行 ctx 占比分母与压缩阈值共用。
+  #[serde(default = "default_context_window")]
+  pub context_window: u32,
+}
+
+/// `context_window` 缺省值（与装配历史基线一致）。
+fn default_context_window() -> u32 {
+  8192
 }
 
 /// 带来源标记的 provider 声明（Step 8 / D1，内部类型）。
@@ -94,12 +116,59 @@ pub(crate) fn providers_from_table(table: &toml::Table) -> Vec<ProviderEntry> {
     .collect()
 }
 
-/// 路由段：主提供方 → 候选列表。
-#[derive(Debug, Clone, Default, Deserialize)]
+/// routing 段（24 号方案 v1.3）：默认二元组 + 统一降级规则列表。
+#[derive(Debug, Clone, Deserialize)]
 pub struct RoutingSchema {
-  /// 跨提供方降级链。
+  /// 默认模型二元组（D1）：`(provider, model)` 必须存在于 providers 的
+  /// models 中（装配期校验）。
+  pub default: RoutingRef,
+  /// 降级规则列表（D4）：按声明顺序，首条 `match` 命中生效。
   #[serde(default)]
-  pub cross_provider: HashMap<String, Vec<String>>,
+  pub fallback: Vec<FallbackRuleSchema>,
+}
+
+impl Default for RoutingSchema {
+  /// 默认 = mock 通道（ProviderSchema::default 的 mock 模式配套）。
+  fn default() -> Self {
+    Self {
+      default: RoutingRef {
+        provider: "mock".to_string(),
+        model: "mock-model".to_string(),
+      },
+      fallback: Vec::new(),
+    }
+  }
+}
+
+/// `[[routing.fallback]]` 单条规则：`match` → `targets`（D4）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct FallbackRuleSchema {
+  /// 匹配条件（TOML 键 `match`；Rust 保留字用 rename）。
+  #[serde(rename = "match")]
+  pub match_rule: FallbackMatchSchema,
+  /// 有序目标列表（必填；缺失 serde 失败、空数组装配期拒绝）。
+  pub targets: Vec<FallbackTargetSchema>,
+}
+
+/// 规则匹配条件两形态（D4）：`{ provider, model }` 精确 / `{ provider }` 通配。
+#[derive(Debug, Clone, Deserialize)]
+pub struct FallbackMatchSchema {
+  /// 匹配的提供方 ID。
+  pub provider: String,
+  /// 匹配的模型 ID；`None` = provider 级通配。
+  #[serde(default)]
+  pub model: Option<String>,
+}
+
+/// 目标两形态（D4，untagged）：
+/// `{ provider, model }` 显式二元组 / `{ provider }` 两级解析（同名→目标默认）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum FallbackTargetSchema {
+  /// 显式二元组（跨命名体系精确降级）。
+  Model { provider: String, model: String },
+  /// 仅指定通道（同名 → 目标默认）。
+  Provider { provider: String },
 }
 
 /// retry 层：仅暴露三个常用字段，`RetryPolicy` 其余字段取 Default。
@@ -139,6 +208,16 @@ pub struct CompressionSchema {
   pub summarizer_model: Option<String>,
   /// 摘要最大字符数。
   pub max_summary_chars: usize,
+  /// 滞回比率（默认 1.10）：估算需达到上次触发的该倍数才重算。
+  pub hysteresis_ratio: f64,
+  /// 触发压缩后的冷却轮数（默认 2）：冷却期复用摘要、不调用 LLM。
+  pub cooldown_turns: u32,
+  /// 是否启用增量压缩（默认 true）；关闭则每次全量摘要。
+  pub enable_incremental: bool,
+  /// 每 N 次增量后强制全量重建（默认 8，范围 [1,32]；1 = 每次全量）。
+  pub incremental_rebuild_every: u32,
+  /// 摘要输入 token 上限（默认 0 = 自动取模型窗口 70%）。
+  pub max_summary_input_tokens: usize,
 }
 
 impl Default for CompressionSchema {
@@ -149,6 +228,11 @@ impl Default for CompressionSchema {
       keep_recent_turns: 4,
       summarizer_model: None,
       max_summary_chars: 2048,
+      hysteresis_ratio: 1.10,
+      cooldown_turns: 2,
+      enable_incremental: true,
+      incremental_rebuild_every: 8,
+      max_summary_input_tokens: 0,
     }
   }
 }
@@ -157,7 +241,7 @@ impl Default for CompressionSchema {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SessionSchema {
-  /// 初始会话键（`/new` 轮换基准）。
+  /// 初始会话键（`/sessions <名称>` 切换基准）。
   pub default_key: String,
   /// `/history` 默认条数。
   pub history_lines: usize,
@@ -326,9 +410,28 @@ pub fn validate_provider_entry(
     || entry.adapter.trim().is_empty()
     || entry.base_url.trim().is_empty()
     || entry.api_key.trim().is_empty()
-    || entry.model.trim().is_empty()
   {
     warnings.push(format!("provider entry incomplete: {}", entry.provider_id));
+    return false;
+  }
+  // models 必填非空且各 id 非空（D2：空通道无意义）
+  if entry.models.is_empty() {
+    warnings.push(format!("provider models empty: {}", entry.provider_id));
+    return false;
+  }
+  if entry.models.iter().any(|m| m.id.trim().is_empty()) {
+    warnings.push(format!(
+      "provider models contain empty id: {}",
+      entry.provider_id
+    ));
+    return false;
+  }
+  let mut seen = std::collections::HashSet::new();
+  if !entry.models.iter().all(|m| seen.insert(m.id.as_str())) {
+    warnings.push(format!(
+      "provider models duplicate id: {}",
+      entry.provider_id
+    ));
     return false;
   }
   if !ADAPTER_TYPES.contains(&entry.adapter.as_str()) {
@@ -420,6 +523,43 @@ refs = "/opt/refs"
     assert!(!is_valid_domain_id(&"a".repeat(33)));
   }
 
+  /// 场景：`[[providers.models]]` 解析与 `context_window` 缺省值（D2）。
+  ///
+  /// 预期：显式值落位；未配置时取 8192（历史演示基线）；多模型按
+  /// 声明序排列。
+  #[test]
+  fn context_window_parses_with_default() {
+    let table: toml::Table = r#"
+[[providers]]
+provider_id = "p"
+adapter = "openai-chat"
+base_url = "https://real"
+api_key = "k"
+
+  [[providers.models]]
+  id = "m1"
+  context_window = 131072
+
+  [[providers.models]]
+  id = "m2"
+
+[[providers]]
+provider_id = "q"
+adapter = "openai-chat"
+base_url = "https://real"
+api_key = "k"
+
+  [[providers.models]]
+  id = "m"
+"#
+    .parse()
+    .expect("parse");
+    let providers = providers_from_table(&table);
+    assert_eq!(providers[0].models[0].context_window, 131072);
+    assert_eq!(providers[0].models[1].context_window, 8192);
+    assert_eq!(providers[1].models[0].id, "m");
+  }
+
   /// 场景：占位值与 `$ENV` 展开识别。
   ///
   /// 预期：占位（your-*/example.com）命中检测；`$VAR` 设置成功展开、
@@ -432,7 +572,10 @@ refs = "/opt/refs"
       adapter: "openai-chat".into(),
       base_url: "https://api.example.com".into(),
       api_key: "k".into(),
-      model: "m".into(),
+      models: vec![ModelEntry {
+        id: "m".into(),
+        context_window: 8192,
+      }],
     };
     // 占位 base_url
     assert!(!validate_provider_entry(&entry, &mut warnings));

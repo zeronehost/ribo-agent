@@ -1,10 +1,13 @@
 # gateway_fallback 示例：三家真实提供商适配器
 #
-# 三家都注册同一个逻辑主模型 `gpt-fallback`；跨 provider 降级链
-# 按每个提供方的 cross_provider 表逐跳尝试。
+# 网关查询入口由 [routing].default 指定；降级规则按 [[routing.fallback]]
+# 声明顺序逐条匹配（provider 级通配 → 有序 targets）。
 #
-# 任一分组的 base_url / api_key / model 缺失（或整文件被删除）
+# 任一分组的 base_url / api_key / models 缺失（或整文件被删除）
 # 则回退到离线服务桩演示。
+
+[routing]
+default = { provider = "chat-primary", model = "gpt-4o-mini" }
 
 # === 提供商定义 ===
 
@@ -13,25 +16,36 @@ provider_id  = "chat-primary"
 adapter     = "openai-chat"
 base_url    = "https://api.openai.com/v1"
 api_key     = "sk-..."
-model       = "gpt-4o-mini"
+
+  [[providers.models]]
+  id = "gpt-4o-mini"
 
 [[providers]]
 provider_id  = "responses-primary"
 adapter     = "openai-responses"
 base_url    = "https://api.openai.com/v1"
 api_key     = "sk-..."
-model       = "gpt-4o-mini"
+
+  [[providers.models]]
+  id = "gpt-4o-mini"
 
 [[providers]]
 provider_id  = "anthropic-primary"
 adapter     = "anthropic"
 base_url    = "https://api.anthropic.com"
 api_key     = "sk-ant-..."
-model       = "claude-3-5-haiku-20241022"
 
-# === 降级路由 ===
-# cross_provider.<from> = [候选 1, 候选 2, ...]
+  [[providers.models]]
+  id = "claude-3-5-haiku-20241022"
 
-[routing.cross_provider]
-"chat-primary" = ["responses-primary", "anthropic-primary"]
-"responses-primary" = ["anthropic-primary"]
+# === 降级规则 ===
+[[routing.fallback]]
+match = { provider = "chat-primary" }
+targets = [
+  { provider = "responses-primary" },
+  { provider = "anthropic-primary" },
+]
+
+[[routing.fallback]]
+match = { provider = "responses-primary" }
+targets = [{ provider = "anthropic-primary" }]

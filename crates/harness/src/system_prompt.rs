@@ -74,7 +74,28 @@ impl SystemPromptBuilder {
   /// 组装系统提示（返回单段 `Content::Text`）。
   ///
   /// 段落顺序：模板 → 环境 → 技能清单 → 自定义段 → 会话摘要。
+  /// 不追加压缩提示段（兼容旧调用方）；需要提示时用 [`Self::build_compaction`]。
   pub fn build(&self, skills: &[Skill], summary: Option<&str>) -> Vec<Content> {
+    self.build_compaction(skills, summary, false, None)
+  }
+
+  /// 组装系统提示并追加压缩提示段（D6）。
+  ///
+  /// 段落顺序：模板 → 环境 → 技能清单 → 自定义段 → 会话摘要 →
+  /// 过期提示 / 回退提示。
+  ///
+  /// - `fallback_hint == true` 且无摘要时追加 `<compaction-fallback>`；
+  /// - `outdated_hint == Some(N)` 时追加 `<conversation-summary-outdated>`。
+  ///
+  /// 两个提示段只表达"前文缺失/摘要陈旧"，不暴露摘要文本或截断条数，
+  /// 目的是避免模型"假装记得"导致幻觉。
+  pub fn build_compaction(
+    &self,
+    skills: &[Skill],
+    summary: Option<&str>,
+    fallback_hint: bool,
+    outdated_hint: Option<u32>,
+  ) -> Vec<Content> {
     let mut sections: Vec<String> = Vec::new();
 
     // 1. 模板
@@ -136,6 +157,21 @@ impl SystemPromptBuilder {
           "<conversation-summary>\n{s}\n</conversation-summary>"
         ));
       }
+    }
+
+    // 6. 摘要过期提示（D6）：冷却期复用旧摘要且已存在多轮
+    if let Some(age) = outdated_hint {
+      sections.push(format!(
+        "<conversation-summary-outdated>\nThis summary is from {age} turns ago; some recent context may be missing.\n</conversation-summary-outdated>"
+      ));
+    }
+
+    // 7. 回退提示（D6）：无摘要且发生截断——告知模型前文缺失
+    if fallback_hint && summary.is_none() {
+      sections.push(
+        "<compaction-fallback>\nEarlier conversation turns were omitted; no summary is available for this request.\n</compaction-fallback>"
+          .to_string(),
+      );
     }
 
     if sections.is_empty() {
@@ -270,6 +306,50 @@ mod tests {
     };
     assert!(text.contains("<conversation-summary>"));
     assert!(text.contains("This is summary"));
+  }
+
+  /// D6：无摘要 + fallback_hint → 追加 `<compaction-fallback>` 段。
+  #[test]
+  fn fallback_hint_appends_compaction_fallback() {
+    let prompt = SystemPromptBuilder::new()
+      .with_template("TPL")
+      .with_environment(false)
+      .build_compaction(&[], None, true, None);
+    let text = match &prompt[0] {
+      Content::Text(t) => &t.content,
+      _ => panic!("expected Text"),
+    };
+    assert!(text.contains("<compaction-fallback>"));
+    assert!(text.contains("no summary is available"));
+  }
+
+  /// D6：有摘要时即使 fallback_hint=true 也不追加回退段。
+  #[test]
+  fn fallback_hint_ignored_when_summary_present() {
+    let prompt = SystemPromptBuilder::new()
+      .with_template("TPL")
+      .with_environment(false)
+      .build_compaction(&[], Some("kept"), true, None);
+    let text = match &prompt[0] {
+      Content::Text(t) => &t.content,
+      _ => panic!("expected Text"),
+    };
+    assert!(!text.contains("<compaction-fallback>"));
+  }
+
+  /// D6：outdated_hint=Some(N) → 追加过期提示段且含 N。
+  #[test]
+  fn outdated_hint_appends_outdated_section_with_age() {
+    let prompt = SystemPromptBuilder::new()
+      .with_template("TPL")
+      .with_environment(false)
+      .build_compaction(&[], Some("kept"), false, Some(5));
+    let text = match &prompt[0] {
+      Content::Text(t) => &t.content,
+      _ => panic!("expected Text"),
+    };
+    assert!(text.contains("<conversation-summary-outdated>"));
+    assert!(text.contains("from 5 turns ago"));
   }
 
   /// Step 5-C：技能清单带 origin 属性（来源域标签）。

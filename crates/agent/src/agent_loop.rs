@@ -143,6 +143,23 @@ pub async fn run_agent_loop(
 
   // ===== 阶段 4：发射起始事件并进入主循环 =====
 
+  // D8：压缩在 build 阶段（早于此处）发生。摘要成功发射
+  // `Compaction { failed: false }`；失败回退发射 `{ failed: true }`
+  //（v1.6 用户拍板：失败也留痕）。冷却抑制 / 复用摘要不发射。
+  if context.compaction_triggered {
+    tracing::info!(
+      session_key = %session.key,
+      "compaction succeeded; emitting completion event"
+    );
+    emitter.emit(AgentEvent::Compaction { failed: false }).await;
+  } else if context.compaction_failed {
+    tracing::warn!(
+      session_key = %session.key,
+      "compaction failed; emitting failure event"
+    );
+    emitter.emit(AgentEvent::Compaction { failed: true }).await;
+  }
+
   tracing::info!(session_key = %session.key, turns_limit = config.max_iterations, "agent run start");
   emitter.emit(AgentEvent::AgentStart).await;
   emitter.emit(AgentEvent::TurnStart).await;
@@ -411,8 +428,14 @@ async fn stream_assistant_response(
   };
 
   let stream_token = config.signal.child_token();
+  // D6（24 号方案）：降级候选窗口过滤下限 = 当前转录估算 token × 1.1
+  //（余量应对估算偏低）；0 或小转录时过滤自然不生效
+  let estimated_tokens =
+    ra_core::message::estimate_context_tokens(&context.messages);
+  let min_context_window = (estimated_tokens as f64 * 1.1) as usize;
   let options = StreamOptions {
     cancel: Some(CancelToken::from_token(stream_token)),
+    min_context_window,
     ..Default::default()
   };
 

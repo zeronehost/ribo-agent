@@ -35,16 +35,29 @@ fn error_message_of(message: &Message) -> Option<&str> {
   }
 }
 
+/// 压缩成功提示文案（D8）：只提示压缩已发生，不显示摘要内容 / 截断条数。
+/// （事件在压缩完成后、AgentStart 前到达，故措辞为"已压缩"。）
+const COMPACTION_HINT: &str = "[已压缩上下文]";
+
+/// 压缩失败提示文案（v1.6 用户拍板：失败也留痕）。
+const COMPACTION_FAILED_HINT: &str = "[上下文压缩失败，已回退滑窗]";
+
 /// 终端渲染器：stdout 只承载对话渲染（tracing 日志由 logging 落文件）。
 pub struct TerminalRenderer {
   /// 当前消息桶；`MessageStart` 建新桶，`MessageEnd` 收尾即清。
   current: Option<MessageBaseline>,
+  /// 测试断言用的配对标志；实际压缩提示在 `Compaction` 分支直接
+  /// 输出（持久痕迹），不依赖此标志显示，也不需要"复位提示"。
+  compacting: bool,
 }
 
 impl TerminalRenderer {
   /// 创建渲染器。
   pub fn new() -> Self {
-    Self { current: None }
+    Self {
+      current: None,
+      compacting: false,
+    }
   }
 }
 
@@ -71,6 +84,20 @@ fn emit(rendered: usize, prefix: &str, text: &str) -> usize {
 impl Renderer for TerminalRenderer {
   fn on_event(&mut self, event: &AgentEvent) {
     match event {
+      // D8：压缩痕迹——成功一行暗色提示；失败（v1.6）黄色降级提示。
+      // 均不进消息桶、不落盘、不显示摘要内容 / 截断条数。
+      AgentEvent::Compaction { failed } => {
+        self.compacting = true;
+        if *failed {
+          println!("\x1b[33m{COMPACTION_FAILED_HINT}\x1b[0m");
+        } else {
+          println!("{COMPACTION_HINT}");
+        }
+      }
+      // 仅复位测试用标志；压缩提示为持久输出，无需复位
+      AgentEvent::AgentStart => {
+        self.compacting = false;
+      }
       // 新桶：四类消息都发射 MessageStart；仅助手消息的桶做增量渲染，
       // 其余桶只重置（对应内容由命令/工具状态行表达）。
       AgentEvent::MessageStart { message } => {
@@ -158,12 +185,25 @@ pub struct RecordingRenderer {
   pub lagged: Vec<u64>,
   /// Closed 调用次数。
   pub closed: usize,
+  /// 压缩提示是否在显示（D8 配对断言用）。
+  pub compacting: bool,
 }
 
 #[cfg(test)]
 impl Renderer for RecordingRenderer {
   fn on_event(&mut self, event: &AgentEvent) {
     match event {
+      AgentEvent::Compaction { failed } => {
+        self.compacting = true;
+        self.outputs.push(if *failed {
+          COMPACTION_FAILED_HINT.to_string()
+        } else {
+          COMPACTION_HINT.to_string()
+        });
+      }
+      AgentEvent::AgentStart => {
+        self.compacting = false;
+      }
       AgentEvent::MessageUpdate { partial } => {
         for block in &partial.content {
           if let Content::Text(t) = block {
@@ -280,5 +320,27 @@ mod tests {
     assert_eq!(r.lagged, vec![3]);
     assert!(r.outputs.contains(&"ERR:model request failed".to_string()));
     assert_eq!(r.closed, 1);
+  }
+
+  /// D8：Compaction 输出一行持久状态提示（不含摘要内容），
+  /// AgentStart 仅复位测试标志（提示本身不依赖该标志）。
+  #[test]
+  fn compaction_hint_shows_then_resets_on_agent_start() {
+    let mut r = RecordingRenderer::default();
+    // 摘要文本绝不出现在提示中——事件不携带任何内容字段
+    r.on_event(&AgentEvent::Compaction { failed: false });
+    assert!(r.compacting);
+    assert_eq!(r.outputs.last(), Some(&COMPACTION_HINT.to_string()));
+    assert!(!r.outputs.iter().any(|o| o.contains("secret-summary")));
+
+    // v1.6：失败回退也留痕——黄色失败文案，不携带失败原因细节
+    r.on_event(&AgentEvent::Compaction { failed: true });
+    assert_eq!(r.outputs.last(), Some(&COMPACTION_FAILED_HINT.to_string()));
+
+    r.on_event(&AgentEvent::AgentStart);
+    assert!(
+      !r.compacting,
+      "AgentStart 必须复位测试标志（提示为持久输出，无需复位）"
+    );
   }
 }

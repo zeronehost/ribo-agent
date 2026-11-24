@@ -4,6 +4,7 @@
 //! JSONL 会话持久化、上下文压缩、系统提示词与技能注入。
 
 pub mod compaction;
+pub mod compaction_state;
 pub mod config;
 pub mod context;
 pub mod instructions;
@@ -22,7 +23,11 @@ use ra_agent::{
 use ra_core::{error::RiboResult, message::Message};
 
 pub use self::compaction::{
-  CompactionOutcome, Compactor, estimate_context_tokens,
+  CompactionOutcome, CompactionReason, Compactor, estimate_context_tokens,
+};
+pub use self::compaction_state::{
+  CompactionCache, CompactionState, CompactionStateSnapshot,
+  fingerprint_message, locate_checkpoint,
 };
 pub use self::config::{CompactionConfig, ContextConfig, HarnessConfig};
 pub use self::context::HarnessContext;
@@ -129,6 +134,23 @@ impl Harness {
   /// 读取会话完整转录（冷启动会触发一次回放，但不产生磁盘写入）。
   pub async fn session_messages(&self, key: &str) -> RiboResult<Vec<Message>> {
     Ok(self.provider.get_or_create(key).await?.snapshot())
+  }
+
+  /// 读取最近一次上下文装配的压缩三态统计（v1.6 用户需求）。
+  ///
+  /// 未装配且未由 estimator 回填（如未绑定估算器的内存 provider）时
+  /// 返回 `None`（显示端显示「—」）；持久化 provider 在冷启动回放后
+  /// 即有统计值。
+  pub async fn session_compaction_stats(
+    &self,
+    key: &str,
+  ) -> Option<ra_agent::session::CompactionStats> {
+    self
+      .provider
+      .get_or_create(key)
+      .await
+      .ok()?
+      .compaction_stats()
   }
 
   /// 列出全部会话键（内存 ∪ 磁盘，已排序）。

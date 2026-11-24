@@ -55,12 +55,17 @@ fn fuzzy_candidates(token: &str) -> Vec<(&'static CommandMeta, &'static str)> {
   if token.is_empty() {
     return ra_cli::commands::COMMANDS
       .iter()
+      .filter(|m| m.target != ra_cli::commands::Target::CliOnly)
       .map(|m| (m, m.name))
       .collect();
   }
   let mut prefixed = Vec::new();
   let mut fuzzy = Vec::new();
   for meta in ra_cli::commands::COMMANDS {
+    // CliOnly 命令不参与 TUI 补全
+    if meta.target == ra_cli::commands::Target::CliOnly {
+      continue;
+    }
     let names = std::iter::once(meta.name).chain(meta.aliases.iter().copied());
     for name in names {
       let bare = name.trim_start_matches('/').to_lowercase();
@@ -121,7 +126,7 @@ mod tests {
   // 场景：多候选 → 最长公共前缀 + 候选列表。
   #[test]
   fn ambiguous_completion_reports_alternatives() {
-    // /s 命中 /stop /skills /sessions /status
+    // /s 命中 /stop /skills /sessions（/status 为 CliOnly 不参与补全）
     let completion = complete("/s").expect("/s 应有多候选");
     assert!(completion.ambiguous);
     assert!(completion.alternatives.len() >= 3);
@@ -138,19 +143,27 @@ mod tests {
   // 场景：带空格（已有参数）不补全；普通文本不补全。
   #[test]
   fn no_completion_for_args_or_plain_text() {
-    assert!(complete("/new work").is_none());
+    assert!(complete("/sessions work").is_none());
     assert!(complete("hello").is_none());
     assert!(complete("/zzz").is_none());
   }
 
-  // 场景：空 token（仅 "/"）列出全部命令。
+  // 场景：空 token（仅 "/"）列出全部命令（CliOnly 命令被过滤）。
   #[test]
   fn bare_slash_lists_all() {
     let completion = complete("/").expect("/ 应列出全部");
     assert!(completion.ambiguous);
-    assert_eq!(
-      completion.alternatives.len(),
-      ra_cli::commands::COMMANDS.len()
+    let expected = ra_cli::commands::COMMANDS
+      .iter()
+      .filter(|m| m.target != ra_cli::commands::Target::CliOnly)
+      .count();
+    assert_eq!(completion.alternatives.len(), expected);
+    // CliOnly 命令不出现在候选里
+    assert!(
+      !completion
+        .alternatives
+        .iter()
+        .any(|m| m.name == "/status" || m.name == "/history")
     );
   }
 }

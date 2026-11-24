@@ -23,6 +23,15 @@ pub fn init_file_logging(
   let (writer, guard) = tracing_appender::non_blocking(appender);
   let _ = tracing_subscriber::fmt()
     .with_writer(writer) // NonBlocking 直接实现 MakeWriter
+    .with_timer(
+      tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339()
+        .unwrap_or_else(|_| {
+          tracing_subscriber::fmt::time::OffsetTime::new(
+            time::UtcOffset::UTC,
+            time::format_description::well_known::Rfc3339,
+          )
+        }),
+    )
     .with_ansi(false)
     .try_init(); // 全局订阅器仅首个成功；E2E 用 rolling::never 按用例注入
   Ok(guard)

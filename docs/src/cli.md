@@ -76,7 +76,7 @@ Plugin Entries:
   - plugins/echo.wasm  [project]
 
 Read-only mounts:
-  - dataset         /mnt/datasets                     [project, data]
+  - datasets        /mnt/datasets                     [project, data]
   - company         /opt/company/plugins              [global, plugins]
 ```
 

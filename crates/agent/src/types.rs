@@ -16,12 +16,40 @@ use crate::{
 ///
 /// 由 [`ContextProvider`](crate::traits::ContextProvider) 构建并逐轮演进：
 /// `messages` 随助手消息、工具结果回灌与队列注入不断追加。
+///
+/// 标记 `#[non_exhaustive]`：未来新增状态位（如压缩状态）不再破坏性变更。
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct AgentContext {
   /// 系统提示（多模态，空表示无）。
   pub system_prompt: Vec<Content>,
   /// 对话转录（含 prompt、注入消息、助手消息、工具结果）。
   pub messages: Vec<Message>,
+  /// 本轮是否触发了新摘要（D8）：`run_agent_loop` 据此发射
+  /// `Compaction { failed: false }`。冷却抑制 / 复用摘要为 `false`。
+  pub compaction_triggered: bool,
+  /// 本轮摘要调用是否失败回退（v1.6 用户拍板失败留痕）：据此发射
+  /// `Compaction { failed: true }`。与 `compaction_triggered` 互斥，
+  /// 二者皆 `false` 表示本轮未执行压缩。
+  pub compaction_failed: bool,
+}
+
+impl AgentContext {
+  /// crate 内构造器：`#[non_exhaustive]` 下外部 crate 无法用字面量构造
+  ///（[`ContextProvider`](crate::traits::ContextProvider) 的宿主实现走此入口）。
+  pub fn new(
+    system_prompt: Vec<Content>,
+    messages: Vec<Message>,
+    compaction_triggered: bool,
+    compaction_failed: bool,
+  ) -> Self {
+    Self {
+      system_prompt,
+      messages,
+      compaction_triggered,
+      compaction_failed,
+    }
+  }
 }
 
 /// 主循环运行配置。
@@ -127,6 +155,8 @@ mod tests {
 
     assert!(context.system_prompt.is_empty());
     assert!(context.messages.is_empty());
+    assert!(!context.compaction_triggered);
+    assert!(!context.compaction_failed);
   }
 
   // 场景：LoopConfig::for_session 复用会话内聚的队列与取消根。

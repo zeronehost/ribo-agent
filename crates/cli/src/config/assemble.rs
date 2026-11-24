@@ -9,7 +9,8 @@ use std::{
 };
 
 use ra_agent::{
-  adapter::ToolManagerAdapter, agent::BaseAgent, types::LoopDeps,
+  adapter::ToolManagerAdapter, agent::BaseAgent, traits::ContextProvider,
+  types::LoopDeps,
 };
 use ra_core::{
   error::RiboResult,
@@ -32,7 +33,10 @@ use ra_provider::{
     openai::completion::OpenAiCompatibleAdapter,
     openai::responses::OpenAiResponsesAdapter,
   },
-  gateway::{Gateway, GatewayConfig, RouteMap},
+  gateway::{
+    FallbackMatch, FallbackRule, FallbackTarget, Gateway, GatewayConfig,
+    RouteMap,
+  },
   ids::{ModelId, ProviderId},
   model::Model,
   retry::RetryPolicy,
@@ -40,6 +44,7 @@ use ra_provider::{
 use ra_tools::manager::ToolManager;
 
 use super::{ConfigMode, LoadOutcome, PluginAclSchema};
+use crate::config::schema::FallbackTargetSchema;
 
 use ra_tools::builtin::FsRoot;
 
@@ -65,9 +70,15 @@ pub struct CliSession {
   pub events: tokio::sync::broadcast::Receiver<ra_agent::events::AgentEvent>,
   pub mode: ConfigMode,
   pub warnings: Vec<String>,
+  /// 状态行数据：当前主模型归属的 provider（装配期取自 `[routing].default`）。
+  pub provider_id: String,
+  /// 状态行数据：当前主模型名。
+  pub model_name: String,
+  /// 主模型上下文窗口（状态行 ctx 占比的分母；0 = 未知）。
+  pub context_window: u32,
   /// `/history` 默认条数等 REPL 行为参数。
   pub history_lines: usize,
-  /// 初始会话键（session 层 `default_key`；`/new` 缺省自动轮换的前缀）。
+  /// 初始会话键（session 层 `default_key`；`/sessions <名称>` 切换基准）。
   pub default_key: String,
   /// 装配期加载的技能名（`/skills` 输出）。
   pub skills: Vec<String>,
@@ -100,10 +111,14 @@ fn pid(raw: &str) -> ProviderId {
 }
 
 /// 构造满足网关注册校验的模型。
+///
+/// `context_window` 由调用方给出：真实模式取 `[providers].context_window`
+///（缺省 8192），mock 模式用演示窗口；该值同时作为状态行 ctx 占比分母。
 fn model_of(
   provider_id: &str,
   model_name: &str,
   base_url: impl Into<String>,
+  context_window: u32,
 ) -> Model {
   Model::new(
     pid(provider_id),
@@ -111,11 +126,206 @@ fn model_of(
     model_name.to_string(),
     base_url.into(),
   )
-  .with_context_window(8192)
+  .with_context_window(context_window)
   .with_max_tokens(1024)
 }
 
-/// 真实模式网关：逐条构造适配器注册 + 跨提供方路由 + retry 参数。
+/// 装配期 compression 配置校验（25 号方案 D7）。
+///
+/// 校验数值范围与摘要模型注册；错误码 `config.compression_invalid`。
+/// 仅 Real 模式校验摘要模型注册（mock 模式无真实 provider 目录）。
+///
+/// # Errors
+///
+/// 任一范围非法或摘要模型未注册 → `config.compression_invalid` fail-fast。
+fn validate_compression(outcome: &LoadOutcome) -> RiboResult<()> {
+  const CODE: &str = "compression_invalid";
+  let compression = &outcome.compression;
+  let invalid = |reason: String| {
+    ra_core::error::RiboError::new(CONFIG_DOMAIN, CODE, reason)
+  };
+
+  if compression.trigger_ratio.is_nan()
+    || !(0.0..=1.0).contains(&compression.trigger_ratio)
+  {
+    return Err(invalid(format!(
+      "trigger_ratio must be in (0, 1], got {}",
+      compression.trigger_ratio
+    )));
+  }
+  if compression.hysteresis_ratio.is_nan()
+    || !(1.0..=10.0).contains(&compression.hysteresis_ratio)
+  {
+    return Err(invalid(format!(
+      "hysteresis_ratio must be in [1.0, 10.0], got {}",
+      compression.hysteresis_ratio
+    )));
+  }
+  if compression.cooldown_turns > 100 {
+    return Err(invalid(format!(
+      "cooldown_turns must be <= 100, got {}",
+      compression.cooldown_turns
+    )));
+  }
+  if !(1..=32).contains(&compression.incremental_rebuild_every) {
+    return Err(invalid(format!(
+      "incremental_rebuild_every must be in [1, 32], got {}",
+      compression.incremental_rebuild_every
+    )));
+  }
+
+  // 摘要模型注册校验（仅 Real 模式；用目录查询而非仅 ModelId::parse）
+  if outcome.mode == ConfigMode::Real
+    && let Some(summarizer) = &compression.summarizer_model
+  {
+    let registered = outcome
+      .provider
+      .providers
+      .iter()
+      .any(|provider| provider.models.iter().any(|m| m.id == *summarizer));
+    if !registered {
+      return Err(invalid(format!(
+        "summarizer_model `{summarizer}` is not registered by any provider"
+      )));
+    }
+  }
+  Ok(())
+}
+
+/// 装配期 routing 引用校验（24 号方案 D1/D4）：
+///
+/// - `[routing].default` 的 `(provider, model)` 必须存在于某条目的 models；
+/// - fallback 规则的 `match.provider` / `targets[].provider` 必须已注册；
+/// - 规则中出现的 `model` 必须存在于对应 provider 的 models；
+/// - 通配规则遮蔽后序精确规则 → shadowing warning（不拒绝，D4）。
+///
+/// 任一引用悬空 → `config.routing_invalid`（fail-fast）。
+fn validate_routing_refs(outcome: &LoadOutcome) -> RiboResult<()> {
+  const CODE: &str = "config.routing_invalid";
+  let registered: std::collections::HashMap<&str, Vec<&str>> = outcome
+    .provider
+    .providers
+    .iter()
+    .map(|p| {
+      (
+        p.provider_id.as_str(),
+        p.models.iter().map(|m| m.id.as_str()).collect(),
+      )
+    })
+    .collect();
+  // D1：default 二元组存在性
+  let default_ok = registered
+    .get(outcome.provider.routing.default.provider.as_str())
+    .is_some_and(|models| {
+      models.contains(&outcome.provider.routing.default.model.as_str())
+    });
+  if !default_ok {
+    return Err(ra_core::error::RiboError::new(
+      "config",
+      CODE,
+      format!(
+        "[routing].default references unknown provider/model: {}/{}",
+        outcome.provider.routing.default.provider,
+        outcome.provider.routing.default.model
+      ),
+    ));
+  }
+  // D4：fallback 规则引用 + shadowing
+  for (index, rule) in outcome.provider.routing.fallback.iter().enumerate() {
+    if !registered.contains_key(rule.match_rule.provider.as_str()) {
+      return Err(ra_core::error::RiboError::new(
+        "config",
+        CODE,
+        format!(
+          "fallback rule #{} matches unknown provider '{}'",
+          index + 1,
+          rule.match_rule.provider
+        ),
+      ));
+    }
+    if let Some(model) = &rule.match_rule.model
+      && !registered
+        .get(rule.match_rule.provider.as_str())
+        .is_some_and(|models| models.contains(&model.as_str()))
+    {
+      return Err(ra_core::error::RiboError::new(
+        "config",
+        CODE,
+        format!(
+          "fallback rule #{} matches unknown model '{}/{}'",
+          index + 1,
+          rule.match_rule.provider,
+          model
+        ),
+      ));
+    }
+    if rule.targets.is_empty() {
+      return Err(ra_core::error::RiboError::new(
+        "config",
+        CODE,
+        format!("fallback rule #{} has empty targets", index + 1),
+      ));
+    }
+    for target in &rule.targets {
+      let (provider, model) = match target {
+        FallbackTargetSchema::Model { provider, model } => {
+          (provider.as_str(), Some(model.as_str()))
+        }
+        FallbackTargetSchema::Provider { provider } => {
+          (provider.as_str(), None)
+        }
+      };
+      let Some(models) = registered.get(provider) else {
+        return Err(ra_core::error::RiboError::new(
+          "config",
+          CODE,
+          format!(
+            "fallback rule #{} targets unknown provider '{provider}'",
+            index + 1
+          ),
+        ));
+      };
+      if let Some(model) = model
+        && !models.contains(&model)
+      {
+        return Err(ra_core::error::RiboError::new(
+          "config",
+          CODE,
+          format!(
+            "fallback rule #{} targets unknown model '{provider}/{model}'",
+            index + 1
+          ),
+        ));
+      }
+    }
+  }
+  // shadowing 检测（warning 不拒绝，D4 伪码）
+  let rules = &outcome.provider.routing.fallback;
+  for (i, prev) in rules.iter().enumerate() {
+    for (j, next) in rules.iter().enumerate().skip(i + 1) {
+      let provider_covered =
+        prev.match_rule.provider == next.match_rule.provider;
+      let model_covered = match (&prev.match_rule.model, &next.match_rule.model)
+      {
+        (None, _) => true,
+        (Some(p), Some(n)) => p == n,
+        (Some(_), None) => false,
+      };
+      if provider_covered && model_covered {
+        tracing::warn!(
+          shadowing_rule = j + 1,
+          shadowed_by = i + 1,
+          "fallback rule #{} is shadowed by rule #{}",
+          j + 1,
+          i + 1
+        );
+      }
+    }
+  }
+  Ok(())
+}
+
+/// 真实模式网关：逐条构造适配器注册 + 降级路由 + retry 参数。
 fn build_real_gateway(
   outcome: &LoadOutcome,
 ) -> RiboResult<(Arc<Gateway>, Model)> {
@@ -130,27 +340,38 @@ fn build_real_gateway(
   };
   let mut gateway = Gateway::new(cfg);
   for entry in &outcome.provider.providers {
-    let adapter_model =
-      model_of(&entry.provider_id, &entry.model, entry.base_url.clone());
+    // 多模型注册（D2）：models 全量进通道目录
+    let adapter_models: Vec<Model> = entry
+      .models
+      .iter()
+      .map(|m| {
+        model_of(
+          &entry.provider_id,
+          &m.id,
+          entry.base_url.clone(),
+          m.context_window,
+        )
+      })
+      .collect();
     let api_key = Some(entry.api_key.clone());
     // 三个分支构造签名一致（id/models/http/api_key），差异在协议端点与
     // 请求/响应编解码——按 adapter 声明走各自的适配器
     let adapter = match entry.adapter.as_str() {
       "openai-chat" => Arc::new(OpenAiCompatibleAdapter::new(
         pid(&entry.provider_id),
-        vec![adapter_model],
+        adapter_models.clone(),
         reqwest::Client::new(),
         api_key,
       )) as Arc<dyn ra_provider::traits::Provider>,
       "openai-responses" => Arc::new(OpenAiResponsesAdapter::new(
         pid(&entry.provider_id),
-        vec![adapter_model],
+        adapter_models.clone(),
         reqwest::Client::new(),
         api_key,
       )) as Arc<dyn ra_provider::traits::Provider>,
       "anthropic" => Arc::new(AnthropicProvider::new(
         pid(&entry.provider_id),
-        vec![adapter_model],
+        adapter_models,
         reqwest::Client::new(),
         api_key,
       )) as Arc<dyn ra_provider::traits::Provider>,
@@ -159,21 +380,72 @@ fn build_real_gateway(
     gateway.register(adapter)?;
   }
   let mut routes = RouteMap::default();
-  for (from, chain) in &outcome.provider.routing.cross_provider {
-    routes
-      .insert_cross_provider(pid(from), chain.iter().map(|c| pid(c)).collect());
+  // D3：隐式同 provider 链（models 声明序，其余模型）
+  for entry in &outcome.provider.providers {
+    for (index, m) in entry.models.iter().enumerate() {
+      let chain: Vec<ModelId> = entry
+        .models
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| *j != index)
+        .map(|(_, x)| mid(&x.id))
+        .collect();
+      routes.insert_same_provider(mid(&m.id), chain);
+    }
   }
+  // D4：统一 fallback 规则列表
+  let rules: Vec<FallbackRule> = outcome
+    .provider
+    .routing
+    .fallback
+    .iter()
+    .map(|r| FallbackRule {
+      match_: FallbackMatch {
+        provider: pid(&r.match_rule.provider),
+        model: r.match_rule.model.as_ref().map(|m| mid(m)),
+      },
+      targets: r
+        .targets
+        .iter()
+        .map(|t| match t {
+          FallbackTargetSchema::Model { provider, model } => {
+            FallbackTarget::Model {
+              provider: pid(provider),
+              model: mid(model),
+            }
+          }
+          FallbackTargetSchema::Provider { provider } => {
+            FallbackTarget::Provider(pid(provider))
+          }
+        })
+        .collect(),
+    })
+    .collect();
+  routes.insert_fallback_rules(rules);
   let gateway = Arc::new(gateway.with_routes(routes));
+  // D1：默认二元组定位主模型（load 阶段已校验存在性）
   let primary = outcome
     .provider
     .providers
     .iter()
-    .find(|p| p.model == outcome.provider.query_model)
-    .expect("query_model 已在 load 阶段校验");
+    .find(|p| {
+      p.provider_id == outcome.provider.routing.default.provider
+        && p
+          .models
+          .iter()
+          .any(|m| m.id == outcome.provider.routing.default.model)
+    })
+    .expect("default (provider, model) 已在 load 阶段校验");
+  let primary_model = primary
+    .models
+    .iter()
+    .find(|m| m.id == outcome.provider.routing.default.model)
+    .expect("default model 已在 load 阶段校验");
   let model = model_of(
     &primary.provider_id,
-    &primary.model,
+    &primary_model.id,
     primary.base_url.clone(),
+    primary_model.context_window,
   );
   Ok((gateway, model))
 }
@@ -185,7 +457,7 @@ fn build_mock_gateway(
   steps: Vec<MockStep>,
 ) -> RiboResult<(Arc<Gateway>, Model)> {
   let provider_id = pid("mock");
-  let model = model_of("mock", MOCK_MODEL, "http://localhost");
+  let model = model_of("mock", MOCK_MODEL, "http://localhost", 8192);
   let mock = ra_provider::adapters::mock::MockProvider::new(
     provider_id.clone(),
     vec![model.clone()],
@@ -798,16 +1070,27 @@ fn assemble_impl(
   steps: Vec<MockStep>,
   options: AssembleOptions,
 ) -> RiboResult<CliSession> {
+  // ===== 阶段 0：routing 引用校验（24 号方案 D1/D4，Real 模式 fail-fast）===
+  // 仅 Real 模式校验——mock 模式无 provider 注册，规则本就悬空属预期。
+  if outcome.mode == ConfigMode::Real {
+    validate_routing_refs(outcome)?;
+  }
+  // D7：compression 数值范围校验（摘要模型注册校验按模式在函数内判定）
+  validate_compression(outcome)?;
   // ===== 阶段 1：网关 =====
   let (gateway, model) = match outcome.mode {
     ConfigMode::Real => build_real_gateway(outcome)?,
     ConfigMode::Mock => build_mock_gateway(steps)?,
   };
+  // ctx 占比分母 / 侧栏 provider·model：model 后续移入 Compactor，先留存
+  let context_window = model.context_window;
+  let provider_id = model.provider.to_string();
+  let model_name = model.name.clone();
 
   // ===== 阶段 2：持久化 + 技能 =====
   let store =
     Arc::new(JsonlSessionStore::new(sessions_dir(&outcome.harness.root)));
-  let provider = Arc::new(PersistentSessionProvider::new(store.clone()));
+  // provider 在阶段 3 建（需绑定上下文统计估算器，冷启动回放后写三态）
   // ===== 两域技能汇总（Project > Global）：SkillsLoader 按 roots 顺序
   // 首个胜出，故此处按优先级排列。v3 起无插件域技能并入。
   let mut skill_roots: Vec<SkillRoot> = Vec::new();
@@ -878,17 +1161,31 @@ fn assemble_impl(
         .as_ref()
         .map(|m| mid(m)),
       max_summary_chars: outcome.compression.max_summary_chars,
+      hysteresis_ratio: outcome.compression.hysteresis_ratio,
+      cooldown_turns: outcome.compression.cooldown_turns,
+      enable_incremental: outcome.compression.enable_incremental,
+      incremental_rebuild_every: outcome.compression.incremental_rebuild_every,
+      max_summary_input_tokens: outcome.compression.max_summary_input_tokens,
     },
     include_environment: outcome.harness.include_environment,
   };
-  let compactor = Arc::new(Compactor::new(gateway.clone(), model.clone()));
-  let context = HarnessContext::new(
+  // D11：绑定 store，启用摘要记录写入与重启恢复（与 provider 共享同一 Arc）
+  let compactor = Arc::new(
+    Compactor::new(gateway.clone(), model.clone()).with_store(store.clone()),
+  );
+  let context = Arc::new(HarnessContext::new(
     SystemPromptBuilder::new()
       .with_template(DEFAULT_CLI_TEMPLATE)
       .with_instructions(instructions),
     Some(compactor),
     skills,
     ctx_cfg,
+  ));
+  // 冷启动统计估算器：provider 回放后按当前转录估算压缩三态（不压缩），
+  // 使首次对话前 TUI 侧栏 / CLI `/status` 也有上下文数值。
+  let provider = Arc::new(
+    PersistentSessionProvider::new(store.clone())
+      .with_stats_estimator(context.clone()),
   );
 
   // ===== 阶段 4：内置工具 + WASM 插件 =====
@@ -957,9 +1254,9 @@ fn assemble_impl(
   // ===== 阶段 5：BaseAgent + Harness + CliSession =====
   let deps = LoopDeps {
     gateway: gateway.clone(),
-    model: mid(&outcome.provider.query_model),
+    model: mid(&outcome.provider.routing.default.model),
     tools,
-    context_provider: Arc::new(context),
+    context_provider: context.clone() as Arc<dyn ContextProvider>,
   };
   let agent = BaseAgent::new(deps, provider.clone());
   let harness = Arc::new(Harness::new(agent, provider, store));
@@ -969,6 +1266,9 @@ fn assemble_impl(
     events,
     mode: outcome.mode,
     warnings,
+    context_window,
+    provider_id,
+    model_name,
     history_lines: outcome.session.history_lines,
     default_key: outcome.session.default_key.clone(),
     skills: skill_names,
@@ -986,6 +1286,159 @@ fn t3_sessions_live_under_ribo_dir() {
   let root = Path::new("/proj");
   assert_eq!(sessions_dir(root), Path::new("/proj/.ribo/sessions"));
   assert_ne!(sessions_dir(root), root.join("sessions"));
+}
+
+/// 场景：compression 配置校验（25 号方案 D7）。
+///
+/// 覆盖五类非法值 → `compression_invalid`（裸码断言）、老配置新字段
+/// 取默认值、Real 模式摘要模型未注册拒绝、Mock 模式跳过注册校验。
+#[cfg(test)]
+mod compression_validation_tests {
+  use super::*;
+  use crate::config::LoadOutcome;
+
+  /// 写临时 TOML 并加载 outcome（cli_root=None，单文件 Project 层）。
+  fn load_outcome(toml_text: &str) -> LoadOutcome {
+    let dir = tempfile::tempdir().expect("temp");
+    let path = dir.path().join("ribo.toml");
+    std::fs::write(&path, toml_text).expect("write config");
+    // TempDir 在函数结束前保持存活：路径在 load 内即时消费，无跨生命周期引用
+    LoadOutcome::load(Some(&path), None)
+  }
+
+  const BASE: &str = r#"
+[routing]
+default = { provider = "p", model = "m" }
+
+[[providers]]
+provider_id = "p"
+adapter = "openai-chat"
+base_url = "https://real"
+api_key = "sk-1"
+
+  [[providers.models]]
+  id = "m"
+
+[compression]
+enabled = true
+"#;
+
+  #[test]
+  fn trigger_ratio_out_of_range_rejected() {
+    let outcome =
+      load_outcome("[compression]\nenabled = true\ntrigger_ratio = 1.5\n");
+    let err = validate_compression(&outcome).expect_err("must reject");
+    assert_eq!(err.code(), "compression_invalid");
+  }
+
+  #[test]
+  fn hysteresis_ratio_out_of_band_rejected() {
+    let outcome =
+      load_outcome("[compression]\nenabled = true\nhysteresis_ratio = 20.0\n");
+    let err = validate_compression(&outcome).expect_err("must reject");
+    assert_eq!(err.code(), "compression_invalid");
+  }
+
+  #[test]
+  fn cooldown_turns_over_limit_rejected() {
+    let outcome =
+      load_outcome("[compression]\nenabled = true\ncooldown_turns = 200\n");
+    let err = validate_compression(&outcome).expect_err("must reject");
+    assert_eq!(err.code(), "compression_invalid");
+  }
+
+  #[test]
+  fn rebuild_every_out_of_range_rejected() {
+    let outcome = load_outcome(
+      "[compression]\nenabled = true\nincremental_rebuild_every = 64\n",
+    );
+    let err = validate_compression(&outcome).expect_err("must reject");
+    assert_eq!(err.code(), "compression_invalid");
+  }
+
+  #[test]
+  fn legacy_config_gains_new_field_defaults() {
+    // 仅旧 5 字段：serde default 补齐新字段，且校验通过
+    let outcome = load_outcome(
+      "[compression]\nenabled = true\ntrigger_ratio = 0.75\nmax_summary_chars = 2048\n",
+    );
+    validate_compression(&outcome).expect("legacy config must pass");
+    assert!((outcome.compression.hysteresis_ratio - 1.10).abs() < f64::EPSILON);
+    assert_eq!(outcome.compression.cooldown_turns, 2);
+    assert!(outcome.compression.enable_incremental);
+    assert_eq!(outcome.compression.incremental_rebuild_every, 8);
+    assert_eq!(outcome.compression.max_summary_input_tokens, 0);
+  }
+
+  #[test]
+  fn real_mode_unregistered_summarizer_model_rejected() {
+    let text = format!("{BASE}summarizer_model = \"ghost-model\"\n");
+    let outcome = load_outcome(&text);
+    assert_eq!(outcome.mode, ConfigMode::Real);
+    let err = validate_compression(&outcome).expect_err("must reject");
+    assert_eq!(err.code(), "compression_invalid");
+  }
+
+  #[test]
+  fn real_mode_registered_summarizer_model_passes() {
+    let text = format!("{BASE}summarizer_model = \"m\"\n");
+    let outcome = load_outcome(&text);
+    assert_eq!(outcome.mode, ConfigMode::Real);
+    validate_compression(&outcome).expect("registered model must pass");
+  }
+
+  #[test]
+  fn mock_mode_skips_summarizer_registration_check() {
+    // 无 provider → Mock 模式；摘要模型悬空属预期，不拒绝
+    let outcome = load_outcome(
+      "[compression]\nenabled = true\nsummarizer_model = \"ghost\"\n",
+    );
+    assert_eq!(outcome.mode, ConfigMode::Mock);
+    validate_compression(&outcome).expect("mock mode skips registration check");
+  }
+}
+
+/// 场景（ctx 占比分母）：装配把 `[[providers]].context_window` 传入
+/// `CliSession`（状态行 ctx 用），mock 装配缺省 8192。
+#[cfg(test)]
+mod context_window_tests {
+  use super::*;
+  use crate::config::LoadOutcome;
+
+  #[test]
+  fn context_window_flows_into_session() {
+    let dir = tempfile::tempdir().expect("temp");
+    let path = dir.path().join("ribo.toml");
+    std::fs::write(
+      &path,
+      r#"
+[routing]
+default = { provider = "p", model = "m" }
+
+[[providers]]
+provider_id = "p"
+adapter = "openai-chat"
+base_url = "https://real"
+api_key = "sk-1"
+
+  [[providers.models]]
+  id = "m"
+  context_window = 131072
+"#,
+    )
+    .expect("write");
+    let outcome = LoadOutcome::load(Some(&path), None);
+    let session = assemble_with_steps(&outcome, Vec::new()).expect("assemble");
+    assert_eq!(session.context_window, 131072);
+  }
+
+  #[test]
+  fn mock_session_uses_default_window() {
+    let dir = tempfile::tempdir().expect("temp");
+    let outcome = LoadOutcome::load(None, Some(dir.path()));
+    let session = assemble_with_steps(&outcome, Vec::new()).expect("assemble");
+    assert_eq!(session.context_window, 8192);
+  }
 }
 
 #[cfg(test)]
