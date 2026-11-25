@@ -21,7 +21,7 @@ use crate::error::{
 pub(super) fn map_provider_error(
   body: &serde_json::Value,
 ) -> Option<&'static str> {
-  // ===== 第一级：显式字段精确匹配 =====
+  // 第一级：显式字段精确匹配
   // `code` 与 `type` 各提供方取值不一，这里维护并集表；
   // 未识别的显式码不猜测类别，直接落入关键词兜底。
   let explicit = body
@@ -52,7 +52,7 @@ pub(super) fn map_provider_error(
     return Some(code);
   }
 
-  // ===== 第二级：message 关键词兜底 =====
+  // 第二级：message 关键词兜底
   map_provider_error_by_message(body)
 }
 

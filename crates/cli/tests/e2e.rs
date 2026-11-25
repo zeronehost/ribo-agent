@@ -1,4 +1,4 @@
-//! REPL 集成测试（APP-01..04）。
+//! REPL 集成测试。
 //!
 //! 驱动方式：`Repl::run` spawn 为后台任务；输入经 `mpsc` 通道精确
 //! 供给（`RecordingLineSource`），渲染经录制实现断言；会话真相经
@@ -21,7 +21,7 @@ use ra_core::message::{AssistantMessage, Content, StopReason, TextContent};
 use ra_provider::adapters::mock::MockStep;
 use tokio::sync::mpsc::UnboundedSender;
 
-// ===== 测试输入源：通道回放 =====
+// 测试输入源：通道回放
 
 /// 通道行源：测试侧逐行推送（`send` 后由 REPL 拉取）。
 struct ChannelLineSource {
@@ -34,7 +34,7 @@ impl LineSource for ChannelLineSource {
   }
 }
 
-// ===== 测试渲染器：录制实现 =====
+// 测试渲染器：录制实现
 
 /// 录制数据（共享给测试主循环断言）。
 #[derive(Default)]
@@ -98,7 +98,7 @@ fn error_message_of(message: &ra_core::message::Message) -> Option<&str> {
   }
 }
 
-// ===== 测试脚手架 =====
+// 测试脚手架
 
 /// 文本助手消息（mock `Complete` 步骤的返回体）。
 fn text_assistant(text: &str) -> AssistantMessage {
@@ -143,7 +143,7 @@ struct ReplFixture {
 /// 启动 REPL：mock 模式 + 注入脚本步骤 + 独立临时工作空间（root）。
 fn spawn_repl(steps: Vec<MockStep>) -> (ReplFixture, tempfile::TempDir) {
   let dir = tempfile::tempdir().expect("temp dir");
-  // mock 模式 + 工作空间隔离（APP 用例间互不影响）
+  // mock 模式 + 工作空间隔离（用例间互不影响）
   let outcome = LoadOutcome::load(None, Some(dir.path()));
   assert_eq!(
     outcome.mode,
@@ -191,7 +191,7 @@ async fn settle() {
   tokio::time::sleep(std::time::Duration::from_millis(1)).await;
 }
 
-// ===== APP-01：Silent 挂起回合 + /stop 取消渲染 =====
+// Silent 挂起回合 + /stop 取消渲染
 
 /// 场景：`MockStep::Silent` 挂起回合，`/stop` 取消后以 Aborted 收敛
 /// 并渲染，`/exit` 正常退出。
@@ -242,7 +242,7 @@ async fn silent_turn_then_stop_renders_aborted() {
   );
 }
 
-// ===== APP-02：在途拒绝 + 结束后恢复 =====
+// 在途拒绝 + 结束后恢复
 
 /// 场景：回合进行中再次 Chat 与 `/sessions` 切换被拒绝（不留转录痕迹）；
 /// `/stop` 后两者恢复正常。
@@ -258,7 +258,7 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
     complete_step("work-ok"),
   ]);
 
-  // ===== 阶段 1：挂起回合期间的重入拒绝 =====
+  // 挂起回合期间的重入拒绝
   fx.tx.send("hi".into()).expect("send");
   // MessageStart = Silent 步骤已消费（stop 必为流中取消，确定性收敛）
   wait_until(&fx.renderer, |r| r.starts >= 1).await;
@@ -266,7 +266,7 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
   fx.tx.send("/sessions x".into()).expect("send"); // 在途切换 → 拒绝
   fx.tx.send("/stop".into()).expect("send"); // 等待复位（内部阻塞）
 
-  // ===== 阶段 2：停止后新回合（Complete 脚本）成功 =====
+  // 停止后新回合（Complete 脚本）成功
   // /stop 的 handle_stop 阻塞至复位，此行进入时必然 Idle
   fx.tx.send("fine".into()).expect("send");
   // 等待第二回合收敛 + 复位落地后再切换，避免在途切换误拒绝
@@ -274,7 +274,7 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
   settle().await;
   fx.tx.send("/sessions work".into()).expect("send");
 
-  // ===== 阶段 3：work 键下的第三回合（验证轮换生效） =====
+  // work 键下的第三回合（验证轮换生效）
   fx.tx.send("third".into()).expect("send");
   wait_until(&fx.renderer, |r| r.agent_ends >= 3).await;
   drop(fx.tx); // EOF → REPL 退出
@@ -338,7 +338,7 @@ async fn concurrent_chat_and_new_are_rejected_while_running() {
   assert!(keys.iter().any(|k| k == "work"), "停止后 /sessions 应生效");
 }
 
-// ===== APP-03：/sessions 轮换 + 转录隔离 =====
+// /sessions 轮换 + 转录隔离
 
 /// 场景：`/sessions s2` 切换会话键后，两键转录互相隔离。
 ///
@@ -349,12 +349,12 @@ async fn new_key_rotates_and_history_is_isolated() {
   let (fx, _dir) =
     spawn_repl(vec![complete_step("reply-1"), complete_step("reply-2")]);
 
-  // ===== 阶段 1：default 回合 =====
+  // default 回合
   fx.tx.send("hello".into()).expect("send");
   wait_until(&fx.renderer, |r| r.agent_ends >= 1).await;
   settle().await; // 复位落地后再轮换
 
-  // ===== 阶段 2：轮换 + s2 回合 =====
+  // 轮换 + s2 回合
   fx.tx.send("/sessions s2".into()).expect("send");
   fx.tx.send("world".into()).expect("send");
   wait_until(&fx.renderer, |r| r.agent_ends >= 2).await;
@@ -390,7 +390,7 @@ async fn new_key_rotates_and_history_is_isolated() {
   assert_eq!(s2_text, "reply-2", "s2 应命中第二回合脚本");
 }
 
-// ===== APP-04：日志落文件而非 stdout =====
+// 日志落文件而非 stdout
 
 /// 场景：WARN 日志写入 `<root>/logs/cli.log`（独立订阅器注入）。
 ///

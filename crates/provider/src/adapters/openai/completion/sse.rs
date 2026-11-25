@@ -23,9 +23,7 @@ use crate::{
   stream::{LineFlow, ProviderEventStreamProducer, SseFrame, StreamAggregator},
 };
 
-// ============================================================================
 // 线格式（只声明读取所需字段，其余由 serde 忽略）
-// ============================================================================
 
 /// 一帧增量载荷。
 #[derive(Debug, Default, serde::Deserialize)]
@@ -112,7 +110,7 @@ struct WireFunction {
 ///    个别提供方的口径漂移；
 /// 4. `total_tokens` 按统一口径求和。
 fn parse_usage(value: &serde_json::Value) -> Usage {
-  // ===== 第一步：基准计数 =====
+  // 第一步：基准计数
   let prompt_tokens = value
     .get("prompt_tokens")
     .and_then(serde_json::Value::as_i64)
@@ -122,7 +120,7 @@ fn parse_usage(value: &serde_json::Value) -> Usage {
     .and_then(serde_json::Value::as_i64)
     .unwrap_or(0);
 
-  // ===== 第二步：缓存命中三级兜底 =====
+  // 第二步：缓存命中三级兜底
   // 1) prompt_tokens_details.cached_tokens（OpenAI 官方 details 对象）；
   // 2) prompt_cache_hit_tokens（DeepSeek 风格平铺字段）；
   // 3) 顶层 cached_tokens（部分聚合网关）。
@@ -148,7 +146,7 @@ fn parse_usage(value: &serde_json::Value) -> Usage {
     .and_then(serde_json::Value::as_i64)
     .unwrap_or(0);
 
-  // ===== 第三步：推导未缓存输入与推理计数 =====
+  // 第三步：推导未缓存输入与推理计数
   let input = (prompt_tokens - cache_read - cache_write).max(0);
   let reasoning = value
     .get("completion_tokens_details")
@@ -167,9 +165,7 @@ fn parse_usage(value: &serde_json::Value) -> Usage {
   }
 }
 
-// ============================================================================
 // 帧分派
-// ============================================================================
 
 /// 把一帧线格式数据分派为事件。
 ///
@@ -183,21 +179,21 @@ fn dispatch_frame(
   aggregator: &mut StreamAggregator,
   producer: &mut Option<ProviderEventStreamProducer>,
 ) -> LineFlow {
-  // ===== 非标准 event 名：仅记录不参与分派（宽松解析）=====
+  // 非标准 event 名：仅记录不参与分派（宽松解析）
   // OpenAI 兼容流为 data-only；debug 日志用于诊断发送异常 event
   // 语义的服务商（每帧至多一条，且仅 event 名非空时）。
   if let Some(name) = &frame.event {
     tracing::debug!(sse_event = %name, "ignoring sse event name");
   }
 
-  // ===== [DONE] 哨兵：聚合完成并成功终结 =====
+  // [DONE] 哨兵：聚合完成并成功终结
   if frame.data.trim() == "[DONE]" {
-    aggregator.mark_done_sentinel(); // R2 截断检测置位：正常终结路径
+    aggregator.mark_done_sentinel(); // 截断检测置位：正常终结路径
     aggregator.finalize(producer); // 幂等：内部以 finished 标志防重入
     return LineFlow::Terminated;
   }
 
-  // ===== 载荷解析：JSON 非法 / 形状不符 → INVALID_RESPONSE 终结=====
+  // 载荷解析：JSON 非法 / 形状不符 → INVALID_RESPONSE 终结
   let chunk: WireChunk = match serde_json::from_str(&frame.data) {
     Ok(chunk) => chunk,
     Err(err) => {
@@ -214,7 +210,7 @@ fn dispatch_frame(
     }
   };
 
-  // ===== 元信息与用量：并入 partial 快照，不单独发事件 =====
+  // 元信息与用量：并入 partial 快照，不单独发事件
   aggregator.set_meta(chunk.id, chunk.model);
   // usage 通常在 chunk 顶层（末帧）；兼容部分服务商放在 choice 内
   let usage = chunk
@@ -225,7 +221,7 @@ fn dispatch_frame(
     aggregator.set_usage(parse_usage(usage));
   }
 
-  // ===== 流内业务错误：映射错误码后终结 =====
+  // 流内业务错误：映射错误码后终结
   if let Some(err) = &chunk.error {
     let code = map_provider_error(err);
     let text = err
@@ -239,7 +235,7 @@ fn dispatch_frame(
     return LineFlow::Terminated;
   }
 
-  // ===== 增量分派：此处置 producer 必仍为 Some——所有终结路径均立即返回 =====
+  // 增量分派：此处置 producer 必仍为 Some——所有终结路径均立即返回
   let Some(p) = producer.as_ref() else {
     return LineFlow::Terminated;
   };
@@ -290,9 +286,7 @@ fn dispatch_frame(
   LineFlow::Continue
 }
 
-// ============================================================================
 // 解析任务
-// ============================================================================
 
 /// SSE 解析任务（由适配器 `stream` 建流成功后调用）。
 ///
@@ -329,7 +323,7 @@ mod tests {
   };
   use ra_core::message::Content;
 
-  // ===== 测试辅助构造 =====
+  // 测试辅助构造
   // 聚合器与事件流拉取由 crate::test_support 提供。
 
   // 场景：CRLF 行结束符 + 注释行 + 空行分帧。

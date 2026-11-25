@@ -37,7 +37,7 @@ impl SseParser {
   ///
   /// 本轮喂入期间完成的帧，按到达顺序排列。
   pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<SseFrame> {
-    // ===== 第一步：并入缓冲，逐行消费 =====
+    // 第一步：并入缓冲，逐行消费
     self.buf.extend_from_slice(bytes);
     let mut frames = Vec::new();
     // 以 '\n' 为行界反复取行；'\r\n' 的 '\r' 在行处理时剥离
@@ -59,7 +59,7 @@ impl SseParser {
   pub(crate) fn finish(&mut self) -> Vec<SseFrame> {
     let mut frames = Vec::new();
 
-    // ===== 第一步：残余未换行字节补作最后一行 =====
+    // 第一步：残余未换行字节补作最后一行
     if !self.buf.is_empty() {
       // mem::take 取出缓冲：Cow 借用 bytes 局部变量，避免与 push_line
       // 的可变借用（&mut self）冲突
@@ -68,7 +68,7 @@ impl SseParser {
       self.push_line(line.trim_end_matches('\r'), &mut frames);
     }
 
-    // ===== 第二步：data 非空则无条件成帧 =====
+    // 第二步：data 非空则无条件成帧
     // 末帧无空行触发的宽松兜底
     if !self.data.is_empty() {
       frames.push(SseFrame {
@@ -82,7 +82,7 @@ impl SseParser {
   /// 处理单行：帧边界 / 注释 / 字段提取（`feed` 与 `finish` 共用）。
   fn push_line(&mut self, line: &str, frames: &mut Vec<SseFrame>) {
     if line.is_empty() {
-      // ===== 帧边界：仅当收集到 data 才成帧 =====
+      // 帧边界：仅当收集到 data 才成帧
       // 纯 event 无 data 的帧对补全协议无意义（dispatch 只认 JSON 载荷），
       // 直接丢弃——否则心跳帧（连续空行、": ping" 后的空行）会被
       // 误判为 INVALID_RESPONSE 终结整条流。

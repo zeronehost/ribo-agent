@@ -1,6 +1,6 @@
 //! Context → Anthropic Messages API request body 折叠。
 //!
-//! 阶段 1 支持：
+//! 支持范围：
 //! - messages：历史消息（User / Assistant / ToolResult → Anthropic 格式）
 //! - tools：可用工具列表（ToolSchema → Anthropic tool format）
 //! - tool_choice：工具选择策略映射
@@ -30,16 +30,16 @@ pub fn build(
     "stream": true,
   });
 
-  // ===== messages 字段 =====
+  // messages 字段
   let messages = collect_messages(context);
   body["messages"] = messages;
 
-  // ===== system 字段 =====
+  // system 字段
   if let Some(system) = collect_system(&context.system_prompt) {
     body["system"] = serde_json::Value::String(system);
   }
 
-  // ===== tools / tool_choice =====
+  // tools / tool_choice
   // Anthropic 不支持 "none" 工具策略——
   // tool_choice == None 时跳过 tools 字段（等效禁用工具）。
   let tc = tool_choice_to_anthropic(&context.tool_choice);
@@ -64,14 +64,14 @@ pub fn build(
     }
   }
 
-  // ===== sampling =====
+  // sampling
   if let Some(t) = options.sampling.temperature {
     body["temperature"] = serde_json::Value::Number(
       serde_json::Number::from_f64(t).expect("valid f64"),
     );
   }
 
-  // ===== thinking 预算（Anthropic extended thinking）=====
+  // thinking 预算（Anthropic extended thinking）
   // 映射策略：取用户已配置的最高档作为 budget_tokens（预算语义是
   // 「上限」，最高档代表最强意图）；四档全空则不发 thinking 字段。
   if let Some(budgets) = options.thinking_budgets.as_ref() {
@@ -96,7 +96,7 @@ pub fn build(
   body
 }
 
-// ===== 内部辅助：messages 收集 =====
+// 内部辅助：messages 收集
 
 fn collect_messages(context: &Context) -> serde_json::Value {
   let mut out: Vec<serde_json::Value> = Vec::new();
@@ -220,7 +220,7 @@ fn collect_text_blocks(blocks: &[Content]) -> Vec<serde_json::Value> {
   out
 }
 
-// ===== 工具映射 =====
+// 工具映射
 
 fn tool_to_anthropic(tool: &ToolSchema) -> serde_json::Value {
   serde_json::json!({

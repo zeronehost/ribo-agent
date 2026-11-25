@@ -23,7 +23,7 @@ use ra_core::error::{RiboError, RiboResult};
 use ra_tools::context::ToolContext;
 use wasmtime::{Caller, Error as WasmError};
 
-// ===== wasmtime 50 API 校准（依赖锁定时实测） =====
+// wasmtime 50 API 校准（依赖锁定时实测）
 // `wasmtime::Trap` 在 50.x 已是 #[non_exhaustive] 的预定义 enum
 // （无 `Trap::new`），host function 的错误类型统一为 `wasmtime::Error`
 // （`WasmRet for Result<T>` 以 wasmtime::Result 为准）。自定义结构化
@@ -38,11 +38,11 @@ use crate::error::{
 use crate::wasm::runtime::{HostState, HostStateSnapshot};
 use crate::wasm::storage::{MAX_KEY_LEN, MAX_VALUE_LEN, StorageError};
 
-// ===== guest 可控输入长度上限（DoS 边界） =====
+// guest 可控输入长度上限（DoS 边界）
 // 四条纪律：① 每个 guest 可控长度参数都必须有上限；② 上限判定必须在
 // host 侧；③ 先判后分配；④ 越界 → plugin_invalid_arguments →
 // guest_error: → plugin.plugin_exec_failed（可回灌的业务错误）。
-// 注意：storage 语义的 MAX_KEY_LEN / MAX_VALUE_LEN 定义在 storage.rs，
+// storage 语义的 MAX_KEY_LEN / MAX_VALUE_LEN 定义在 storage.rs，
 // 本文件定义 HTTP / 日志相关常量；ABI 表是四处上限的契约汇总。
 
 /// http 请求 JSON 长度上限。
@@ -128,7 +128,7 @@ impl LogRateLimiter {
   }
 }
 
-// ===== http-proxy（sync/async 桥接 + SSRF 三层的前两层） =====
+// http-proxy（sync/async 桥接 + SSRF 三层的前两层）
 
 /// host function 内部私有错误（对外经 trap 前缀表映射，不引入第二套
 /// 对外错误类型）。`Display` 供 `guest_error: {e}` 前缀拼接使用。
@@ -160,8 +160,8 @@ pub(crate) enum HttpProxyError {
 /// http 响应体大小上限（4MB，DoS 边界）。
 ///
 /// `StoreLimits` 只约束 guest 线性内存，不约束 host 堆上的 Vec——
-/// 异常服务端返回超大响应即可打爆 host。**即使 Step B 只面向受控 URL，
-/// 内网里的异常服务同样能打垮 host**，故该上限在 Step B 就必须存在。
+/// 异常服务端返回超大响应即可打爆 host。**即使只面向受控 URL，
+/// 内网里的异常服务同样能打垮 host**，故该上限必须存在。
 pub const MAX_RESP_BYTES: usize = 4 * 1024 * 1024;
 
 // `host_http_get` 内 `?` 需要 url::ParseError / reqwest::Error
@@ -183,11 +183,11 @@ impl From<reqwest::Error> for HttpProxyError {
 
 /// 受限的出站 HTTP 请求（sync host function 内经 `block_on` 桥接 async）。
 ///
-/// 阶段 1（同步）：ACL + UrlPolicy 校验；阶段 2（`block_on`）：请求发送
+/// 先同步做 ACL + UrlPolicy 校验，再 `block_on` 发送请求
 /// 与取消竞争（`tokio::select!`），响应体分块读取并累计上限
 /// （`Content-Length` 不可信，只信预检等于没设防）。
 ///
-/// **调用约束（§三.2）**：本函数依赖
+/// **调用约束**：本函数依赖
 /// `tokio::runtime::Handle::current()`——仅在 `run_tool` 的
 /// `spawn_blocking` 路径（runtime 上下文已注入）或 `#[tokio::test]`
 /// 内调用；无 runtime 时 `Handle::current()` 会 panic。
@@ -197,7 +197,7 @@ pub(crate) fn host_http_get(
   method: &str,
   body: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, HttpProxyError> {
-  // ===== 阶段 1：ACL + SSRF 校验（同步） =====
+  // ACL + SSRF 校验（同步）
   if !state.acl.http {
     return Err(HttpProxyError::Forbidden("http".into()));
   }
@@ -210,7 +210,7 @@ pub(crate) fn host_http_get(
     .check_url(&parsed)
     .map_err(|e| HttpProxyError::Policy(e.to_string()))?;
 
-  // ===== 阶段 2：sync host function 内桥接 async =====
+  // sync host function 内桥接 async
   tokio::runtime::Handle::current().block_on(async {
     // Method::from_bytes 的错误类型（InvalidMethod）不经 From 自动转换：
     // 就地 map_err（reqwest 0.13 不再 re-export `http` 模块）
@@ -250,7 +250,7 @@ pub(crate) fn host_http_get(
 }
 
 /// 构建受限 HTTP 客户端：禁用重定向（SSRF 第 2 层）+ DNS 解析结果
-/// IP 复检（SSRF 第 3 层，B3.1）。
+/// IP 复检（SSRF 第 3 层）。
 ///
 /// # Errors
 ///
@@ -299,7 +299,7 @@ impl reqwest::dns::Resolve for SystemResolver {
   }
 }
 
-/// SSRF 第 3 层（B3.1）：DNS 解析结果 IP 复检守卫。
+/// SSRF 第 3 层：DNS 解析结果 IP 复检守卫。
 ///
 /// [`UrlPolicy`] 检查的是 URL 字符串的 host，防不了「白名单域名解析到
 /// 私网 IP」的 DNS rebinding——本守卫在解析结果上复用
@@ -345,7 +345,7 @@ impl reqwest::dns::Resolve for DnsGuardResolver {
   }
 }
 
-// ===== guest 内存读写辅助 =====
+// guest 内存读写辅助
 
 /// 把 host function 内部的 `RiboError` 转成**带结构化前缀**的 Trap。
 ///
@@ -459,7 +459,7 @@ fn alloc_return(
 
 /// `http_proxy` 的请求 JSON（guest 经 `ribo.http_proxy(ptr,len)` 传入）。
 ///
-/// 文本 body 直接走 UTF-8；二进制 body（Step C）再上 base64。
+/// 文本 body 直接走 UTF-8；二进制 body 再上 base64。
 #[derive(serde::Deserialize)]
 struct HttpRequest {
   url: String,

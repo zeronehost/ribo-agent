@@ -81,7 +81,7 @@ pub async fn run_agent_loop(
   config: &LoopConfig,
   emitter: Arc<dyn AgentEmitter>,
 ) -> RiboResult<LoopReport> {
-  // ===== 阶段 1：重入双检查 =====
+  // 重入双检查
   // 快速路径：running CAS 置位失败即已有活动运行
   if session
     .running
@@ -103,7 +103,7 @@ pub async fn run_agent_loop(
     }
   };
 
-  // ===== 阶段 2：续跑前置校验（仅空 input 时） =====
+  // 续跑前置校验（仅空 input 时）
   // 续跑要求转录非空且最后一条不是助手消息，否则 provider 将拒绝请求
   if input.is_empty() {
     let snapshot = session.snapshot();
@@ -126,7 +126,7 @@ pub async fn run_agent_loop(
     }
   }
 
-  // ===== 阶段 3：构建请求上下文 =====
+  // 构建请求上下文
   // 构建失败必须手动复位运行状态：此处在统一收尾之前，
   // `?` 直通会泄漏 running 标志导致会话永久卡死
   let mut context =
@@ -141,9 +141,9 @@ pub async fn run_agent_loop(
       }
     };
 
-  // ===== 阶段 4：发射起始事件并进入主循环 =====
+  // 发射起始事件并进入主循环
 
-  // 压缩在 build 阶段（早于此处）发生。摘要成功发射
+  // 压缩在 build 时（早于此处）发生。摘要成功发射
   // `Compaction { failed: false }`；失败回退发射 `{ failed: true }`
   //（失败也留痕）。冷却抑制 / 复用摘要不发射。
   if context.compaction_triggered {
@@ -180,13 +180,13 @@ pub async fn run_agent_loop(
 
   let outcome = run_loop(&mut context, &mut msgs, deps, config, &emitter).await;
 
-  // ===== 阶段 5：收尾（成功与失败路径统一执行） =====
+  // 收尾（成功与失败路径统一执行）
   // 已产出消息写回转录（错误路径也不丢失），再复位运行状态
   session.append_messages(&msgs);
   drop(run_guard);
   session.running.store(false, Ordering::Release);
   // 换发取消根：本回合的 stop 已永久 abort 旧根（AbortHandle 无复位
-  // 语义），不复位会导致会话此后所有回合在 pre-stream 阶段被旧信号
+  // 语义），不复位会导致会话此后所有回合在 pre-stream 期间被旧信号
   // 立即取消（/stop 后无法继续对话）
   session.refresh_cancel();
   session.touch();
@@ -235,13 +235,13 @@ async fn run_loop(
   config: &LoopConfig,
   emitter: &Arc<dyn AgentEmitter>,
 ) -> RiboResult<LoopOutcome> {
-  // ===== 初始化：首次进入前先排水一次 steering（用户可能在等待期输入） =====
+  // 初始化：首次进入前先排水一次 steering（用户可能在等待期输入）
   let mut pending: Vec<Message> = drain_steering(config);
 
   let mut has_more_tool_calls = true;
   let mut turns: usize = 0;
 
-  // ===== 外层 follow-up 循环 =====
+  // 外层 follow-up 循环
   // 内层条件：仍有工具调用待续（模型继续请求工具）或尚有排队注入
   'outer: loop {
     while has_more_tool_calls || !pending.is_empty() {
@@ -255,7 +255,7 @@ async fn run_loop(
         emitter.emit(AgentEvent::TurnStart).await;
       }
 
-      // ===== 注入排队消息：逐条发射进入转录事件 =====
+      // 注入排队消息：逐条发射进入转录事件
       for message in pending.drain(..) {
         emitter
           .emit(AgentEvent::MessageStart {
@@ -277,7 +277,7 @@ async fn run_loop(
       context.messages.push(assistant_message.clone());
       new_messages.push(assistant_message.clone());
 
-      // ===== 终止判定 A：错误 / 取消立即收敛（不再执行工具） =====
+      // 终止判定 A：错误 / 取消立即收敛（不再执行工具）
       match assistant.stop_reason {
         StopReason::Error => {
           emitter
@@ -310,7 +310,7 @@ async fn run_loop(
         _ => {}
       }
 
-      // ===== 工具批：Length 截断原位失败，否则按执行模式分派 =====
+      // 工具批：Length 截断原位失败，否则按执行模式分派
       let calls = collect_tool_calls(&assistant);
       let truncated =
         assistant.stop_reason == StopReason::Length && !calls.is_empty();
@@ -343,7 +343,7 @@ async fn run_loop(
         pending.clear();
       }
 
-      // ===== 终止判定 B：先排水 steering 再查取消 =====
+      // 终止判定 B：先排水 steering 再查取消
       // 保证阻塞工具执行期间排队的消息进入本次转录，而非滞留队列；
       // 下一次流调用观察到取消信号后产出 Aborted 终端消息（pi-rust 同序）
       let steering_pending = drain_steering(config);
@@ -418,7 +418,7 @@ async fn stream_assistant_response(
   config: &LoopConfig,
   emitter: &Arc<dyn AgentEmitter>,
 ) -> AssistantMessage {
-  // ===== 组装请求：转录直通 + 当前工具声明 + 子令牌取消 =====
+  // 组装请求：转录直通 + 当前工具声明 + 子令牌取消
   let tools = deps.tools.get_tool_schemas().await;
   let request = ra_provider::context::Context {
     system_prompt: context.system_prompt.clone(),
@@ -439,7 +439,7 @@ async fn stream_assistant_response(
     ..Default::default()
   };
 
-  // ===== 建流：失败折叠为终端消息 =====
+  // 建流：失败折叠为终端消息
   // 取消不是错误路径：建流被取消（CANCELLED）折叠为
   // Aborted 终端消息，循环以 Aborted 收敛；其余失败仍为 Error。
   let mut stream =
@@ -476,7 +476,7 @@ async fn stream_assistant_response(
       }
     };
 
-  // ===== 消费流：内容事件转发增量快照，终结事件返回最终消息 =====
+  // 消费流：内容事件转发增量快照，终结事件返回最终消息
   while let Some(event) = stream.next().await {
     match event {
       ProviderEvent::Done { message, .. } => {
@@ -562,7 +562,7 @@ async fn execute_tool_batch(
   config: &LoopConfig,
   emitter: &Arc<dyn AgentEmitter>,
 ) -> ExecutedToolBatch {
-  // ===== 截断失败不变式：Length + 工具调用 → 原位失败，不执行 =====
+  // 截断失败不变式：Length + 工具调用 → 原位失败，不执行
   if truncated {
     tracing::warn!(count = calls.len(), "truncated tool calls fail in place");
     let messages = fail_tool_calls_from_truncation(calls, emitter).await;
@@ -578,7 +578,7 @@ async fn execute_tool_batch(
     };
   }
 
-  // ===== 分派：批内任一顺序工具即整批顺序（保守并行边界） =====
+  // 分派：批内任一顺序工具即整批顺序（保守并行边界）
   let sequential = calls.iter().any(|call| {
     deps.tools.execution_mode(&call.name) == ToolExecutionMode::Sequential
   });
@@ -648,7 +648,7 @@ async fn execute_tool_batch(
       }
     }
   }
-  // ===== 记账与折叠：按源顺序生成回灌消息，提取终结标志 =====
+  // 记账与折叠：按源顺序生成回灌消息，提取终结标志
   finalized.sort_by_key(|item| item.index);
   let mut terminated = false;
   let mut messages = Vec::with_capacity(finalized.len());
@@ -1861,19 +1861,19 @@ mod tests {
     assert_eq!(run.session.snapshot().len(), 2);
   }
 
-  // ===== 真实 ToolManager 校验失败的回灌链路 =====
+  // 真实 ToolManager 校验失败的回灌链路
 
   // 场景：mock 网关返回非法 echo 调用（缺 required "text" 且
   // additionalProperties=false），工具边界为真实 ToolManagerAdapter
   // + create_echo_tool（非 MockTools 桩）。
-  // 预期：ToolManager 阶段 4 schema 校验失败 → tool.invalid_arguments →
+  // 预期：ToolManager schema 校验失败 → tool.invalid_arguments →
   // fold_tool_error 折叠为 ToolResultMessage(is_error=true，错误文本在
   // content Text 块) 回灌转录；循环不被中断，消费第二轮脚本正常收敛。
   #[tokio::test]
   async fn int_val_01_schema_validation_failure_returns_tool_result_error() {
     let session = Arc::new(Session::new("s1"));
     let collector = Arc::new(CollectorEmitter::new());
-    // ===== 脚本：第一轮要求 echo 非法参数 → 第二轮正常收敛 =====
+    // 脚本：第一轮要求 echo 非法参数 → 第二轮正常收敛
     let (gateway, provider) = mock_gateway_with_recorder(vec![
       complete_step(
         StopReason::ToolUse,
@@ -1886,7 +1886,7 @@ mod tests {
       complete_step(StopReason::Stop, text_assistant("recovered")),
     ]);
 
-    // ===== 真实工具边界：ToolManager + echo 工具 =====
+    // 真实工具边界：ToolManager + echo 工具
     let manager = ToolManager::new();
     manager
       .register(ra_tools::builtin::create_echo_tool())
@@ -1904,7 +1904,7 @@ mod tests {
       .await
       .expect("校验失败应折叠为工具结果而非中断循环");
 
-    // ===== 断言：转录含 is_error 工具结果，错误文本在 content Text 块 =====
+    // 断言：转录含 is_error 工具结果，错误文本在 content Text 块
     let tool_result = report
       .new_messages
       .iter()
@@ -1928,7 +1928,7 @@ mod tests {
       "错误文本应描述参数校验失败，实际：{error_text}"
     );
 
-    // ===== 断言：循环未中断——消费第二轮脚本正常收敛 =====
+    // 断言：循环未中断——消费第二轮脚本正常收敛
     assert_eq!(report.outcome, LoopOutcome::Completed);
     assert_eq!(provider.record().len(), 2, "应发起两次 LLM 调用");
     assert!(!session.is_running(), "收尾应复位运行标志");

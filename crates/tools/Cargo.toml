@@ -1,6 +1,6 @@
 [package]
 name = "ra-tools"
-description = "Ribo Agent 工具调用 crate：AgentTool 声明、注册表、Schema 校验、熔断编排与内置工具"
+description = "工具调用：AgentTool 声明、注册表、Schema 校验、熔断编排与内置工具"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

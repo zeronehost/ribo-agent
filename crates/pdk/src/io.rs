@@ -158,7 +158,7 @@ pub fn log(message: &str) {
   }
 }
 
-// ===== 内部辅助 =====
+// 内部辅助
 
 /// 长度预检：超过上限返回带具体数值的 `Err`（协作式报错）。
 fn check_len(what: &str, len: usize, max: usize) -> Result<(), String> {

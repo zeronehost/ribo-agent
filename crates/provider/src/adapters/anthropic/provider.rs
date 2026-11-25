@@ -1,6 +1,6 @@
 //! AnthropicProvider：Provider trait 实现 + PreStream 鉴权 + HTTP 请求构建。
 //!
-//! 阶段 1 骨架：能正确处理鉴权、建流、SSE 解码启动。
+//! 骨架：能正确处理鉴权、建流、SSE 解码启动。
 //!
 //! # HTTP 协议
 //!
@@ -70,11 +70,11 @@ impl Provider for AnthropicProvider {
       options,
     } = options;
 
-    // ===== 阶段 1：本地校验（PreStream）=====
+    // 本地校验（PreStream）
     // 模型归属 / 鉴权配置 / 采样参数由共享骨架统一校验。
     let api_key = self.core.validate(model, options, 2.0)?;
 
-    // ===== 阶段 2：构造请求（PreStream）=====
+    // 构造请求（PreStream）
     // 端点取自模型快照；鉴权外附加头（模型 header + extra_headers）
     // 由 send_stream 统一追加。
     let body =
@@ -82,7 +82,7 @@ impl Provider for AnthropicProvider {
     let endpoint =
       format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
 
-    // ===== 阶段 3：发送并等待响应头（受 cancel / timeout 约束）=====
+    // 发送并等待响应头（受 cancel / timeout 约束）
     let response = self
       .core
       .send_stream(&endpoint, model, options, |req| {
@@ -95,10 +95,10 @@ impl Provider for AnthropicProvider {
       })
       .await?;
 
-    // ===== 阶段 4：建立事件通道（PreStream）=====
+    // 建立事件通道（PreStream）
     let (producer, stream) = ProviderEventStreamProducer::build();
 
-    // ===== 阶段 5：spawn 解析任务（InStream）=====
+    // spawn 解析任务（InStream）
     crate::adapters::anthropic::sse::spawn_parse_task(
       response,
       producer,

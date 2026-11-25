@@ -235,7 +235,7 @@ pub fn truncate_error(s: &str, max_bytes: usize) -> String {
   if s.len() <= max_bytes {
     return s.to_owned();
   }
-  // ===== 向前回退到合法 UTF-8 字符边界 =====
+  // 向前回退到合法 UTF-8 字符边界
   let mut end = max_bytes.min(s.len());
   while end > 0 && !s.is_char_boundary(end) {
     end -= 1;

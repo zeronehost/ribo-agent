@@ -1,4 +1,4 @@
-//! Step 8 provider 凭证来源测试（todo/20_ 方案 T1–T12）。
+//! provider 凭证来源测试。
 //!
 //! 覆盖：Global provider 从 auth.toml 补 key、Project provider 必须显式、
 //! 按 id 合并（同名项目胜出 / 不同名共存）、$ENV 优先级、空 key 处理、
@@ -67,7 +67,7 @@ fn ids(outcome: &LoadOutcome) -> Vec<&str> {
     .collect()
 }
 
-/// T1：Global provider 无 api_key + auth.toml 有 → 补充成功，非 mock。
+/// Global provider 无 api_key + auth.toml 有 → 补充成功，非 mock。
 #[test]
 fn t1_global_provider_gets_key_from_auth() {
   let (_d, outcome) =
@@ -76,7 +76,7 @@ fn t1_global_provider_gets_key_from_auth() {
   assert_eq!(outcome.provider.providers[0].api_key, "sk-from-auth");
 }
 
-/// T2：Global provider 无 api_key + auth.toml 无 → 跳过 + warning。
+/// Global provider 无 api_key + auth.toml 无 → 跳过 + warning。
 #[test]
 fn t2_global_provider_without_key_is_skipped() {
   let (_d, outcome) = setup(&[], &[("g1", "openai-chat", "")], &[]);
@@ -85,7 +85,7 @@ fn t2_global_provider_without_key_is_skipped() {
   assert!(outcome.warnings.iter().any(|w| w.contains("incomplete")));
 }
 
-/// T3（核心安全断言）：Project provider 无 api_key + auth.toml 有同名 key → 不补充。
+/// 核心安全断言：Project provider 无 api_key + auth.toml 有同名 key → 不补充。
 #[test]
 fn t3_project_provider_never_uses_auth_key() {
   let (_d, outcome) = setup(
@@ -100,7 +100,7 @@ fn t3_project_provider_never_uses_auth_key() {
   assert_eq!(mode_of(&outcome), "mock");
 }
 
-/// T4：Project provider $ENV 占位 + 环境变量设置 → 正常展开。
+/// Project provider $ENV 占位 + 环境变量设置 → 正常展开。
 #[test]
 fn t4_project_provider_env_expansion() {
   #[allow(unsafe_code)]
@@ -120,7 +120,7 @@ fn t4_project_provider_env_expansion() {
   assert_eq!(outcome.provider.providers[0].api_key, "sk-from-env");
 }
 
-/// T5b/T5c：不同名 provider 两域共存，project 在前。
+/// 不同名 provider 两域共存，project 在前。
 #[test]
 fn t5b_merge_keeps_both_domains_in_order() {
   let (_d, outcome) = setup(
@@ -135,7 +135,7 @@ fn t5b_merge_keeps_both_domains_in_order() {
   );
 }
 
-/// T5：同名 provider → 项目整条胜出（不继承全局 base_url/key）。
+/// 同名 provider → 项目整条胜出（不继承全局 base_url/key）。
 #[test]
 fn t5_same_id_project_wins_whole_entry() {
   let dir = tempfile::tempdir().expect("temp dir");
@@ -174,7 +174,7 @@ fn t5_same_id_project_wins_whole_entry() {
   );
 }
 
-/// T12：auth.toml 里的 key 恰为 "$ENV_NAME" → 原样使用，不展开。
+/// auth.toml 里的 key 恰为 "$ENV_NAME" → 原样使用，不展开。
 #[test]
 fn t12_auth_key_literal_dollar_is_not_expanded() {
   let (_d, outcome) = setup(
@@ -189,7 +189,7 @@ fn t12_auth_key_literal_dollar_is_not_expanded() {
   );
 }
 
-/// T11：全空白 api_key 视为未配置。
+/// 全空白 api_key 视为未配置。
 #[test]
 fn t11_whitespace_key_is_unconfigured() {
   let (_d, outcome) = setup(
@@ -201,7 +201,7 @@ fn t11_whitespace_key_is_unconfigured() {
   assert_eq!(outcome.provider.providers[0].api_key, "sk-from-auth");
 }
 
-/// T9：global.enabled = false → global provider 不加载。
+/// global.enabled = false → global provider 不加载。
 #[test]
 fn t9_disabled_global_skips_its_providers() {
   let dir = tempfile::tempdir().expect("temp dir");

@@ -65,7 +65,7 @@ impl AgentTool for CurrentTimeTool {
     args: serde_json::Value,
     _ctx: &ToolContext,
   ) -> RiboResult<ToolExecutionResult> {
-    // ===== 时区解析 =====
+    // 时区解析
     // IANA 名非法属入参问题（模型可修正后重试）→ INVALID_ARGUMENTS，
     // 不计入熔断记账
     let tz_name = args.get("timezone").and_then(|v| v.as_str());
@@ -82,7 +82,7 @@ impl AgentTool for CurrentTimeTool {
       // 缺省用系统时区
       None => jiff::Zoned::now(),
     };
-    // ===== 格式化输出 =====
+    // 格式化输出
     // 纯 RFC 3339（jiff 默认 Display 会带 " [2025]" 类注释后缀，
     // 用 strftime 排除，保证模型输出解析稳定）
     let text = now.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();

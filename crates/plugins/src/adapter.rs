@@ -6,7 +6,7 @@
 //! 注入 `ToolManager` 后自动被 `ToolManagerAdapter` 暴露给主循环——
 //! 这是保持 `AgentTool` / `ToolManager` / agent 主循环**零改动**的核心。
 //!
-//! 工具名策略（方案 A）：适配器自动为每个工具加
+//! 工具名策略：适配器自动为每个工具加
 //! `{plugin_id}__{tool_name}` 双下划线前缀。LLM 看到的是完整名
 //! （如 `plugin_a__echo`），两个插件提供同名工具不再冲突；
 //! `PluginAgentTool::execute` 派发时使用剥离前缀后的**短名**。
@@ -30,7 +30,7 @@ use crate::traits::Plugin;
 /// `plugin_id` 长度上界。
 ///
 /// 32 与 `tool_name` 的 64 **不是笔误，是刻意的命名空间预算**：
-/// 方案 A 下 `plugin_id` 出现在每个工具名前缀里，限制 32 可把完整名
+/// `plugin_id` 出现在每个工具名前缀里，限制 32 可把完整名
 /// 压在 32 + 2 分隔符 + 64 = 98 字节上界内，避免 LLM 看到的工具名过长。
 pub const PLUGIN_ID_MAX_LEN: usize = 32;
 
@@ -60,7 +60,7 @@ pub fn validate_tool_name(s: &str) -> RiboResult<()> {
 /// 逐字节标识符校验（不引入 regex 依赖；字节即字符——限定 ASCII）。
 ///
 /// 先以**显式守卫**拒绝空串 / 超长，再索引 `b[0]`，不依赖 `&&`
-/// 短路求值顺序（重构打乱顺序也不会 panic，§三.5）。
+/// 短路求值顺序（重构打乱顺序也不会 panic）。
 fn validate_ident(s: &str, max: usize, field: &str) -> RiboResult<()> {
   let b = s.as_bytes();
   let err = || {
@@ -160,7 +160,7 @@ impl PluginToolAdapter {
     Self { plugin }
   }
 
-  /// 方案 A 工具名：`{plugin_id}__{tool_name}` 双下划线前缀。
+  /// 工具名：`{plugin_id}__{tool_name}` 双下划线前缀。
   ///
   /// 双下划线比单下划线更不易与工具名内部命名冲突。
   fn prefixed(plugin_id: &str, tool_name: &str) -> String {

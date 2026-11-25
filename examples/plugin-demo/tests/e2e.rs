@@ -1,10 +1,10 @@
-//! 端到端集成测试（18_ §13.2，方式 B「预编译 wasm」）：
+//! 端到端集成测试（预编译 wasm）：
 //!
 //! 1. 以 `cargo build --target wasm32-unknown-unknown` 构建 PDK guest；
 //! 2. `WasmPluginHost::load` 加载 manifest（真实 PDK 宏导出 + ABI v0）；
 //! 3. `PluginRegistry` 原子注册 → `ToolManager` 全链路执行；
 //! 4. 验证 config 信封、storage 跨 execute 持久、epoch 超时与
-//!    熔断白名单（§1.3 决策 1）。
+//!    熔断白名单。
 //!
 //! 运行方式：本 crate 已是根 workspace 成员（根 `Cargo.toml` 的
 //! `members = ["crates/*", "examples/*", ...]`），可直接
@@ -39,7 +39,7 @@ use ra_tools::manager::ToolManager;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-/// 构建 guest wasm 并读取字节（§13.4 方式 B）。
+/// 构建 guest wasm 并读取字节。
 ///
 /// 构建失败直接 panic：集成测试的前提就是 guest 可构建，失败信息
 /// 附 stderr 便于定位（编译错误 / 缺 wasm32 target）。
@@ -88,9 +88,9 @@ fn call(name: &str, arguments: Value) -> ToolCall {
   }
 }
 
-/// 场景 1（§14 DoD 1 / 2 的最小闭环）：加载 → 注册 → 全链路执行
+/// 场景 1（最小闭环）：加载 → 注册 → 全链路执行
 /// echo，插件工具以 `demo__echo` 之名对主循环可见；greet 验证
-/// config 信封注入与 storage 跨 execute 持久（§13.1 三态回归）。
+/// config 信封注入与 storage 跨 execute 持久。
 #[tokio::test]
 async fn demo_plugin_loads_registers_and_executes() {
   let wasm = build_guest_wasm();
@@ -151,7 +151,7 @@ async fn demo_plugin_loads_registers_and_executes() {
   assert_eq!(r1.details, Some(json!({ "message": "你好, a! seen=0" })));
 
   // greet ②：storage 跨 execute 持久（Stateless Store 下经
-  // PluginShared 存活，§13.1「greet 首次 seen=0」三态回归）
+  // PluginShared 存活，首次调用 seen=0）
   let r2 = manager
     .execute(
       &call("demo__greet", json!({ "name": "a" })),
@@ -162,9 +162,9 @@ async fn demo_plugin_loads_registers_and_executes() {
   assert_eq!(r2.details, Some(json!({ "message": "你好, a! seen=1" })));
 }
 
-/// 场景 2（§14 DoD 2）：死循环 guest 在 epoch 预算内被打断
+/// 场景 2：死循环 guest 在 epoch 预算内被打断
 /// （`plugin.plugin_timeout`）；装配白名单下连续超时**不**打开
-/// 工具面熔断（第 7 次仍为超时而非 `tool.rate_limited`，§1.6 验收）。
+/// 工具面熔断（第 7 次仍为超时而非 `tool.rate_limited`）。
 #[tokio::test]
 async fn spin_times_out_without_opening_circuit() {
   let wasm = build_guest_wasm();
@@ -192,7 +192,7 @@ async fn spin_times_out_without_opening_circuit() {
   }
 }
 
-/// 场景 3（§14 DoD 3「拒绝越权」）：ACL 未授予 http 能力时，guest 的
+/// 场景 3（拒绝越权）：ACL 未授予 http 能力时，guest 的
 /// `ribo::http_get` 在 host function 入口被拦（trap `forbidden:http` →
 /// `plugin.plugin_forbidden`，不计熔断白名单）。CI 安全：无任何网络
 /// 请求发出即被拒绝。
@@ -222,7 +222,7 @@ async fn http_get_denied_without_http_acl() {
     .await
     .expect_err("http must be denied without ACL");
   assert_eq!(err.code(), "plugin.plugin_forbidden", "got: {}", err.code());
-  // 越权错误不计熔断（§1.3 白名单）：连续越权后工具面仍可用
+  // 越权错误不计熔断（白名单）：连续越权后工具面仍可用
   let echo = manager
     .execute(
       &call("demo__echo", json!({ "ok": 1 })),
@@ -232,14 +232,14 @@ async fn http_get_denied_without_http_acl() {
   assert!(echo.is_ok(), "circuit must not open on forbidden errors");
 }
 
-/// 场景 4（B0.5，18_ §14 DoD #1）：CLI 装配层全链路——`plugins` 层
+/// 场景 4：CLI 装配层全链路——`plugins` 层
 /// 配置驱动加载（`assemble` 内完成 fs 读取 → `WasmPluginHost::load`
 /// → `PluginRegistry` 注册）→ mock provider 脚本发起 `demo__echo`
 /// tool_call → 插件执行 → 结果回灌 → 最终回答。
 ///
 /// 与场景 1-3 的差异：此处走的是 `ra_cli::config::assemble` 装配层
 /// 与 `AgentLoop` 主循环（CLI / TUI 的实际入口），不是 `ToolManager`
-/// 直调——即 DoD #1「Agent 识别意图 → 调插件 → LLM 回答」的最小闭环。
+/// 直调——即「Agent 识别意图 → 调插件 → LLM 回答」的最小闭环。
 #[tokio::test]
 async fn assemble_full_agent_loop_invokes_plugin_tool() {
   let wasm = build_guest_wasm();
@@ -350,15 +350,14 @@ async fn assemble_full_agent_loop_invokes_plugin_tool() {
   );
 }
 
-// ===== B1.1 / B1.2 / B1.5 / B1.8：http-proxy 成功链路 / DoS 响应上限 /
-// 并发取消（2026-11-16，18_ §13.1 核对表缺口）=====
+// http-proxy 成功链路 / DoS 响应上限 / 并发取消
 
 /// 极简本地 HTTP mock（零新增依赖：std TcpListener）。
 ///
 /// - 绑定 127.0.0.1:0，端口回读；
 /// - accept 循环在独立 std 线程，测试进程退出即回收（不 join）；
 /// - `delay_ms` 在读请求后、写响应前睡眠——构造「响应在途」供取消
-///   场景（B1.5）即时打断。
+///   场景即时打断。
 fn spawn_http_mock(resp: Vec<u8>, delay_ms: u64) -> u16 {
   let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock");
   let port = listener.local_addr().expect("mock addr").port();
@@ -401,7 +400,7 @@ fn http_chunked(chunks: &[&str]) -> Vec<u8> {
   out
 }
 
-/// B1.1 公共装配：demo guest + http ACL（loopback 显式 opt-in 或默认
+/// 公共装配：demo guest + http ACL（loopback 显式 opt-in 或默认
 /// 严格模式）注册进插件感知 ToolManager。
 async fn demo_with_http_acl(url_policy: Arc<UrlPolicy>) -> Arc<ToolManager> {
   let wasm = build_guest_wasm();
@@ -420,7 +419,7 @@ async fn demo_with_http_acl(url_policy: Arc<UrlPolicy>) -> Arc<ToolManager> {
   manager
 }
 
-/// 场景 5（B1.1，§14 DoD 3「受控 URL」CI 层）：白名单（含显式 loopback
+/// 场景 5（受控 URL）：白名单（含显式 loopback
 /// opt-in）内的请求成功到达本地 mock——http-proxy 成功链路首次覆盖。
 #[tokio::test]
 async fn http_get_succeeds_with_loopback_whitelist() {
@@ -441,7 +440,7 @@ async fn http_get_succeeds_with_loopback_whitelist() {
   assert_eq!(result.details, Some(json!({ "body": "pong" })));
 }
 
-/// 场景 6（B1.1）：默认 `UrlPolicy::new` 不放行 loopback——白名单即便
+/// 场景 6：默认 `UrlPolicy::new` 不放行 loopback——白名单即便
 /// 声明 127.0.0.1 也被保留段拦截（`plugin.plugin_forbidden`），显式
 /// opt-in 是唯一通道。
 #[tokio::test]
@@ -462,7 +461,7 @@ async fn loopback_is_blocked_without_explicit_opt_in() {
   assert_eq!(err.code(), "plugin.plugin_forbidden", "got: {}", err.code());
 }
 
-/// 场景 7（B1.1，§13.1「302 跳转被拒」）：宿主 client 禁用自动重定向
+/// 场景 7（302 跳转被拒）：宿主 client 禁用自动重定向
 /// （`redirect::Policy::none`）——302 响应原样返回，Location 目标
 /// 不会被请求。
 #[tokio::test]
@@ -488,7 +487,7 @@ async fn redirect_is_not_followed() {
   assert_eq!(result.details, Some(json!({ "body": "" })));
 }
 
-/// 场景 8（B1.2，§13.1 DoS 表「超大响应·首块即超限」）：带
+/// 场景 8：超大响应在首块即超限时，带
 /// Content-Length 的 4MB+1 body——`content_length` 预检拦截，
 /// `plugin.plugin_exec_failed`（`response too large`）。
 #[tokio::test]
@@ -527,9 +526,9 @@ async fn oversized_response_first_block_is_rejected() {
   );
 }
 
-/// 场景 9（B1.2，§13.1 DoS 表「超大响应·分块累计超限」）：无
+/// 场景 9：超大响应分块累计超限时，无
 /// Content-Length 的 chunked 响应累计 5MB——`Content-Length` 缺失时
-/// 必须靠分块累计拦截（§6.3 分块累计路径）。
+/// 必须靠分块累计拦截。
 #[tokio::test]
 async fn oversized_response_chunked_accumulation_is_rejected() {
   let chunk = "y".repeat(1024 * 1024);
@@ -555,7 +554,7 @@ async fn oversized_response_chunked_accumulation_is_rejected() {
   );
 }
 
-/// 场景 10（B1.5，§13.1「并发取消不误杀」/ §14 DoD 5）：10 个任务
+/// 场景 10（并发取消不误杀）：10 个任务
 /// 并发——1 个 fetch（mock 延迟 500ms + 预取消令牌）被即时取消
 /// （`tool.cancelled`），其余 9 个 echo 正常完成、互不影响。
 #[tokio::test]
@@ -611,7 +610,7 @@ async fn concurrent_cancel_does_not_kill_others() {
   assert_eq!((cancelled, ok_echo), (1, 9), "cancel must not kill others");
 }
 
-/// 场景 11（B1.8，§13.1 PDK 分配器专项）：512KB 大参数 echo——guest
+/// 场景 11（PDK 分配器专项）：512KB 大参数 echo——guest
 /// 堆（dlmalloc）大幅增长 + 宿主写回 ABI 缓冲的场景，复验 v0.8.5
 /// 「bump 与 dlmalloc 重叠」修复不再回归（`Value` 索引与字符串完整）。
 /// 多工具宏展开（echo/greet/spin/fetch 四工具收集）已由场景 1 覆盖。
@@ -644,7 +643,7 @@ async fn large_payload_echo_roundtrip() {
   );
 }
 
-/// 场景 12（B3.2，18_ §12「权威 schema 来源」）：权威清单 plugin_id
+/// 场景 12（权威 schema 来源）：权威清单 plugin_id
 /// 与 guest 自述不一致 → 拒绝加载（信任链闭合：宿主侧载清单为信任
 /// 源，guest 自述降级为交叉校验）。
 #[tokio::test]

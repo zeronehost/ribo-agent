@@ -68,7 +68,7 @@ fn drive_tui(
         Ok(n) => {
           let data = &chunk[..n];
           // 光标位置查询（DSR, ESC[6n）：真实终端会回复 ESC[row;colR，
-          // conPTY 不会——若 harness 不代答，进程会同步阻塞在启动阶段，
+          // conPTY 不会——若 harness 不代答，进程会同步阻塞在启动时，
           // 连备用屏都进不去。
           if data.windows(4).any(|w| w == b"\x1b[6n") {
             let mut guard = reply_writer.lock().expect("writer lock");
@@ -184,7 +184,7 @@ fn plain(output: &[u8]) -> String {
   out
 }
 
-// 场景（Step B 验收）：启动 → 输入英文消息 → Ctrl-C 退出。
+// 场景：启动 → 输入英文消息 → Ctrl-C 退出。
 // 预期：退出码 0（优雅退出）；输出含备用屏进入/退出序列（终端已恢复）
 // 与对话区标题（界面已渲染）。
 #[test]
@@ -208,10 +208,13 @@ fn pty_exit_restores_terminal() {
     output.contains("\x1b[?1049l"),
     "退出应恢复终端（LeaveAlternateScreen）"
   );
-  assert!(plain(&session.output).contains("对话"), "对话区应渲染（标题出现）");
+  assert!(
+    plain(&session.output).contains("对话"),
+    "对话区应渲染（标题出现）"
+  );
 }
 
-// 场景（Step B 验收）：中文 / Emoji 输入经 PTY 全链路。
+// 场景：中文 / Emoji 输入经 PTY 全链路。
 // 预期：退出码 0；用户气泡渲染出原始中文（MessageStart 进入转录）。
 #[test]
 fn pty_cjk_and_emoji_input() {

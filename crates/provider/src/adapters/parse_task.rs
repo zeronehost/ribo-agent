@@ -6,7 +6,7 @@
 //! - 生产者义务第 1 条：先推 `Start`；
 //! - `cancel` 与 body 读取竞争，取消以 `Aborted` 终结；
 //! - 逐帧分派，消费端消失即停止解析并释放连接；
-//! - EOF 冲刷残余帧后 `finalize`（含 R2 截断检测）；
+//! - EOF 冲刷残余帧后 `finalize`（含截断检测）；
 //! - 收尾兜底：绝不出现「既未终结、消费端也未放弃」的静默退出。
 //!
 //! 方言层只需提供 `dispatch` 闭包；流内私有状态可被闭包捕获。
@@ -104,7 +104,7 @@ pub(crate) fn spawn_sse_task<F>(
     + 'static,
 {
   tokio::spawn(async move {
-    // ===== 初始化阶段 =====
+    // 初始化阶段
     let mut producer = Some(producer);
     let mut aggregator = StreamAggregator::new(provider, model);
     let mut parser = SseParser::default();
@@ -119,7 +119,7 @@ pub(crate) fn spawn_sse_task<F>(
       return;
     }
 
-    // ===== 主循环：SSE 字节流 vs 取消 =====
+    // 主循环：SSE 字节流 vs 取消
     // 流式阶段不设总时长超时（首字迟滞归 TTFT 守卫、停滞归网关看门狗），
     // 适配器只处理网络错误与取消。
     loop {
@@ -143,7 +143,7 @@ pub(crate) fn spawn_sse_task<F>(
         }
 
         chunk = response.chunk() => match chunk {
-          // ===== 流正常结束：冲刷残余帧后聚合 =====
+          // 流正常结束：冲刷残余帧后聚合
           Ok(None) => {
             let mut terminated_early = false;
             for frame in parser.finish() {
@@ -159,14 +159,14 @@ pub(crate) fn spawn_sse_task<F>(
                 }
               }
             }
-            // finalize 幂等；未收到方言终结事件时按 R2 截断终结
+            // finalize 幂等；未收到方言终结事件时按截断终结
             if !terminated_early && !consumer_gone {
               aggregator.finalize(&mut producer);
             }
             break;
           }
 
-          // ===== 正常数据：切帧并逐帧驱动状态机 =====
+          // 正常数据：切帧并逐帧驱动状态机
           Ok(Some(bytes)) => {
             'pump: for frame in parser.feed(&bytes) {
               match dispatch(&frame, &mut aggregator, &mut producer) {
@@ -183,7 +183,7 @@ pub(crate) fn spawn_sse_task<F>(
             }
           }
 
-          // ===== 网络中断 / 读失败：以 TRANSPORT 终结 =====
+          // 网络中断 / 读失败：以 TRANSPORT 终结
           Err(err) => {
             tracing::warn!(
               provider = aggregator.provider().as_str(),
@@ -204,7 +204,7 @@ pub(crate) fn spawn_sse_task<F>(
       }
     }
 
-    // ===== 收尾兜底 =====
+    // 收尾兜底
     match producer {
       // 正常路径：done / error 已消费终结能力
       None => {}

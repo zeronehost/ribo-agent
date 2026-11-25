@@ -56,7 +56,7 @@ pub struct TuiArgs {
 /// ra-tui 入口：整个函数体运行在 `#[tokio::main]` 的 runtime 上下文中。
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
-  // ===== 阶段 1：参数与配置加载（raw mode 之前，失败 stderr 退出）=====
+  // 参数与配置加载（raw mode 之前，失败 stderr 退出）
   let args = TuiArgs::parse();
   // 与 ra-cli 同规则：未指定 --config 时向上探测；显式缺失 → 报错退出
   let config_path = match resolve_config_path(args.config.as_deref()) {
@@ -78,7 +78,7 @@ async fn main() -> ExitCode {
   }
   let root = outcome.harness.root.clone();
 
-  // ===== 阶段 2：日志落文件（stdout 由 TUI 全屏占用）=====
+  // 日志落文件（stdout 由 TUI 全屏占用）
   // 全局域启用 → 日志写全局目录；否则写项目目录（失败自动回退）
   let log_guard = match ra_cli::logging::init_file_logging_with_fallback(
     &outcome.log_root(),
@@ -90,7 +90,7 @@ async fn main() -> ExitCode {
       return ExitCode::FAILURE;
     }
   };
-  // 启动摘要补记：订阅器此刻才就绪，配置加载阶段的 tracing 不会落盘
+  // 启动摘要补记：订阅器此刻才就绪，配置加载时的 tracing 不会落盘
   tracing::info!(
     mode = ?outcome.mode,
     providers = outcome.provider.providers.len(),
@@ -101,7 +101,7 @@ async fn main() -> ExitCode {
     tracing::warn!(warning = %w, "config warning");
   }
 
-  // ===== 阶段 3：Ctrl-C 超时（[tui] 层，读实际生效的配置文件）=====
+  // Ctrl-C 超时（[tui] 层，读实际生效的配置文件）
   // 必须基于解析后的路径：未指定 --config 时 args.config 为 None，
   // 但默认 ribo.toml 可能已被探测并加载。
   let config_text = config_path
@@ -109,7 +109,7 @@ async fn main() -> ExitCode {
     .and_then(|path| std::fs::read_to_string(path).ok());
   let ctrl_c_timeout = lifecycle::parse_ctrl_c_timeout(config_text.as_deref());
 
-  // ===== 阶段 3.5：首次信任确认=====
+  // 首次信任确认
   // 项目有插件但未 code-trust 时，raw mode 下读单个 y/n：
   // y → 写 trusted_projects.toml 并重载配置（插件正常加载）；
   // n → 保持未信任，装配层跳过插件（信任闸门拒绝），继续启动。
@@ -145,7 +145,7 @@ async fn main() -> ExitCode {
     }
   }
 
-  // ===== 阶段 4：装配（失败在 guard 前 stderr 退出）=====
+  // 装配（失败在 guard 前 stderr 退出）
   let session: CliSession = match assemble_with_options(
     &outcome,
     Vec::new(),
@@ -161,7 +161,7 @@ async fn main() -> ExitCode {
     }
   };
 
-  // ===== 阶段 5：raw mode + panic hook + 主循环 =====
+  // raw mode + panic hook + 主循环
   let _log_guard = log_guard; // guard 持有至进程结束（非阻塞 writer）
   let _raw = match RawModeGuard::enter() {
     Ok(guard) => guard,

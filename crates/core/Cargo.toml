@@ -1,6 +1,6 @@
 [package]
 name = "ra-core"
-description = "Ribo Agent 核心库：统一错误处理与对话消息模型"
+description = "统一错误处理与对话消息模型"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

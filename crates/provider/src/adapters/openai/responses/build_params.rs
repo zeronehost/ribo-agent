@@ -8,7 +8,7 @@
 //! 4. 输出上限字段名为 `max_output_tokens`（API 要求最小 16）；
 //! 5. 无状态回放：固定 `store: false`，避免服务端留存与隐式上下文。
 //!
-//! 阶段 1 仅支持文本：非文本块（图片、思考）静默丢弃并记 `warn`。
+//! 仅支持文本：非文本块（图片、思考）静默丢弃并记 `warn`。
 
 use ra_core::message::{
   AssistantMessage, Content, Message, ToolChoice, ToolResultMessage,
@@ -39,7 +39,7 @@ pub fn build(
   context: &Context,
   options: &StreamOptions,
 ) -> serde_json::Value {
-  // ===== input 项序列 =====
+  // input 项序列
   let mut input: Vec<serde_json::Value> =
     Vec::with_capacity(context.message.len());
   for message in &context.message {
@@ -56,7 +56,7 @@ pub fn build(
     }
   }
 
-  // ===== 必填字段 =====
+  // 必填字段
   // store: false —— 每次请求都从本地历史完整回放，不依赖服务端状态。
   let mut body = serde_json::json!({
     "model": model.id.as_str(),
@@ -65,13 +65,13 @@ pub fn build(
     "store": false,
   });
 
-  // ===== system → instructions =====
+  // system → instructions
   let instructions = join_text(&context.system_prompt);
   if !instructions.is_empty() {
     body["instructions"] = serde_json::Value::String(instructions);
   }
 
-  // ===== 输出上限（API 要求 >= 16）=====
+  // 输出上限（API 要求 >= 16）
   // 显式覆盖优先；u64 → u32 转换前先夹取上限，防止极端值截断。
   let max = match options.max_tokens {
     Some(v) => v.min(u64::from(u32::MAX)) as u32,
@@ -82,7 +82,7 @@ pub fn build(
       serde_json::Value::from(max.max(MIN_OUTPUT_TOKENS));
   }
 
-  // ===== 采样参数（Responses 不支持 stop / seed）=====
+  // 采样参数（Responses 不支持 stop / seed）
   if let Some(t) = options.sampling.temperature {
     body["temperature"] = serde_json::json!(t);
   }
@@ -90,7 +90,7 @@ pub fn build(
     body["top_p"] = serde_json::json!(p);
   }
 
-  // ===== 工具声明 =====
+  // 工具声明
   if !context.tools.is_empty() {
     body["tools"] = serde_json::Value::Array(
       context.tools.iter().map(tool_to_wire).collect(),

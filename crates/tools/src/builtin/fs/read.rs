@@ -99,7 +99,7 @@ impl AgentTool for ReadTool {
     }
     let text = String::from_utf8(bytes)
       .map_err(|_| exec_failed("read", "file is not valid utf-8"))?;
-    // ===== 行窗口 =====
+    // 行窗口
     // 按行切分（\n 语义对齐 pi-tools read.rs 的 split 行为）
     let lines: Vec<&str> = text.lines().collect();
     let total_lines = lines.len();
@@ -139,7 +139,7 @@ impl AgentTool for ReadTool {
       taken += 1;
     }
     let end = start + taken;
-    // ===== 续读提示（窗口未及文末时附加） =====
+    // 续读提示（窗口未及文末时附加）
     if end < total_lines {
       window.push_str(&format!(
         "\n[Showing lines {}-{} of {}. Use offset={} to continue.]",

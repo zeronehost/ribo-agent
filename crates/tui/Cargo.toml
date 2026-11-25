@@ -7,7 +7,7 @@ publish.workspace = true
 repository.workspace = true
 readme.workspace = true
 license.workspace = true
-description = "Ribo Agent 终端 TUI：五区全屏交互"
+description = "终端 TUI：全屏分区交互界面"
 
 [[bin]]
 name = "ribo-tui"
@@ -23,7 +23,7 @@ clap = { workspace = true }
 crossterm = { workspace = true }
 once_cell = { workspace = true }
 ratatui = { workspace = true }
-tui-textarea = { workspace = true }
+ratatui-textarea = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }

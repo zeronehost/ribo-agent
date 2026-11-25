@@ -31,7 +31,7 @@ pub(super) fn build(
   context: &Context,
   options: &StreamOptions,
 ) -> serde_json::Value {
-  // ===== 消息序列 =====
+  // 消息序列
   // 预留 1 个位置给系统提示，减少扩容。
   let mut messages = Vec::with_capacity(context.message.len() + 1);
   push_system_message(&mut messages, &context.system_prompt);
@@ -39,7 +39,7 @@ pub(super) fn build(
     push_message(&mut messages, message);
   }
 
-  // ===== 必填字段 =====
+  // 必填字段
   // 始终开启流式输出，并要求服务端在最后一个 chunk 中附带 usage。
   let mut body = serde_json::json!({
     "model": model.id.as_str(),
@@ -48,7 +48,7 @@ pub(super) fn build(
     "stream_options": { "include_usage": true }
   });
 
-  // ===== 采样参数（仅在显式提供时写入） =====
+  // 采样参数（仅在显式提供时写入）
   if let Some(t) = options.sampling.temperature {
     body["temperature"] = serde_json::json!(t);
   }
@@ -65,7 +65,7 @@ pub(super) fn build(
     body["max_tokens"] = serde_json::json!(max_tokens);
   }
 
-  // ===== 工具声明 =====
+  // 工具声明
   // 只有调用方提供了工具时才写入 `tools` 与 `tool_choice`，
   // 避免向不支持工具调用的模型发送多余字段。
   if !context.tools.is_empty() {

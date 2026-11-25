@@ -1,4 +1,4 @@
-//! 真实 API 集成测试（Step 3；全部 `#[ignore]`，手动运行）。
+//! 真实 API 集成测试（全部 `#[ignore]`，手动运行）。
 //!
 //! 需要 `#[ignore]` 的原因：打真实外部端点（AGENTS.md：需要外部服务的
 //! 测试应标记 `#[ignore]`）。运行方式：
@@ -102,7 +102,7 @@ async fn assert_real_stream_turn(
   Ok(())
 }
 
-// ===== INT-01：Anthropic 真实流 =====
+// Anthropic 真实流
 
 /// 场景：真实 Anthropic 端点最小对话。
 /// 预期：Done(Stop) 且文本非空。缺密钥时跳过（打印提示，不失败）。
@@ -128,7 +128,7 @@ async fn int_01_anthropic_real_stream() {
     .expect("INT-01 应通过");
 }
 
-// ===== INT-02：OpenAI Chat Completions 真实流 =====
+// OpenAI Chat Completions 真实流
 
 /// 场景：真实 OpenAI Chat Completions 端点最小对话。
 /// 预期：Done(Stop) 且文本非空。缺密钥时跳过。
@@ -154,7 +154,7 @@ async fn int_02_openai_chat_real_stream() {
     .expect("INT-02 应通过");
 }
 
-// ===== INT-03：OpenAI Responses 真实流 =====
+// OpenAI Responses 真实流
 
 /// 场景：真实 OpenAI Responses 端点最小对话。
 /// 预期：Done(Stop) 且文本非空。缺密钥时跳过。

@@ -82,9 +82,6 @@ impl RootLayout {
   /// 输入区高度按编辑器行数动态（封顶 [`input::MAX_INPUT_ROWS`]）——
   /// `View::constraints` 签名不含状态，动态约束由根布局就地计算。
   pub fn render(&self, frame: &mut Frame, state: &AppState) {
-    let editor_rows = state.editor.borrow().lines().len() as u16;
-    let input_rows = (editor_rows + 1).min(input::MAX_INPUT_ROWS as u16) + 2;
-
     // 窄屏（< 60 列）隐藏侧栏：状态信息仍可由 /status 浮层查看
     let area = frame.area();
     let show_sidebar = Self::sidebar_visible(area.width);
@@ -93,6 +90,12 @@ impl RootLayout {
     } else {
       0
     };
+    // 输入区高度按**折行后的视觉行数**动态（封顶 MAX_INPUT_ROWS）：
+    // 与 InputView 渲染共用 wrapped_lines 口径。宽度取输入区实际内宽
+    // （列宽 - 侧栏 - 边框左右各 1），保证行数估算与折行渲染不漂移。
+    let input_width = area.width.saturating_sub(sidebar_w).saturating_sub(2);
+    let editor_rows = input::visual_rows(state, input_width) as u16;
+    let input_rows = (editor_rows + 1).min(input::MAX_INPUT_ROWS as u16) + 2;
     let columns = ratatui::layout::Layout::horizontal([
       Constraint::Length(sidebar_w),
       Constraint::Min(0),

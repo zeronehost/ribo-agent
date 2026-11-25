@@ -91,7 +91,7 @@ fn find_config_upwards_from(start: &Path, default: &Path) -> Option<PathBuf> {
 /// 全局域：跨项目共享的用户级配置根。
 ///
 /// 目录发现遵循"`--global-dir` > 平台默认配置目录 + `/ribo`"，目录不存在
-/// 时域禁用（非致命，R4：不主动创建、不报错）。
+/// 时域禁用（非致命，不主动创建、不报错）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalDomain {
   /// 全局域根目录（已由发现逻辑确认为存在的目录）。
@@ -159,7 +159,7 @@ pub struct LoadOutcome {
   /// 代码信任判定上下文。`None` = 无 Global 域 / 兼容入口，
   /// 装配层退化为「自动加载」的旧语义（回滚开关）。
   pub code_trust: Option<CodeTrustContext>,
-  /// fs 只读挂载点（v3 取代资源域；仅全局 settings.toml 声明）。
+  /// fs 只读挂载点（取代资源域；仅全局 settings.toml 声明）。
   pub fs_mounts: FsMountsSchema,
   /// release 构建下的致命配置错误：main 入口须检查并退出。
   /// debug 构建恒为 None（保留 mock 降级）。
@@ -217,8 +217,8 @@ fn record_origin(
 
 /// 递归逐字段合并两层 TOML 表：`project` 覆盖 `global`，记录每个叶子来源。
 ///
-/// 语义（设计）：
-/// - 双方同键且都是子表 → **递归合并**（子表内字段各自覆写，这是关键：
+/// 语义：
+/// - 双方同键且都是子表 → **递归合并**（子表内字段各自覆写：
 ///   `[retry]` 只写 `max_retries` 时不应抹掉 global 的 `initial_backoff_ms`）；
 /// - 其余情况（标量 / 数组 / 类型不同）→ project 整体覆盖，来源 `Project`；
 /// - 仅 global 有的键 → 沿用，来源 `Global`；
@@ -247,7 +247,7 @@ fn merge_tables(
     }
     (Some(g), Some(p)) => {
       let mut merged = g.clone();
-      // ===== project 的键逐字段覆盖 =====
+      // project 的键逐字段覆盖
       for (key, p_value) in p {
         let merged_value = match (g.get(key), p_value) {
           (Some(toml::Value::Table(g_sub)), toml::Value::Table(p_sub)) => {
@@ -283,7 +283,7 @@ fn merge_tables(
         };
         merged.insert(key.clone(), merged_value);
       }
-      // ===== 仅 global 有的顶层键 =====
+      // 仅 global 有的顶层键
       for (key, g_value) in g {
         if !p.contains_key(key) {
           record_origin(key, g_value, ConfigOrigin::Global, origins);
@@ -321,7 +321,7 @@ pub fn resolve_global_dir(
   dirs::config_dir().map(|d| d.join(GlobalDomain::DIR_NAME))
 }
 
-/// 合并两域 providers（Step 8，方案伪码）。
+/// 合并两域 providers。
 ///
 /// project 在前按声明序全部放入；global 在后只追加 provider_id 未冲突的；
 /// 同名 project 整条胜出（不继承全局字段）。`array_overwrite` 环境变量
@@ -354,9 +354,9 @@ fn merge_providers(
   merged
 }
 
-/// 从 one 域 TOML 表解析 providers 并打来源标签（Step 8）。
+/// 从 one 域 TOML 表解析 providers 并打来源标签。
 ///
-/// 步骤②：配置文件来源的 api_key 在此先做 `$ENV` 展开；auth.toml
+/// 配置文件来源的 api_key 在此先做 `$ENV` 展开；auth.toml
 /// 的值不走本函数（保证不展开）。展开失败的 provider 保留原值，交由
 /// from_table 的校验链统一跳过。
 fn sourced_providers(
@@ -441,17 +441,17 @@ impl LoadOutcome {
   ///
   /// `cli_root` 为 `--root` 参数，覆盖 harness 层 `root`。
   ///
-  /// **兼容入口**：不发现 Global 域、`origins` 恒为空，行为与 v1（单一
-  /// 配置文件）完全一致。新入口 [`Self::load_with_global`] 才启用分层合并。
+  /// **兼容入口**：不发现 Global 域、`origins` 恒为空，行为与单一
+  /// 配置文件入口完全一致。新入口 [`Self::load_with_global`] 才启用分层合并。
   pub fn load(path: Option<&Path>, cli_root: Option<&Path>) -> LoadOutcome {
     let table = parse_table(path.and_then(|p| std::fs::read_to_string(p).ok()));
-    // 兼容入口：从单文件解析 providers（Project 来源），保持 v1 行为——
+    // 兼容入口：从单文件解析 providers（Project 来源），保持旧行为——
     // 展开 $ENV（经由 sourced_providers）、不读 auth.toml、origins 恒空。
     let mut warnings = Vec::new();
     let providers =
       sourced_providers(table.as_ref(), ConfigOrigin::Project, &mut warnings);
-    // 第 2 档：--config（或兼容入口显式 path）文件父目录作为工作目录
-    // 默认值；相对路径 "ribo.toml" 的父目录为空 → 回退 cwd 档。
+    // --config（或兼容入口显式 path）文件父目录作为工作目录
+    // 默认值；相对路径 "ribo.toml" 的父目录为空 → 回退 cwd。
     let config_parent = path
       .and_then(|p| p.parent())
       .filter(|p| !p.as_os_str().is_empty());
@@ -480,22 +480,22 @@ impl LoadOutcome {
   ) -> LoadOutcome {
     let mut warnings = Vec::new();
 
-    // ===== ① 先读 Project 表（ribo.toml / --config）=====
+    // 先读 Project 表（ribo.toml / --config）
     let project_table =
       parse_table(path.and_then(|p| std::fs::read_to_string(p).ok()));
 
-    // ===== ② 解析 [global]：enabled 开关 + dir 覆盖 =====
+    // 解析 [global]：enabled 开关 + dir 覆盖
     // 全局开关必须写在项目配置里——全局目录尚未发现时无从读取其 [global] 段。
     let global_schema: GlobalSchema =
       load_layer(project_table.as_ref(), "global", &mut warnings);
     // 唯一真值：读写两端共用 resolve_global_dir。
     let effective_dir = resolve_global_dir(global_dir, project_table.as_ref());
 
-    // ===== ③ 发现 Global 域（目录缺失 / enabled=false → None，非致命）=====
+    // 发现 Global 域（目录缺失 / enabled=false → None，非致命）
     let global =
       GlobalDomain::discover(effective_dir.as_deref(), global_schema.enabled);
 
-    // ===== ④ 读 Global.settings.toml（单层损坏 → warning + 忽略该层）=====
+    // 读 Global.settings.toml（单层损坏 → warning + 忽略该层）
     let global_table = global.as_ref().and_then(|g| {
       match std::fs::read_to_string(g.settings_path()) {
         Ok(text) => parse_table(Some(text)),
@@ -511,9 +511,9 @@ impl LoadOutcome {
       );
     }
 
-    // ===== ④ 分来源解析 providers + 合并 + auth.toml =====
+    // 分来源解析 providers + 合并 + auth.toml
     // 数组字段 providers 不走 merge_tables 的"整体覆盖"：
-    // 分别解析两域、先做 $ENV 展开（步骤②），再按 provider_id 合并。
+    // 分别解析两域、先做 $ENV 展开，再按 provider_id 合并。
     let project_providers = sourced_providers(
       project_table.as_ref(),
       ConfigOrigin::Project,
@@ -533,12 +533,12 @@ impl LoadOutcome {
       &mut warnings,
     );
 
-    // ===== ⑤ 逐字段合并 + 来源标记 =====
+    // 逐字段合并 + 来源标记
     let mut origins = ConfigOrigins::new();
     let merged =
       merge_tables(global_table.as_ref(), project_table.as_ref(), &mut origins);
 
-    // ===== ⑤ fs.mounts：仅全局 settings.toml 声明=====
+    // fs.mounts：仅全局 settings.toml 声明
     // 项目配置无权声明——发现 [fs.*] 键即 warning + 忽略（防项目越权暴露
     // 沙箱外路径：挂载点语义是用户级路径别名，暴露决定权天然属于用户）。
     if project_table.as_ref().is_some_and(|t| t.contains_key("fs")) {
@@ -562,9 +562,9 @@ impl LoadOutcome {
         None => FsMountsSchema::default(),
       };
 
-    // ===== ⑥ 代码信任上下文=====
+    // 代码信任上下文
     // 仅当 Global 域存在时启用闸门；无 Global 域 → None（回滚为自动加载）。
-    // 信任记录位于 global.root/trusted_projects.toml（设计）。
+    // 信任记录位于 global.root/trusted_projects.toml。
     let code_trust = global.as_ref().map(|g| {
       let trust = self::trust::TrustedProjects::load(
         &g.root.join("trusted_projects.toml"),
@@ -578,8 +578,8 @@ impl LoadOutcome {
       CodeTrustContext::new(trust).with_global_root(&g.root)
     });
 
-    // 第 2/3 档：已解析配置文件（--config 或向上探测命中）的父目录
-    // 作为工作目录默认值；None（零配置）→ 回退 cwd 档。
+    // 已解析配置文件（--config 或向上探测命中）的父目录
+    // 作为工作目录默认值；None（零配置）→ 回退 cwd。
     let config_parent = path
       .and_then(|p| p.parent())
       .filter(|p| !p.as_os_str().is_empty());
@@ -600,7 +600,7 @@ impl LoadOutcome {
   ///
   /// `mounts` 由调用方从**全局 settings.toml** 单独解析后传入——
   /// 项目配置无权声明 `[fs.mounts]`，故本函数不从合并表读取。
-  /// `config_parent` 为已解析配置文件的所在目录（第 2/3 档）：
+  /// `config_parent` 为已解析配置文件的所在目录：
   /// 仅当 `harness.root` 未被任何来源显式设置时，作为工作目录默认值。
   // 私有构造器、仅 load/load_with_global 两个调用点：参数直接
   // 对应 outcome 字段，抽参数结构体不减少信息量，allow 更直接。
@@ -616,7 +616,7 @@ impl LoadOutcome {
     mounts: FsMountsSchema,
     config_parent: Option<&Path>,
   ) -> LoadOutcome {
-    // ===== 逐层反序列化（单层损坏保留默认）=====
+    // 逐层反序列化（单层损坏保留默认）
     // provider 层特殊：query_model/[[providers]]/[routing] 均为根级键，
     // 直接从根表整体反序列化（其余五层走 [layer] 子表）
     let mut provider: ProviderSchema = match &table {
@@ -630,14 +630,14 @@ impl LoadOutcome {
       None => ProviderSchema::default(),
     };
 
-    // ===== 步骤④：Global 来源空 key 从 auth.toml 补充 =====
+    // Global 来源空 key 从 auth.toml 补充
     // 配置文件来源的 api_key 已在 sourced_providers 中做过 $ENV 展开；
     // 此处只作用于 Global 来源且 trim 后为空的，且直接赋值不调 expand
-    //（auth.toml 的值原样使用，即使恰为 "$FOO" 也不展开——T12）。
+    //（auth.toml 的值原样使用，即使恰为 "$FOO" 也不展开）。
     let mut merged = merged_providers;
     for p in merged.iter_mut() {
       if p.origin != ConfigOrigin::Global {
-        continue; // G2：Project 来源不查 auth.toml
+        continue; // Project 来源不查 auth.toml
       }
       if !p.entry.api_key.trim().is_empty() {
         continue; // 已配置（含 $ENV 展开后）不覆盖
@@ -676,14 +676,14 @@ impl LoadOutcome {
     let mut harness: HarnessLayerSchema =
       load_layer(table.as_ref(), "harness", &mut warnings);
     if let Some(dir) = cli_root {
-      harness.root = dir.to_path_buf(); // CLI 参数覆盖（概设决策 3）
+      harness.root = dir.to_path_buf(); // CLI 参数覆盖
       origins.set("harness.root", ConfigOrigin::Cli);
     } else if !table
       .as_ref()
       .is_some_and(|t| t.get("harness").and_then(|v| v.get("root")).is_some())
       && let Some(parent) = config_parent
     {
-      // 第 2/3 档：harness.root 未被显式设置（合并表中无该键——项目
+      // harness.root 未被显式设置（合并表中无该键——项目
       // 文件或全局 settings 均未给出）时，工作目录 = 配置文件所在目录
       //（--config 父目录 / 向上探测命中目录）。不查 origins：兼容入口
       // 的 origins 恒空，表键检查对两条入口语义一致。
@@ -691,7 +691,7 @@ impl LoadOutcome {
       origins.set("harness.root", ConfigOrigin::Project);
     }
 
-    // ===== 聚合 outcome（先按 Real 构造；各 mock 分支就地降级）=====
+    // 聚合 outcome（先按 Real 构造；各 mock 分支就地降级）
     let mut outcome = LoadOutcome {
       provider,
       retry,
@@ -708,7 +708,7 @@ impl LoadOutcome {
       fatal_error: None,
     };
 
-    // ===== 无 provider：mock（release 致命）=====
+    // 无 provider：mock（release 致命）
     if outcome.provider.providers.is_empty() {
       #[cfg(not(debug_assertions))]
       {
@@ -728,7 +728,7 @@ impl LoadOutcome {
       }
     }
 
-    // ===== 逐条校验：占位 → 整体回退 mock =====
+    // 逐条校验：占位 → 整体回退 mock
     for p in &outcome.provider.providers {
       let mut entry_warnings = Vec::new();
       if !schema::validate_provider_entry(p, &mut entry_warnings) {
@@ -762,15 +762,15 @@ impl LoadOutcome {
     let mut prune_warnings = Vec::new();
     outcome.provider.providers.retain_mut(|p| {
       let mut w = Vec::new();
-      // Step 8：$ENV 展开已在 sourced_providers 完成；此处只 validate，
-      // 避免 auth.toml 补充的值（可能恰为 "$FOO"）被二次展开（T12）。
+      // $ENV 展开已在 sourced_providers 完成；此处只 validate，
+      // 避免 auth.toml 补充的值（可能恰为 "$FOO"）被二次展开。
       let ok = schema::validate_provider_entry(p, &mut w);
       prune_warnings.extend(w);
       ok
     });
     outcome.warnings.extend(prune_warnings);
 
-    // ===== default 悬空（唯一暴露者被跳过）→ 整体 mock =====
+    // default 悬空（唯一暴露者被跳过）→ 整体 mock
     if outcome.provider.providers.is_empty()
       || !outcome.provider.providers.iter().any(|p| {
         p.provider_id == outcome.provider.routing.default.provider
@@ -800,7 +800,7 @@ impl LoadOutcome {
       }
     }
 
-    // ===== 路由剔除引用被跳过 provider 的链 =====
+    // 路由剔除引用被跳过 provider 的链
     let registered: HashSet<&str> = outcome
       .provider
       .providers
@@ -881,8 +881,8 @@ mod tests {
     );
   }
 
-  /// 场景（T1）：`--config /proj/ribo.toml` 且未显式设置 harness.root
-  /// → 工作目录 = 配置文件父目录（第 2 档），origin 标记 Project。
+  /// 场景：`--config /proj/ribo.toml` 且未显式设置 harness.root
+  /// → 工作目录 = 配置文件父目录，origin 标记 Project。
   #[test]
   fn t1_config_parent_becomes_work_dir() {
     let dir = tempfile::tempdir().expect("temp");
@@ -895,8 +895,8 @@ mod tests {
     assert_eq!(outcome.origins.get("harness.root"), ConfigOrigin::Project);
   }
 
-  /// 场景（档位校验）：配置文件显式给出 `[harness].root` → 第 1 档
-  /// 文件值胜出，父目录推导不覆盖。
+  /// 场景：配置文件显式给出 `[harness].root` → 文件值胜出，
+  /// 父目录推导不覆盖。
   #[test]
   fn t1_file_harness_root_wins_over_config_parent() {
     let dir = tempfile::tempdir().expect("temp");
@@ -908,8 +908,8 @@ mod tests {
     assert_eq!(outcome.harness.root, std::path::Path::new("./custom"));
   }
 
-  /// 场景（T1b）：向上探测命中 `ribo.toml` → 工作目录 = 命中目录
-  ///（第 3 档；注入起点避免改动进程 cwd）。
+  /// 场景：向上探测命中 `ribo.toml` → 工作目录 = 命中目录
+  ///（注入起点避免改动进程 cwd）。
   #[test]
   fn t1b_upward_probe_parent_becomes_work_dir() {
     let dir = tempfile::tempdir().expect("temp");
@@ -924,7 +924,7 @@ mod tests {
     assert_eq!(outcome.harness.root, proj.as_path());
   }
 
-  /// 场景（第 4 档）：零配置（无 --config、探测未命中）→ 工作目录
+  /// 场景：零配置（无 --config、探测未命中）→ 工作目录
   /// 保持 cwd（`.`），origin 为 Default。
   #[test]
   fn t1_no_config_falls_back_to_cwd() {
@@ -933,7 +933,7 @@ mod tests {
     assert_eq!(outcome.origins.get("harness.root"), ConfigOrigin::Default);
   }
 
-  /// 场景（T10）：日志根——全局域启用 → 全局目录；未启用 → 项目
+  /// 场景：日志根——全局域启用 → 全局目录；未启用 → 项目
   /// `.ribo/`（logging 层拼 `logs/`，最终 `.ribo/logs/`）。
   #[test]
   fn t10_log_root_global_or_project_ribo() {
@@ -954,7 +954,7 @@ mod tests {
     assert_eq!(outcome.log_root(), global_root);
   }
 
-  /// 场景：默认值 + 文件逐层覆盖 + 单层损坏保留默认 + 模式标记（CFG-01）。
+  /// 场景：默认值 + 文件逐层覆盖 + 单层损坏保留默认 + 模式标记。
   #[test]
   fn load_defaults_then_file_overrides_per_layer() {
     // 无文件 → 全默认 mock
@@ -1060,7 +1060,7 @@ api_key = "sk-1"
     );
   }
 
-  /// 场景：$ENV 密钥、占位回退、默认模型悬空、--root 覆盖（CFG-02）。
+  /// 场景：$ENV 密钥、占位回退、默认模型悬空、--root 覆盖。
   #[test]
   fn load_env_key_placeholder_and_root_override() {
     let dir = tempfile::tempdir().expect("temp");
@@ -1376,7 +1376,7 @@ root = "./proj"
     assert_eq!(outcome.session.default_key, "default");
   }
 
-  /// T14/T15：无 provider —— debug 降级 mock / release 致命
+  /// 无 provider —— debug 降级 mock / release 致命
   #[test]
   fn d7_no_providers_mode() {
     let outcome = LoadOutcome::load(None, None);
@@ -1392,7 +1392,7 @@ root = "./proj"
     }
   }
 
-  /// T18：单 provider 缺 key 被跳过 —— 两模式都保留 warning
+  /// 单 provider 缺 key 被跳过 —— 两模式都保留 warning
   #[test]
   fn d7_partial_provider_skip_never_fatal() {
     let dir = tempfile::tempdir().expect("temp");

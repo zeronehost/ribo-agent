@@ -245,7 +245,7 @@ mod tests {
 
   /// 构造一条带 NaN 费用的助手消息。
   ///
-  /// 注意：**serde_json 把 NaN / Infinity 序列化为 `null`**（不是报错），
+  /// **serde_json 把 NaN / Infinity 序列化为 `null`**（不是报错），
   /// 因此 `Message` 的派生序列化实际不会失败——本函数用于构造
   /// 「内容差异明显」的消息，验证元数据指纹的区分度。
   fn assistant_with_nan_cost(text: &str) -> Message {

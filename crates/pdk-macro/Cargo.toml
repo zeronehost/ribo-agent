@@ -1,6 +1,6 @@
 [package]
 name = "ra-plug-pdk-macro"
-description = "Ribo Agent 插件 PDK 过程宏：#[ribo_tool] 工具声明与 #[ribo_plugin] ABI 导出生成"
+description = "插件 PDK 过程宏：#[ribo_tool] 工具声明与 #[ribo_plugin] ABI 导出生成"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

@@ -2,7 +2,7 @@
 //!
 //! Project 的 `.wasm` 属可执行资源，默认**不加载**——须用户在
 //! `global.root/trusted_projects.toml` 显式授予 `code_trust`。
-//! 资源域已移除（v3），域级信任判定一并删除；项目代码信任原样保留。
+//! 资源域已移除，域级信任判定一并删除；项目代码信任原样保留。
 //!
 //! 本模块把判定所需的全部上下文（信任记录 + 来源归属）封装为
 //! [`CodeTrustContext`]，装配期据此决定每条插件声明是否放行。
@@ -19,7 +19,7 @@ use super::trust::TrustedProjects;
 pub struct CodeTrustContext {
   /// 用户显式信任记录（来自 `global.root/trusted_projects.toml`）。
   trust: TrustedProjects,
-  /// Global 域根目录（供 Step 5 技能 / AGENTS.md 定位）；None = 无 Global 域。
+  /// Global 域根目录（供技能 / AGENTS.md 定位）；None = 无 Global 域。
   global_root: Option<PathBuf>,
 }
 
@@ -69,7 +69,7 @@ pub fn normalize_project_key(path: &Path) -> String {
 mod tests {
   use super::*;
 
-  /// 场景：项目代码信任判定（v3：域信任已删除，只保留项目维度）。
+  /// 场景：项目代码信任判定（域信任已删除，只保留项目维度）。
   #[test]
   fn code_trust_project_only() {
     let project = Path::new("/home/user/proj-a");

@@ -1,7 +1,7 @@
 //! 插件 ACL：URL 访问策略与插件能力声明。
 //!
 //! 代码库中原不存在 `UrlPolicy` / `SecurityConfig`，
-//! 本模块为阶段 6 **新建**：
+//! 本模块为新建：
 //!
 //! - [`UrlPolicy`]：`http-proxy` host function 的出站 URL 裁决器——
 //!   域名白名单 + 字面 IP 私网段拦截 + 仅允许 http/https；
@@ -64,7 +64,7 @@ pub enum UrlPolicyError {
 pub struct UrlPolicy {
   allowed_hosts: HashSet<String>,
   /// 是否显式放行 loopback。仅限 CI 本地 mock server
-  /// 场景（B1.1，「受控 URL」的 CI 层实现）；默认 `false`，
+  /// 场景（「受控 URL」的 CI 层实现）；默认 `false`，
   /// 且**只豁免 loopback**——RFC1918 / 链路本地 / 元数据端点无条件拒绝。
   allow_loopback: bool,
 }
@@ -84,7 +84,7 @@ impl UrlPolicy {
     }
   }
 
-  /// 显式放行 loopback 的构造器（仅限 CI 本地 mock server 场景，B1.1）。
+  /// 显式放行 loopback 的构造器（仅限 CI 本地 mock server 场景）。
   ///
   /// 与 [`Self::new`] 的唯一差异：字面 IP 保留段拦截对 **loopback 段**
   /// 豁免——CI 里本地 mock server 绑定 127.0.0.1，
@@ -106,14 +106,14 @@ impl UrlPolicy {
   /// - 字面 IP 命中保留段 → [`UrlPolicyError::PrivateAddress`]；
   /// - host 不在白名单 → [`UrlPolicyError::HostNotAllowed`]。
   pub fn check_url(&self, url: &reqwest::Url) -> Result<(), UrlPolicyError> {
-    // ===== 阶段 1：scheme 白名单 =====
+    // scheme 白名单
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" {
       return Err(UrlPolicyError::UnsupportedScheme(scheme.to_string()));
     }
 
-    // ===== 阶段 2：字面 IP 保留段拦截（先于白名单，不可被白名单放行） =====
-    // 例外：构造器显式 opt-in 的 loopback（仅限 CI 本地 mock，B1.1）；
+    // 字面 IP 保留段拦截（先于白名单，不可被白名单放行）
+    // 例外：构造器显式 opt-in 的 loopback（仅限 CI 本地 mock）；
     // RFC1918 / 链路本地 / 元数据端点没有豁免通道。
     let host_key = match url.host() {
       Some(Host::Ipv4(ip)) => {
@@ -132,7 +132,7 @@ impl UrlPolicy {
       None => return Err(UrlPolicyError::HostNotAllowed(String::new())),
     };
 
-    // ===== 阶段 3：白名单精确匹配（大小写不敏感） =====
+    // 白名单精确匹配（大小写不敏感）
     if self.allowed_hosts.contains(&host_key) {
       Ok(())
     } else {
@@ -142,7 +142,7 @@ impl UrlPolicy {
 }
 
 /// 保留段统一判定入口（IPv4 + IPv6）：供 DNS 解析结果防线（SSRF
-/// 第 3 层，B3.1）复用——URL 层（[`UrlPolicy`]）与 IP 层共用同一份
+/// 第 3 层）复用——URL 层（[`UrlPolicy`]）与 IP 层共用同一份
 /// 保留段清单，避免两套判定漂移。
 pub(crate) fn is_blocked_ip(ip: core::net::IpAddr) -> bool {
   match ip {
@@ -177,7 +177,7 @@ fn is_blocked_ipv6(ip: core::net::Ipv6Addr) -> bool {
 /// - **信任链约束**：ACL 由宿主注入，不由插件自述；
 /// - **最小权限**：[`Default`] 全部关闭，能力按需显式开启；
 /// - **配额覆写**：`memory_limit_bytes` / `storage_quota_bytes` 为插件级
-///   覆写，宿主在 Step B 用 `min(覆写, 进程默认)` 收紧（**只能收紧不能放大**）。
+///   覆写，宿主用 `min(覆写, 进程默认)` 收紧（**只能收紧不能放大**）。
 #[derive(Debug, Clone, Default)]
 pub struct PluginAcl {
   /// 是否允许调用 `log` host function。
@@ -194,7 +194,7 @@ pub struct PluginAcl {
   pub storage_quota_bytes: Option<usize>,
   /// 单工具执行超时上限覆写（毫秒；仅收紧，与进程
   /// [`crate::config::PluginRuntimeConfig::tool_timeout_ceiling`] 取
-  /// min）——与内存 / storage 配额覆写对称（ai_0018 / B2.5）。
+  /// min）——与内存 / storage 配额覆写对称。
   pub timeout_ceiling_ms: Option<u64>,
 }
 
@@ -269,7 +269,7 @@ mod tests {
     assert!(policy.check_url(&ok).is_ok());
   }
 
-  /// 场景（B1.1）：`allowing_loopback` 仅豁免 loopback——127.0.0.1
+  /// 场景：`allowing_loopback` 仅豁免 loopback——127.0.0.1
   /// 在白名单内放行；RFC1918 / 链路本地 / 元数据端点仍拒绝；默认
   /// `new` 构造不放行 loopback。
   #[test]

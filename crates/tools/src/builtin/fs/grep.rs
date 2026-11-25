@@ -112,7 +112,7 @@ async fn search_file(
   st: &mut GrepState,
   ctx: &ToolContext,
 ) -> RiboResult<()> {
-  // ===== 跳过判定（元数据 / 大小 / 二进制） =====
+  // 跳过判定（元数据 / 大小 / 二进制）
   let meta = match tokio::fs::metadata(path).await {
     Ok(m) => m,
     Err(e) => {
@@ -125,7 +125,7 @@ async fn search_file(
     return Ok(());
   }
   check_cancel(ctx, "grep")?;
-  // ===== 逐行匹配 =====
+  // 逐行匹配
   let text = match tokio::fs::read_to_string(path).await {
     Ok(t) => t,
     // 非 UTF-8 / 权限等：跳过并记 debug，不整体失败
@@ -213,7 +213,7 @@ impl AgentTool for GrepTool {
     args: serde_json::Value,
     ctx: &ToolContext,
   ) -> RiboResult<ToolExecutionResult> {
-    // ===== 取参 =====
+    // 取参
     let pattern = args["pattern"].as_str().ok_or_else(|| {
       invalid_arguments("grep", "field 'pattern' must be a string")
     })?;
@@ -222,7 +222,7 @@ impl AgentTool for GrepTool {
     })?;
     let ignore_case = args["ignore_case"].as_bool().unwrap_or(false);
     let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
-    // ===== 正则编译（ignore_case 经内联标志 (?i)） =====
+    // 正则编译（ignore_case 经内联标志 (?i)）
     // 正则非法属入参问题 → INVALID_ARGUMENTS
     let regex_src = if ignore_case {
       format!("(?i){pattern}")
@@ -233,7 +233,7 @@ impl AgentTool for GrepTool {
       .map_err(|e| invalid_arguments("grep", format!("invalid regex: {e}")))?;
     let target = self.root.resolve(path_raw)?;
     check_cancel(ctx, "grep")?;
-    // ===== 目标分发：单文件 / 目录递归 =====
+    // 目标分发：单文件 / 目录递归
     let mut st = GrepState {
       re,
       max_results,
@@ -246,7 +246,7 @@ impl AgentTool for GrepTool {
     } else {
       walk_grep(&target, self.root.root(), 0, &mut st, ctx).await?;
     }
-    // ===== 输出（无命中不视为错误） =====
+    // 输出（无命中不视为错误）
     let mut text = if st.lines.is_empty() {
       "(no matches)".to_string()
     } else {

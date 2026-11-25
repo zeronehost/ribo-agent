@@ -79,9 +79,7 @@ use tokio::{
   net::TcpListener,
 };
 
-// ============================================================================
 // 示例辅助
-// ============================================================================
 
 /// 解析示例用的提供方 ID。
 fn pid(raw: &str) -> ProviderId {
@@ -190,9 +188,7 @@ fn query_context() -> Context {
   }
 }
 
-// ============================================================================
 // 真实 API 模式（配置文件驱动）
-// ============================================================================
 
 /// `[[providers]]` 数组的单个条目：定义一个提供商适配器。
 #[derive(Debug, Deserialize)]
@@ -465,7 +461,7 @@ async fn run_real(cfg: RealConfig) {
   }
   tracing::info!(providers = cfg.providers.len(), "real api mode");
 
-  // ===== 注册适配器 =====
+  // 注册适配器
   let mut gateway = Gateway::new(base_config());
   for entry in &cfg.providers {
     let adapter = build_adapter(entry);
@@ -479,7 +475,7 @@ async fn run_real(cfg: RealConfig) {
     );
   }
 
-  // ===== 跨 provider 降级路由（统一 fallback 规则）=====
+  // 跨 provider 降级路由（统一 fallback 规则）
   let mut routes = RouteMap::default();
   let rules: Vec<FallbackRule> = cfg
     .routing
@@ -507,7 +503,7 @@ async fn run_real(cfg: RealConfig) {
   tracing::info!("fallback rules registered");
   gateway = gateway.with_routes(routes);
 
-  // ===== 构造上下文并发起请求 =====
+  // 构造上下文并发起请求
   let ctx = Context {
     message: vec![Message::User(UserMessage {
       content: UserContent::Text(
@@ -541,9 +537,7 @@ async fn run_real(cfg: RealConfig) {
   }
 }
 
-// ============================================================================
 // 离线演示模式：三个本地桩依次返回可跨 provider 降级的错误
-// ============================================================================
 
 /// 启动一次性本地 HTTP 服务：读取请求后返回 `response` 并关闭。
 async fn serve_once(response: String) -> std::net::SocketAddr {
@@ -661,7 +655,7 @@ async fn run_offline() {
   println!("gateway_fallback.toml 缺失或字段不完整，回退到离线服务桩演示。");
   tracing::info!("offline demo mode: using local stubs");
 
-  // ===== 1. 第一桩：429 限流 → 映射 RATE_LIMITED（可跨链）=====
+  // 1. 第一桩：429 限流 → 映射 RATE_LIMITED（可跨链）
   let addr_1 = serve_error(
     "429 Too Many Requests",
     r#"{"message":"insufficient_quota","type":"insufficient_quota"}"#,
@@ -674,7 +668,7 @@ async fn run_offline() {
     addr = %addr_1,
     "offline stub ready"
   );
-  // ===== 2. 第二桩：402 配额用尽 → 映射 QUOTA_EXCEEDED（可跨链）=====
+  // 2. 第二桩：402 配额用尽 → 映射 QUOTA_EXCEEDED（可跨链）
   let addr_2 = serve_error(
     "402 Payment Required",
     r#"{"message":"billing exhausted","type":"insufficient_quota"}"#,
@@ -687,7 +681,7 @@ async fn run_offline() {
     addr = %addr_2,
     "offline stub ready"
   );
-  // ===== 3. 第三桩：401 鉴权失败 → 映射 AUTH_FAILED（可跨链）=====
+  // 3. 第三桩：401 鉴权失败 → 映射 AUTH_FAILED（可跨链）
   let addr_3 = serve_error(
     "401 Unauthorized",
     r#"{"message":"invalid api key","type":"authentication_error"}"#,
@@ -700,7 +694,7 @@ async fn run_offline() {
     addr = %addr_3,
     "offline stub ready"
   );
-  // ===== 4. 终极兜底桩：200 SSE 成功流 =====
+  // 4. 终极兜底桩：200 SSE 成功流
   let addr_4 = serve_once(openai_chat_sse_body()).await;
   tracing::info!(
     provider = "chat-backup-success",
@@ -709,13 +703,13 @@ async fn run_offline() {
     "offline stub ready"
   );
 
-  // ===== 组装三家真实适配器 + 一个兜底 =====
+  // 组装三家真实适配器 + 一个兜底
   let chat = Arc::new(chat_adapter_for(addr_1));
   let responses = Arc::new(responses_adapter_for(addr_2));
   let anthropic = Arc::new(anthropic_adapter_for(addr_3));
   let backup = Arc::new(chat_backup_adapter_for(addr_4));
 
-  // ===== 降级路由：统一 fallback 规则列表=====
+  // 降级路由：统一 fallback 规则列表
   // 每条规则按声明顺序匹配；targets 按序尝试（{ provider } 形态 =
   // 同名 → 目标默认两级解析）
   let mut routes = RouteMap::default();
@@ -762,7 +756,7 @@ async fn run_offline() {
     .register(backup)
     .expect("chat-backup-success 应注册成功");
 
-  // ===== 发起一次请求，沿链触发 4 次尝试 =====
+  // 发起一次请求，沿链触发 4 次尝试
   let ctx = query_context();
   tracing::info!(query_model = "glm-4.5-flash", "gateway stream requested");
   let stream = gateway

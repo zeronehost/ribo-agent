@@ -92,22 +92,22 @@ impl SessionProvider for PersistentSessionProvider {
   /// 回放失败返回 `agent.context_build_error`（继承自 [`JsonlSessionStore::load`]）；
   /// 内存创建失败返回 `agent.session_create_failed`（内存实现恒 `Ok`）。
   async fn get_or_create(&self, key: &str) -> RiboResult<Arc<Session>> {
-    // ===== 阶段 1：快速路径（运行期零 IO）=====
+    // 快速路径（运行期零 IO）
     if let Some(session) = self.inner.get(key).await {
       return Ok(session);
     }
 
-    // ===== 阶段 2：逐键串行化冷启动 =====
+    // 逐键串行化冷启动
     // 先在引用结束前克隆 Arc，避免跨 await 持有 DashMap Ref
     let lock = self.init_lock(key);
     let _guard = lock.lock().await;
 
-    // ===== 阶段 3：锁内二次检查（并发首次访问只回放一次）=====
+    // 锁内二次检查（并发首次访问只回放一次）
     if let Some(session) = self.inner.get(key).await {
       return Ok(session);
     }
 
-    // ===== 阶段 4：回放并物化内存会话 =====
+    // 回放并物化内存会话
     let replay = self.store.load(key).await?;
     let session = self.inner.get_or_create(key).await?;
     session.append_messages(&replay.messages);
@@ -150,16 +150,16 @@ impl SessionProvider for PersistentSessionProvider {
 
   /// 移除会话：内存 + 磁盘 + 回放锁联动；返回是否确有删除。
   async fn remove(&self, key: &str) -> bool {
-    // ===== 阶段 1：内存移除 =====
+    // 内存移除
     let removed_memory = self.inner.remove(key).await;
 
-    // ===== 阶段 2：磁盘删除（失败只告警，不回滚内存移除）=====
+    // 磁盘删除（失败只告警，不回滚内存移除）
     let existed_on_disk = self.store.exists(key).await;
     if let Err(err) = self.store.delete(key).await {
       tracing::warn!(session_key = %key, error = %err, "delete session file failed");
     }
 
-    // ===== 阶段 3：回收回放锁条目 =====
+    // 回收回放锁条目
     // 与并发 get_or_create 的竞态：若回放已在进行，等待者释放后最多重建一次
     // 空会话（此刻文件已删），不会产生重复消息；属可接受边缘场景
     self.init_locks.remove(key);
@@ -187,14 +187,14 @@ impl SessionProvider for PersistentSessionProvider {
   /// 两段式：先 `inner.cleanup_expired`，再以快照差集删文件 + 回收回放锁。
   /// 运行中的会话由 `SessionManager` 跳过；磁盘孤儿文件不在本方法职责内。
   async fn cleanup_expired(&self, idle_after: Duration) -> usize {
-    // ===== 阶段 1：清理前快照（用于磁盘差集）=====
+    // 清理前快照（用于磁盘差集）
     let before: BTreeSet<String> =
       self.inner.list().await.into_iter().collect();
 
-    // ===== 阶段 2：内存清理（运行中会话由 SessionManager 跳过）=====
+    // 内存清理（运行中会话由 SessionManager 跳过）
     let cleaned = self.inner.cleanup_expired(idle_after).await;
 
-    // ===== 阶段 3：差集 = 真正被清理的键 → 删文件 + 回收锁 =====
+    // 差集 = 真正被清理的键 → 删文件 + 回收锁
     if cleaned > 0 {
       let after: BTreeSet<String> =
         self.inner.list().await.into_iter().collect();
@@ -243,7 +243,7 @@ mod tests {
     Message::Assistant(msg)
   }
 
-  /// SP-01：预写 JSONL → 新 Provider get_or_create 回放成功，内存快照与文件一致。
+  /// 预写 JSONL → 新 Provider get_or_create 回放成功，内存快照与文件一致。
   #[tokio::test]
   async fn cold_start_materializes_messages() {
     let dir = crate::test_util::test_dir("cold_start_materializes_messages");
@@ -260,7 +260,7 @@ mod tests {
     assert_eq!(session.snapshot(), msgs);
   }
 
-  /// SP-02：并发 8 路同名 get_or_create 只回放一次，快照长度等于文件消息数。
+  /// 并发 8 路同名 get_or_create 只回放一次，快照长度等于文件消息数。
   #[tokio::test]
   async fn concurrent_get_or_create_replays_once() {
     let dir =
@@ -296,7 +296,7 @@ mod tests {
     assert_eq!(first.snapshot().len(), msgs.len());
   }
 
-  /// SP-03：物化后 remove 删除内存、文件与回放锁；再次 get_or_create 为空会话。
+  /// 物化后 remove 删除内存、文件与回放锁；再次 get_or_create 为空会话。
   #[tokio::test]
   async fn remove_deletes_memory_file_and_lock() {
     let dir = crate::test_util::test_dir("remove_deletes_memory_file_and_lock");
@@ -316,7 +316,7 @@ mod tests {
     assert!(session.snapshot().is_empty());
   }
 
-  /// SP-04：list 合并内存与磁盘；cleanup_expired 联动删文件。
+  /// list 合并内存与磁盘；cleanup_expired 联动删文件。
   #[tokio::test]
   async fn list_unions_memory_and_disk_and_cleanup_deletes_files() {
     let dir = crate::test_util::test_dir(
@@ -363,7 +363,7 @@ mod tests {
     assert!(provider.get("s1").await.is_none());
   }
 
-  /// SP-05：绑定统计估算器 → 冷启动回放后写入压缩三态统计
+  /// 绑定统计估算器 → 冷启动回放后写入压缩三态统计
   /// （此前冷启动会话内无统计，显示端恒为「—」）。
   #[tokio::test]
   async fn cold_start_writes_stats_from_estimator() {

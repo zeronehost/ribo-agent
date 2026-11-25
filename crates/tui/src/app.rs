@@ -1,8 +1,8 @@
 //! TUI 主循环：`tokio::select!` 三源批处理 + AppState 事件映射 +
 //! Ctrl-C 生命周期。
 //!
-//! `AppState`（含 `RefCell<TextArea>`，非 `Sync`）由本任务独占持有
-//!（R-R4）；键盘 task 只投喂 `AppInput`，不触碰状态树。
+//! `AppState`（含 `RefCell<TextArea>`，非 `Sync`）由本任务独占持有；
+//! 键盘 task 只投喂 `AppInput`，不触碰状态树。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ra_agent::events::AgentEvent;
@@ -234,15 +234,22 @@ impl App {
   }
 
   /// 绘制一帧：刷新行数缓存（按当前宽度）→ 布局渲染。
+  ///
+  /// ratatui 0.30 的 `Backend::Error` 不再固定为 `io::Error`，`?` 转
+  /// `anyhow::Error` 需其满足 `Send + Sync + 'static`（CrosstermBackend /
+  /// TestBackend 的 Error 均为 `io::Error`，满足）。
   fn draw<B: ratatui::backend::Backend>(
     &mut self,
     terminal: &mut ratatui::Terminal<B>,
-  ) -> anyhow::Result<()> {
+  ) -> anyhow::Result<()>
+  where
+    B::Error: Send + Sync + 'static,
+  {
     let terminal_width = terminal
       .size()
       .map(|s| s.width)
       .unwrap_or(render_helpers::FALLBACK_WIDTH);
-    // 关键：行数缓存必须用对话区宽度（终端宽 - 侧栏），否则折行数低估
+    // 行数缓存必须用对话区宽度（终端宽 - 侧栏），否则折行数低估
     // → 滚动偏移错位、内容显示不全（布局改造回归修复）
     let width = crate::view::RootLayout::dialog_width(terminal_width);
     self.state.dialog_width = width;
@@ -260,7 +267,7 @@ impl App {
         .state
         .editor
         .borrow_mut()
-        .input(tui_textarea::Input::from(key));
+        .input(ratatui_textarea::Input::from(key));
       return;
     };
     match action {
@@ -715,7 +722,7 @@ impl App {
     self.state.status.total_output += usage.output.max(0) as u64;
   }
 
-  /// Ctrl-C / `/exit` 退出流程（四步；R-R2：等待期 select! 同武装
+  /// Ctrl-C / `/exit` 退出流程（四步；等待期 select! 同武装
   /// 「任务结束 / 超时 / 第二次 Ctrl-C」，绝不阻塞主循环）。
   ///
   /// 本函数以 [`lifecycle::finish_exit`]（`process::exit`）结束进程，
@@ -857,7 +864,7 @@ mod tests {
     })
   }
 
-  // 场景（Step A 验收）：完整事件序列 → AppState 快照。
+  // 场景：完整事件序列 → AppState 快照。
   // 预期：气泡 [User, Assistant(流式聚合), ToolResult]、工具条目 Done、
   // usage 累计、AgentEnd 复位 Idle。
   #[test]
@@ -939,7 +946,7 @@ mod tests {
     assert!(!app.state.status.in_flight);
   }
 
-  // 场景（Step A 验收）：多事件同轮批处理 → 至多一次 draw。
+  // 场景：多事件同轮批处理 → 至多一次 draw。
   // 预期：手动应用一批事件后单次 draw 计数 +1（无逐事件重绘）。
   #[test]
   fn batch_applies_then_draws_once() {
@@ -977,7 +984,7 @@ mod tests {
     );
   }
 
-  // 场景（Step B）：中文 / Emoji 经编辑器输入保持 char boundary 安全。
+  // 场景：中文 / Emoji 经编辑器输入保持 char boundary 安全。
   // 预期：多字节字符逐个插入不 panic、文本完整、光标可继续输入。
   #[test]
   fn editor_handles_cjk_and_emoji() {
@@ -987,10 +994,12 @@ mod tests {
         .state
         .editor
         .borrow_mut()
-        .input(tui_textarea::Input::from(crossterm::event::KeyEvent::new(
-          crossterm::event::KeyCode::Char(ch.chars().next().expect("单字符")),
-          crossterm::event::KeyModifiers::NONE,
-        )));
+        .input(ratatui_textarea::Input::from(
+          crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(ch.chars().next().expect("单字符")),
+            crossterm::event::KeyModifiers::NONE,
+          ),
+        ));
     }
     let text = input_view::editor_text(&app.state);
     assert_eq!(text, "你好🌍");
@@ -999,10 +1008,12 @@ mod tests {
       .state
       .editor
       .borrow_mut()
-      .input(tui_textarea::Input::from(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('!'),
-        crossterm::event::KeyModifiers::NONE,
-      )));
+      .input(ratatui_textarea::Input::from(
+        crossterm::event::KeyEvent::new(
+          crossterm::event::KeyCode::Char('!'),
+          crossterm::event::KeyModifiers::NONE,
+        ),
+      ));
     assert_eq!(input_view::editor_text(&app.state), "你好🌍!");
   }
 

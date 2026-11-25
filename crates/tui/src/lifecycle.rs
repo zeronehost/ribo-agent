@@ -2,7 +2,7 @@
 //!
 //!
 //! 核心约束：`std::process::exit` **不执行 Drop**——所有退出路径必须先
-//! 显式调用 [`restore_terminal`] 再 exit（R-B2）；[`finish_exit`] 是
+//! 显式调用 [`restore_terminal`] 再 exit；[`finish_exit`] 是
 //! 「正常退出 / 超时强退」两条路径的同源出口。
 
 use std::time::Duration;
@@ -47,7 +47,7 @@ impl Drop for RawModeGuard {
 /// 显式恢复终端（单一清理入口）。
 ///
 /// 逆序执行：显光标 → 离开备用屏 → 关闭 raw mode。被「正常退出 /
-/// 超时强退 / panic hook」共用（R-B2：`process::exit` 不执行 Drop，
+/// 超时强退 / panic hook」共用（`process::exit` 不执行 Drop，
 /// 绝不裸退出）。
 pub fn restore_terminal() -> std::io::Result<()> {
   crossterm::execute!(
@@ -66,7 +66,7 @@ pub fn finish_exit(code: i32) -> ! {
   std::process::exit(code);
 }
 
-/// 安装 panic hook：恢复终端后再链式调用原 hook（R-B2 panic 路径）。
+/// 安装 panic hook：恢复终端后再链式调用原 hook。
 pub fn install_panic_hook() {
   let original = std::panic::take_hook();
   std::panic::set_hook(Box::new(move |info| {

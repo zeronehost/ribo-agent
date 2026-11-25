@@ -1,4 +1,4 @@
-//! Step B 单元测试：以 「方式 A 内联 WAT」构造测试 guest，
+//! 单元测试：以内联 WAT 构造测试 guest，
 //! 覆盖 echo 全链路、死循环 epoch 中断、内存超限、guest trap、
 //! DoS 边界与 storage 三态契约。
 //!
@@ -26,7 +26,7 @@ use crate::wasm::hostfns::{
 use crate::wasm::runtime::{PluginRuntime, run_tool};
 use crate::wasm::storage::Storage;
 
-// ===== 测试辅助 =====
+// 测试辅助
 
 /// 构造插件级共享状态（client / storage / limiter / config）。
 fn make_shared(acl: &PluginAcl) -> Arc<PluginShared> {
@@ -169,7 +169,7 @@ fn full_acl() -> PluginAcl {
   }
 }
 
-// ===== 用例 =====
+// 用例
 
 /// 场景（前置用例 + 全链路）：echo guest 端到端跑通——
 /// args 写入 guest 内存 → execute 回传 → host 读回 JSON。
@@ -503,16 +503,16 @@ async fn oversized_tool_name_maps_to_guest_error() {
   );
 }
 
-// ===== B1 验收补齐（2026-11-16，核对表缺口）=====
+// 补充用例
 
-// B1.4 说明：`instantiate` / start 段 trap 分类由既有
+// 说明：`instantiate` / start 段 trap 分类由既有
 // `memory_hog_guest_hits_store_limits` 覆盖——`(memory 64)` 在模块顶层
-// 声明即实例化期分配，`StoreLimits` 在 `linker.instantiate` 阶段拦截，
+// 声明即实例化期分配，`StoreLimits` 在 `linker.instantiate` 时拦截，
 // 经分类映射 `plugin.plugin_timeout`（白名单不计熔断，配套
 // registry.rs `plugin_timeout_and_forbidden_do_not_open_circuit`）。
 
 /// 计数 guest：`alloc` 累加 leaked、`dealloc` 扣减、导出 `leaked()`
-/// 读取——用于验证宿主侧 RAII 守卫（B1.3）确实调用了 guest dealloc。
+/// 读取——用于验证宿主侧 RAII 守卫确实调用了 guest dealloc。
 fn leak_counter_guest() -> Vec<u8> {
   wat::parse_str(
     r#"(module
@@ -528,7 +528,7 @@ fn leak_counter_guest() -> Vec<u8> {
   .expect("valid leak counter wat")
 }
 
-/// 场景（B1.3，「中途 trap 不泄漏」防回归）：`GuestBufs` RAII
+/// 场景（「中途 trap 不泄漏」防回归）：`GuestBufs` RAII
 /// 守卫的 `release_all` 对每个已登记缓冲区调用 guest `dealloc`——
 /// 计数 guest 的 leaked 全局归零；释放前 leaked = 8 + 16 = 24（守卫
 /// 确实必要的反证）。
@@ -602,7 +602,7 @@ async fn guest_bufs_release_calls_guest_dealloc() {
   );
 }
 
-/// B1.2 场景（DoS 表「超大 value」）：`storage_put` 的 value
+/// 场景（DoS 表「超大 value」）：`storage_put` 的 value
 /// 长度超 `MAX_VALUE_LEN` → 读取点拦截（`value exceeds limit`），
 /// 不触达 storage 层。
 fn oversized_value_guest() -> Vec<u8> {
@@ -635,7 +635,7 @@ async fn oversized_value_is_rejected_at_read_point() {
   );
 }
 
-/// B1.2 场景（DoS 表「边界值通过」）：key 恰好 256B、value 恰好
+/// 场景（DoS 表「边界值通过」）：key 恰好 256B、value 恰好
 /// 256KB 全部成功——守住「≤ 上限通过、> 上限拒绝」临界点，防止把
 /// `>=` 写成 `>`。value 区位于 guest 线性内存
 /// （memory 5 = 320KB）内。
@@ -665,7 +665,7 @@ async fn boundary_key_and_value_pass() {
   assert_eq!(result, json!(1));
 }
 
-/// B1.7 场景（「log 限流」）：guest 洪水发送 300 条日志（进程
+/// 场景（「log 限流」）：guest 洪水发送 300 条日志（进程
 /// burst 默认 200）——限流静默丢弃超量条目，guest 侧执行
 /// 不失败（与 `LogRateLimiter` 窗口滚动单测互补）。
 fn log_flood_guest() -> Vec<u8> {
@@ -698,9 +698,9 @@ async fn log_flood_is_throttled_silently() {
   assert_eq!(result, json!(1));
 }
 
-/// B1.6 场景（「tools() 仅调一次」）：`WasmPlugin::tools`
+/// 场景（「tools() 仅调一次」）：`WasmPlugin::tools`
 /// 直接读缓存——多次调用结果稳定一致；guest 的 `list_tools` 由加载期
-/// （阶段 3）单次执行的代码路径保证，缓存于 WasmPlugin。
+/// 单次执行的代码路径保证，缓存于 WasmPlugin。
 #[tokio::test]
 async fn plugin_tools_manifest_is_cached_and_stable() {
   // manifest JSON 恰 28 字节：{"plugin_id":"t","tools":[]}
@@ -731,7 +731,7 @@ async fn plugin_tools_manifest_is_cached_and_stable() {
   }
 }
 
-// ===== B3.1 SSRF 第 3 层（DNS 解析结果 IP 复检）=====
+// SSRF 第 3 层（DNS 解析结果 IP 复检）
 
 /// 静态解析表 resolver（测试专用）：域名 → SocketAddr 硬映射，
 /// 复现「白名单域名解析到私网 IP」的 DNS rebinding，无需真实 DNS。
@@ -764,7 +764,7 @@ impl reqwest::dns::Resolve for StaticResolver {
   }
 }
 
-/// 场景（B3.1 单元级）：解析结果命中保留段（RFC1918 / 元数据端点）
+/// 场景（单元级）：解析结果命中保留段（RFC1918 / 元数据端点）
 /// 被拒（错误文案含 `blocked address` 与具体 IP）；保留段外放行。
 #[test]
 fn dns_guard_rejects_private_resolutions() {
@@ -784,7 +784,7 @@ fn dns_guard_rejects_private_resolutions() {
   );
 }
 
-/// B3.1 场景（guest 级全链路）：白名单域名 `rebind.example.com` 通过
+/// 场景（guest 级全链路）：白名单域名 `rebind.example.com` 通过
 /// UrlPolicy 第 1/2 层（域名无字面 IP 可查）→ 解析到 RFC1918 私网 IP
 /// → resolver 第 3 层拒绝。断言错误码为 `plugin.plugin_exec_failed`
 /// （transport 路径），**不是** `plugin.plugin_forbidden`——区别于
@@ -848,9 +848,9 @@ async fn dns_rebinding_to_private_ip_is_blocked() {
   );
 }
 
-// ===== B3.2 权威清单（Step C 信任链闭合）=====
+// 权威清单（信任链闭合）
 
-/// 场景（B3.2）：权威清单与 guest 自述一致 → `load_with_authority`
+/// 场景：权威清单与 guest 自述一致 → `load_with_authority`
 /// 通过；不一致（plugin_id / 工具集合）→ 拒绝加载。guest manifest
 /// 为 `{"plugin_id":"t","tools":[]}`（28 字节，复用 fixture 形态）。
 #[tokio::test]

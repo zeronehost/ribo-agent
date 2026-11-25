@@ -7,7 +7,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 authors = ["jinbin <1447281971@qq.com>"]
 edition = "2024"
 publish = false
@@ -73,13 +73,12 @@ clap = { version = "4", features = ["derive"] }
 # 密钥无回显输入（auth login 交互提示）
 rpassword = "7"
 
-# TUI（阶段 5b，ra-tui 专用）
-# crossterm 固定 0.28：tui-textarea 0.7 的 From<KeyEvent> 绑定 0.28
-# 版本三角锁定：tui-textarea 0.7 依赖 ratatui 0.29 + crossterm 0.28，
-# ra-tui 必须与之对齐（0.30 的 Widget trait 不兼容其 impl）
-ratatui = "0.29"
-crossterm = "0.28"
-tui-textarea = "0.7"
+# TUI（ra-tui 专用）
+# 三者版本须一起锁定：ratatui 与 ratatui-textarea 共用 ratatui-core / ratatui-widgets，
+# crossterm 由 ratatui-crossterm 绑定，改版本会破坏 Input::from(KeyEvent) 的类型匹配。
+ratatui = "0.30.2"
+crossterm = "0.29"
+ratatui-textarea = { version = "0.9.4", features = ["crossterm"] }
 anyhow = "1"
 once_cell = "1"
 unicode-width = "0.2"
@@ -87,11 +86,9 @@ portable-pty = "0.9"
 
 url = "2"
 
-# 阶段 6 Step B（18_ §0.3 依赖锁定，2026-11-13）：
-# wasmtime 仅开放 cranelift（JIT 编译后端）+ runtime（实例运行），
-# 关闭默认 feature（anyhow/wat/cache/pooling-allocator 等）控制编译与体积成本（R9）。
-# 最新稳定为 50.x（51.0.0 仍为 rc 且要求 rust 1.97，暂不采用）。
-# 升级 wasmtime 时必须重跑 §13.1 的 trap 分类回归测试（错误消息文本可能变化）。
+# wasmtime 只启用 cranelift（JIT 后端）和 runtime，关闭默认 feature 以控制编译与体积成本。
+# 51.x 仍是 rc 且要求更高 rust 版本，暂用 50.x。
+# 升级后需重跑 trap 分类回归测试（错误消息文本可能变化）。
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime"] }
 blake3 = "1"
 # Ed25519 来源签名验证（已在 lockfile 中为 reqwest/rustls 的传递依赖）
@@ -101,8 +98,7 @@ lru = "0.12"
 # 测试用 WAT 解析（仅 dev-dependencies 使用）
 wat = "1"
 
-# 
-# 阶段 6 Step B：Rust PDK 宏（ra-plug-pdk-macro 专用）
+# Rust PDK 过程宏（ra-plug-pdk-macro 专用）
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }

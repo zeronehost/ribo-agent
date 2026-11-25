@@ -27,7 +27,7 @@ use crate::{
 pub fn validate_provider(provider: &dyn Provider) -> RiboResult<()> {
   let models: &[Model] = provider.models();
 
-  // ===== 规则 1：模型列表非空 =====
+  // 规则 1：模型列表非空
   if models.is_empty() {
     tracing::warn!(
       provider = %provider.id(),
@@ -40,7 +40,7 @@ pub fn validate_provider(provider: &dyn Provider) -> RiboResult<()> {
   }
   let mut seen: HashSet<&ModelId> = HashSet::with_capacity(models.len());
   for m in models {
-    // ===== 规则 2：模型归属与注册 ID 一致 =====
+    // 规则 2：模型归属与注册 ID 一致
     if &m.provider != provider.id() {
       tracing::warn!(
         provider = %provider.id(),
@@ -60,7 +60,7 @@ pub fn validate_provider(provider: &dyn Provider) -> RiboResult<()> {
         .with_context("model", m.id.to_string()),
       );
     }
-    // ===== 规则 3：上下文窗口与输出限额合理 =====
+    // 规则 3：上下文窗口与输出限额合理
     if m.context_window == 0 || m.max_tokens == 0 {
       tracing::warn!(
         provider = %provider.id(),
@@ -92,7 +92,7 @@ pub fn validate_provider(provider: &dyn Provider) -> RiboResult<()> {
         .with_context("model", m.id.to_string()),
       );
     }
-    // ===== 规则 4：模型 ID 不重复 =====
+    // 规则 4：模型 ID 不重复
     if !seen.insert(&m.id) {
       tracing::warn!(
         provider = %provider.id(),

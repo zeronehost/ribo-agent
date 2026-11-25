@@ -190,17 +190,17 @@ impl Compactor {
     config: &CompactionConfig,
     cancel: Option<CancelToken>,
   ) -> CompactionOutcome {
-    // ===== 阶段 1：未启用 → 原样返回 =====
+    // 未启用 → 原样返回
     if !config.enabled {
       return CompactionOutcome::noop(messages, CompactionReason::Disabled);
     }
 
-    // ===== 阶段 2：惰性恢复状态（重启后从 JSONL 摘要记录恢复）=====
+    // 惰性恢复状态（重启后从 JSONL 摘要记录恢复）
     self
       .restore_state_if_needed(session_key, messages, config)
       .await;
 
-    // ===== 阶段 3：估算 token 与预算判定（扣 overhead，≤0 退化）=====
+    // 估算 token 与预算判定（扣 overhead，≤0 退化）
     let estimated = estimate_tokens(messages);
     let raw_budget =
       (self.model.context_window as f64 * config.trigger_ratio) as usize;
@@ -247,7 +247,7 @@ impl Compactor {
       );
     }
 
-    // ===== 阶段 4：轮切分（复用现有不变量）=====
+    // 轮切分（复用现有不变量）
     let Some((prefix, recent)) =
       split_prefix(messages, config.keep_recent_turns)
     else {
@@ -260,7 +260,7 @@ impl Compactor {
       return CompactionOutcome::noop(messages, CompactionReason::NoSplit);
     };
 
-    // ===== 阶段 5：判定路径（滞回 / 冷却 / 复用 last_summary）=====
+    // 判定路径（滞回 / 冷却 / 复用 last_summary）
     // 压缩三态统计"已压缩量"：本轮被移出视图的 prefix 估算
     let prefix_tokens = estimate_tokens(prefix);
     // 取出当前状态快照后按判定结果更新；冷却与滞回轮次不调用 LLM。
@@ -302,7 +302,7 @@ impl Compactor {
       );
     }
 
-    // ===== 阶段 6：无摘要模型 → 纯滑窗 =====
+    // 无摘要模型 → 纯滑窗
     let Some(summarizer_model) = config.summarizer_model.as_ref() else {
       tracing::warn!(
         session_key = %session_key,
@@ -323,7 +323,7 @@ impl Compactor {
       return outcome;
     };
 
-    // ===== 阶段 7：决定增量 / 全量重建=====
+    // 决定增量 / 全量重建
     let rebuild = self.should_rebuild(&state, config);
     let summary_input = self.build_summary_input(
       messages,
@@ -344,7 +344,7 @@ impl Compactor {
       "compaction summary requested"
     );
 
-    // ===== 阶段 8：生成摘要（超时 / 取消 / 失败全部回退滑窗）=====
+    // 生成摘要（超时 / 取消 / 失败全部回退滑窗）
     let outcome = tokio::time::timeout(
       SUMMARY_TIMEOUT,
       self.run_summarize(&summary_input, summarizer_model, cancel.clone()),
@@ -452,7 +452,7 @@ impl Compactor {
     }
   }
 
-  // ===== 内部辅助：状态恢复与更新 =====
+  // 内部辅助：状态恢复与更新
 
   /// 首次遇到某会话时，从 JSONL 摘要记录惰性恢复状态。
   ///
@@ -573,7 +573,7 @@ impl Compactor {
       state.cooldown_turns_left = config.cooldown_turns;
       state.last_truncated = truncated;
       state.summary_age_turns = state.summary_age_turns.saturating_add(1);
-      // 注意：不改动 last_summary / checkpoint_fingerprint——保留上次成功缓存
+      // 不改动 last_summary / checkpoint_fingerprint——保留上次成功缓存
       tracing::debug!(
         session_key = %key,
         estimated,
@@ -756,7 +756,7 @@ impl Compactor {
     (self.model.context_window as f64 * SUMMARY_INPUT_WINDOW_RATIO) as usize
   }
 
-  // ===== 内部辅助：摘要请求 =====
+  // 内部辅助：摘要请求
 
   /// 向网关发起摘要请求，流式拼接文本。
   async fn run_summarize(
@@ -809,9 +809,7 @@ impl Compactor {
   }
 }
 
-// ============================================================================
 // 估算与切分辅助
-// ============================================================================
 
 /// 按加权字符口径估算 token（唯一真值：ASCII 0.25 / CJK 1.0 / 其他 0.5）。
 pub use ra_core::message::estimate_context_tokens;
@@ -845,9 +843,7 @@ fn split_prefix(
   Some(messages.split_at(cut))
 }
 
-// ============================================================================
 // 测试
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1269,7 +1265,7 @@ mod tests {
   }
 
   /// 增量路径：检查点命中 → 摘要输入 = 前置摘要块 + 检查点后增量（不含
-  /// 检查点之前的 prefix），显著小于全量 prefix（验收标准 4）。
+  /// 检查点之前的 prefix），显著小于全量 prefix。
   #[test]
   fn incremental_input_covers_only_delta_after_checkpoint() {
     let (gateway, model) = make_gateway_and_model(Vec::new(), 64);
@@ -1341,7 +1337,7 @@ mod tests {
   }
 
   /// 窗口保护下的滞回内估计：estimated == budget 的等价边界不触发
-  /// （验收：严格大于才触发）。
+  /// 严格大于才触发。
   #[tokio::test]
   async fn equal_to_budget_does_not_trigger() {
     // 构造一条恰好等于预算的消息很难精确控制；改用 below-threshold 语义

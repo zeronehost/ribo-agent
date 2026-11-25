@@ -1,6 +1,6 @@
 //! Anthropic Messages API SSE 帧分派。
 //!
-//! 线格式参考：<https://docs.anthropic.com/en/api/messages-streaming>
+//! 格式参考：<https://docs.anthropic.com/en/api/messages-streaming>
 //!
 //! 传输层（字节 → 行 → 帧）与解析任务骨架复用
 //! [`crate::stream::SseParser`] / [`crate::adapters::parse_task`]；
@@ -19,9 +19,7 @@ use crate::{
   stream::{LineFlow, ProviderEventStreamProducer, SseFrame, StreamAggregator},
 };
 
-// ============================================================================
-// 方言私有错误码表
-// ============================================================================
+// 私有错误码表
 
 /// Anthropic 流内 `error` 事件的 `type` → 内部错误码。
 ///
@@ -42,9 +40,7 @@ fn map_error_type(raw: &str) -> Option<&'static str> {
   Some(code)
 }
 
-// ============================================================================
 // Anthropic SSE payload 类型（嵌套层是关键）
-// ============================================================================
 
 #[derive(Debug, serde::Deserialize)]
 struct ContentBlock {
@@ -84,9 +80,7 @@ struct MessageUsage {
   output_tokens: Option<i64>,
 }
 
-// ============================================================================
 // 帧分派（dispatch_frame）
-// ============================================================================
 
 /// 处理单帧，返回解析去向。
 pub(crate) fn dispatch_frame(
@@ -120,7 +114,7 @@ pub(crate) fn dispatch_frame(
         block_type = %payload.content_block.block_type,
         "content_block_start"
       );
-      // ===== tool_use 块：id/name 仅在本帧携带，必须立即注册 =====
+      // tool_use 块：id/name 仅在本帧携带，必须立即注册
       // 首次出现即经 tool_delta 开 ToolCall 块（推 ToolCallStart）并登记
       // id/name；后续 input_json_delta 帧以 None 传入（tool_delta 保留
       // 已注册值，只累积参数片段）。漏掉本步会导致 ToolCall 的
@@ -139,7 +133,7 @@ pub(crate) fn dispatch_frame(
       {
         return LineFlow::ConsumerGone;
       }
-      // text_delta / tool_delta 自管理块纪律；thinking 块阶段 1 丢弃
+      // text_delta / tool_delta 自管理块纪律；thinking 块丢弃
     }
 
     "content_block_delta" => {
@@ -216,7 +210,7 @@ pub(crate) fn dispatch_frame(
       return LineFlow::Terminated;
     }
 
-    // ===== 流内错误：映射错误码后终结 =====
+    // 流内错误：映射错误码后终结
     // 历史实现缺少本分支，error 事件会被当作未知事件忽略，
     // 导致流只能等 EOF 走截断路径（错误码丢失）。
     "error" => {
@@ -265,9 +259,7 @@ pub(crate) fn dispatch_frame(
   LineFlow::Continue
 }
 
-// ============================================================================
 // 解析任务
-// ============================================================================
 
 /// SSE 解码任务入口。
 ///
@@ -401,7 +393,7 @@ mod tests {
       ),
       (
         "content_block_delta",
-        // 注意：值内含字面 `}`，JSON 文本需要 `\"rust\"}"` + 闭合 `}}`
+        // 值内含字面 `}`，JSON 文本需要 `\"rust\"}"` + 闭合 `}}`
         r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"rust\"}"}}"#,
       ),
       (

@@ -1,11 +1,11 @@
 //! 上下文构建边界的 Harness 实现：system prompt + skills + 压缩。
 //!
 //! 深度集成 [`SystemPromptBuilder`] 与技能集合：
-//! 装配期一次性加载技能（关注点 1，v1 无热更新），
+//! 装配期一次性加载技能（v1 无热更新），
 //! 每次构建时以「模板 → 环境 → 技能清单 → 自定义段 → 会话摘要」
 //! 组装系统提示，摘要来自压缩产出。
 //!
-//! 取舍说明：设计文档 的 `model: Model` 字段未引入——`Compactor`
+//! 取舍说明：`model: Model` 字段未引入——`Compactor`
 //! 内部已持有主模型（提供 `context_window` 预算），重复持有会成为
 //! 从不读取的死字段；压缩取消令牌改由 `build` 阶段从会话派生。
 
@@ -38,7 +38,7 @@ pub struct HarnessContext {
   prompt: SystemPromptBuilder,
   /// 可选压缩器（`None` 表示跳过压缩阶段）。
   compactor: Option<Arc<Compactor>>,
-  /// 装配期一次性加载的技能集合（关注点 1，v1 无热更新）。
+  /// 装配期一次性加载的技能集合（v1 无热更新）。
   skills: Vec<Skill>,
   /// 唯一配置入口：压缩 + env 注入开关。
   config: ContextConfig,
@@ -97,13 +97,13 @@ impl ContextProvider for HarnessContext {
     session: &Session,
     input: Vec<Message>,
   ) -> RiboResult<AgentContext> {
-    // ===== 阶段 1：拼接历史 + 本轮输入 =====
+    // 拼接历史 + 本轮输入
     // 必须先合并再压缩：若先压缩历史再追加输入，阈值判定会漏掉本轮输入，
-    // 且轮切分可能把「输入开头的半轮」当成完整轮（注意事项）。
+    // 且轮切分可能把「输入开头的半轮」当成完整轮。
     let mut messages = session.snapshot();
     messages.extend(input);
 
-    // ===== 阶段 2：压缩（注入会话子取消令牌，联动 stop）=====
+    // 压缩（注入会话子取消令牌，联动 stop）
     let outcome = match &self.compactor {
       Some(compactor) => {
         let cancel = Some(CancelToken::from_token(session.cancel_token()));
@@ -125,7 +125,7 @@ impl ContextProvider for HarnessContext {
       }
     };
 
-    // ===== 阶段 3：系统提示组装（template + env + skills + summary + 提示段）=====
+    // 系统提示组装（template + env + skills + summary + 提示段）
     let system_prompt = self.prompt.build_compaction(
       &self.skills,
       outcome.summary.as_deref(),
@@ -139,7 +139,7 @@ impl ContextProvider for HarnessContext {
       ));
     }
 
-    // ===== 阶段 3.5：system prompt 估算 + 回写 overhead 基准=====
+    // system prompt 估算 + 回写 overhead 基准
     // 循环依赖破解：本轮预算用上一轮的 last_overhead（在 compact 内读取），
     // 本轮组装完成的实际 prompt 长度写回，作为下一轮的基准。
     let prompt_tokens = estimate_prompt_tokens(&system_prompt);
@@ -152,7 +152,7 @@ impl ContextProvider for HarnessContext {
       );
     }
 
-    // ===== 阶段 3.6：压缩三态统计（总量 / 已压缩 / 当前）=====
+    // 压缩三态统计（总量 / 已压缩 / 当前）
     // 总量 = 压缩前完整历史（含本轮输入）；已压缩 = 被移出视图的 prefix；
     // 当前 = 最近请求视图（outcome.messages）+ system prompt（含摘要注入）。
     // 口径统一走 唯一真值估算函数。
@@ -171,7 +171,7 @@ impl ContextProvider for HarnessContext {
       "compaction stats written to session"
     );
 
-    // ===== 阶段 4：产物 =====
+    // 产物
     // compaction_triggered / compaction_failed 由压缩原因推导（互斥）；
     // 冷却抑制 / 复用摘要二者皆为 false，不发射事件。
     Ok(AgentContext::new(
@@ -269,7 +269,7 @@ mod tests {
 
   /// 产出固定文本增量的摘要步骤。
   ///
-  /// 注意：`MockStep::Complete` 同步路径只推 `Start` + `Done`、不发
+  /// `MockStep::Complete` 同步路径只推 `Start` + `Done`、不发
   /// `TextDelta`，摘要拼接会得到空文本；必须用 `Events` 回放文本增量，
   /// 终结事件由适配器自动补发。
   fn text_step(text: &str) -> MockStep {
@@ -303,7 +303,7 @@ mod tests {
       .collect()
   }
 
-  /// CT-01：passthrough 退化为直通，snapshot + input 原样拼接。
+  /// passthrough 退化为直通，snapshot + input 原样拼接。
   #[tokio::test]
   async fn passthrough_builds_transcript_plus_input() {
     let session = Session::new("s1");
@@ -319,7 +319,7 @@ mod tests {
     assert_eq!(ctx.messages.len(), 2);
   }
 
-  /// CT-02：enabled + 有 compactor 触发压缩，messages 被压缩但 system prompt 保留。
+  /// enabled + 有 compactor 触发压缩，messages 被压缩但 system prompt 保留。
   #[tokio::test]
   async fn compaction_enabled_triggers_compactor() {
     let session = Session::new("s1");
@@ -351,7 +351,7 @@ mod tests {
     assert_eq!(ctx.system_prompt.len(), 1);
   }
 
-  /// CT-03：enabled 但 compactor=None → 降级直通 + 告警日志，messages 不压缩。
+  /// enabled 但 compactor=None → 降级直通 + 告警日志，messages 不压缩。
   #[tokio::test]
   async fn compaction_enabled_without_compactor_degrades_gracefully() {
     let session = Session::new("s1");
@@ -376,7 +376,7 @@ mod tests {
     assert_eq!(ctx.messages.len(), msgs.len());
   }
 
-  /// CT-04：include_environment=true 时系统提示含 `<environment>` XML 段。
+  /// include_environment=true 时系统提示含 `<environment>` XML 段。
   #[tokio::test]
   async fn include_env_adds_environment_block() {
     let session = Session::new("s1");
@@ -401,7 +401,7 @@ mod tests {
     }
   }
 
-  /// CT-05（关注点 1）：skills 注入 → 系统提示含 `<available-skills>` 清单。
+  /// skills 注入 → 系统提示含 `<available-skills>` 清单。
   #[tokio::test]
   async fn skills_are_listed_in_system_prompt() {
     let session = Session::new("s1");
@@ -433,7 +433,7 @@ mod tests {
     }
   }
 
-  /// CT-06：摘要成功 → `<conversation-summary>` 进入系统提示。
+  /// 摘要成功 → `<conversation-summary>` 进入系统提示。
   #[tokio::test]
   async fn compaction_summary_flows_into_system_prompt() {
     let session = Session::new("s1");
@@ -469,7 +469,7 @@ mod tests {
     }
   }
 
-  /// CT-07：系统提示为空（空模板 + 无 env + 无技能）→ `context_build_error`。
+  /// 系统提示为空（空模板 + 无 env + 无技能）→ `context_build_error`。
   #[tokio::test]
   async fn empty_system_prompt_fails_context_build() {
     let session = Session::new("s1");
@@ -483,7 +483,7 @@ mod tests {
     assert_eq!(err.code(), ra_agent::error::CONTEXT_BUILD_ERROR);
   }
 
-  /// CT-08：摘要成功 → `compaction_triggered` 置位（事件门控）。
+  /// 摘要成功 → `compaction_triggered` 置位（事件门控）。
   #[tokio::test]
   async fn compaction_triggered_flag_flows_into_agent_context() {
     let session = Session::new("s1");
@@ -512,7 +512,7 @@ mod tests {
     assert!(ctx.compaction_triggered, "摘要成功必须置位");
   }
 
-  /// CT-10：压缩三态统计写入会话——总量 = 完整历史估算，
+  /// 压缩三态统计写入会话——总量 = 完整历史估算，
   /// 已压缩 = 被移出 prefix 估算（>0），当前 = 请求视图 + system prompt。
   #[tokio::test]
   async fn compaction_stats_flow_into_session() {
@@ -561,7 +561,7 @@ mod tests {
     // 未触发压缩时 compressed 归零口径：再次以大窗口 build → 无压缩
   }
 
-  /// CT-09：overhead 回写——摘要成功后第二次 build 仍正常
+  /// overhead 回写——摘要成功后第二次 build 仍正常
   /// （budget 扣除 overhead 后若 ≤0 退化为 raw_budget，不因 overhead 而
   /// 永不触发），且压缩状态被会话 key 隔离。
   #[tokio::test]
@@ -605,7 +605,7 @@ mod tests {
     }
   }
 
-  /// CT-11（冷启动统计）：估算口径——总量 = 转录估算，已压缩 = 0，
+  /// 估算口径——总量 = 转录估算，已压缩 = 0，
   /// 当前 = 0（本次进程尚未发起请求，窗口未被占用）。
   #[test]
   fn cold_start_estimate_stats_has_zero_compressed() {

@@ -116,7 +116,7 @@ impl ProviderCore {
     options: &StreamOptions,
     max_temperature: f64,
   ) -> RiboResult<&str> {
-    // ===== 1. 模型归属：不支持的模型属路由错误，立即拒绝 =====
+    // 1. 模型归属：不支持的模型属路由错误，立即拒绝
     if !self.models.iter().any(|m| m.id == model.id) {
       tracing::warn!(
         provider = self.id.as_str(),
@@ -133,10 +133,10 @@ impl ProviderCore {
       ));
     }
 
-    // ===== 2. 鉴权配置 =====
+    // 2. 鉴权配置
     let api_key = self.api_key()?;
 
-    // ===== 3. 采样参数合法性 =====
+    // 3. 采样参数合法性
     if let Some(t) = options.sampling.temperature
       && !(0.0..=max_temperature).contains(&t)
     {
@@ -169,7 +169,7 @@ impl ProviderCore {
   where
     F: FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
   {
-    // ===== 请求构造：鉴权由闭包注入，附加头在此统一追加 =====
+    // 请求构造：鉴权由闭包注入，附加头在此统一追加
     let mut req = build(self.http.post(endpoint));
     for (key, value) in model.header.iter().flatten() {
       req = req.header(key, value);
@@ -186,7 +186,7 @@ impl ProviderCore {
       "sending provider request"
     );
 
-    // ===== 发送并等待响应头（受 cancel / timeout 约束）=====
+    // 发送并等待响应头（受 cancel / timeout 约束）
     let response = tokio::select! {
       biased;
       // 建流等待中取消：立即放弃，被 drop 的 send future 会中止底层请求。
@@ -221,7 +221,7 @@ impl ProviderCore {
       resp = req.send() => resp,
     };
 
-    // ===== 非 2xx / 传输失败：建流错误（可重试 / 可降级）=====
+    // 非 2xx / 传输失败：建流错误（可重试 / 可降级）
     match response {
       Ok(resp) if resp.status().is_success() => Ok(resp),
       Ok(resp) => {

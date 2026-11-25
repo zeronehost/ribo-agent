@@ -29,9 +29,7 @@ use crate::traits::ProviderErrorExt;
 
 pub use self::{constants::*, stage::*};
 
-// ============================================================================
 // 分类谓词：ProviderErrorExt for RiboError
-// ============================================================================
 //
 // 统一用 `self.code()` 与常量做二元组匹配。阶段门短路规则：
 // - InStream 阶段一律不可重试/降级/跨 provider 降级（除 circuit_trigger 外），
@@ -48,7 +46,7 @@ impl ProviderErrorExt for RiboError {
   }
 
   fn is_retryable(&self) -> bool {
-    // ===== 阶段门短路 =====
+    // 阶段门短路
     // 流内一律不可重试——重试会重新发起整个请求，与已产出的内容重复。
     if self.stage() == ErrorStage::InStream {
       return false;
@@ -60,7 +58,7 @@ impl ProviderErrorExt for RiboError {
   }
 
   fn is_degradable(&self) -> bool {
-    // ===== 阶段门短路 =====
+    // 阶段门短路
     if self.stage() == ErrorStage::InStream {
       return false;
     }
@@ -71,7 +69,7 @@ impl ProviderErrorExt for RiboError {
   }
 
   fn is_cross_provider_degradable(&self) -> bool {
-    // ===== 阶段门短路 =====
+    // 阶段门短路
     if self.stage() == ErrorStage::InStream {
       return false;
     }
@@ -82,7 +80,7 @@ impl ProviderErrorExt for RiboError {
   }
 
   fn is_circuit_trigger(&self) -> bool {
-    // ===== 不受阶段门影响 =====
+    // 不受阶段门影响
     // 流内错误同样可能触发熔断——例如 SSE 连接反复中断说明上游不稳定。
     matches!(
       self.code(),
@@ -98,9 +96,7 @@ impl ProviderErrorExt for RiboError {
   }
 }
 
-// ============================================================================
 // Severity 映射与阶段门内部函数
-// ============================================================================
 
 /// 按错误码取默认严重程度。
 ///
@@ -151,9 +147,7 @@ fn coerce_for_pre_stream(code: &'static str) -> &'static str {
   }
 }
 
-// ============================================================================
 // 公开构造器
-// ============================================================================
 //
 // 所有构造器都通过 `with_context("stage", ..)` 注入阶段信息，
 // 供 `ProviderErrorExt::stage()` 读回以驱动后续分类。
@@ -215,7 +209,7 @@ pub fn from_http(status: u16, body: &str) -> RiboError {
   let truncated = if body.len() <= 512 {
     body.to_string()
   } else {
-    // ===== UTF-8 安全截断 =====
+    // UTF-8 安全截断
     // 从 512 字节位置向前回退到最近的字符边界，避免截断多字节字符。
     let mut end = 512;
     while end > 0 && !body.is_char_boundary(end) {
@@ -397,7 +391,7 @@ mod tests {
   #[tokio::test]
   async fn from_reqwest_maps_connect_error_to_transport() {
     // no_proxy：带 HTTP 代理的环境会把 127.0.0.1 的连接失败顶替为代理
-    // 502（server_error），导致 connect-error 断言落空（B2.4 代理陷阱）
+    // 502（server_error），导致 connect-error 断言落空（代理陷阱）
     let client = reqwest::Client::builder()
       .no_proxy()
       .build()

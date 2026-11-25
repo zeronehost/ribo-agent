@@ -1,6 +1,6 @@
 [package]
 name = "ra-plug-pdk"
-description = "Ribo Agent 插件 PDK：guest 侧 Rust SDK，封装 ABI v0（线性内存 / args 信封 / host import）"
+description = "插件 PDK：guest 侧 Rust SDK，封装 ABI v0（线性内存 / args 信封 / host import）"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

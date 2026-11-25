@@ -47,7 +47,7 @@ use crate::config::schema::FallbackTargetSchema;
 
 use ra_tools::builtin::FsRoot;
 
-/// CLI 内置系统提示模板（v1 不提供配置入口）。
+/// CLI 内置系统提示模板（不提供配置入口）。
 const DEFAULT_CLI_TEMPLATE: &str = "\
 You are a capable AI agent operating in a terminal workspace. \
 Use the available tools to inspect files and run commands; \
@@ -98,7 +98,7 @@ fn mid(raw: &str) -> ModelId {
   ModelId::parse(raw).expect("valid model id")
 }
 
-/// 会话持久化目录（T3：v3 硬切换——只写/只读 `.ribo/sessions/`，
+/// 会话持久化目录（硬切换——只写/只读 `.ribo/sessions/`，
 /// 旧布局 `<root>/sessions/` 不读取、不迁移、不兼容）。
 pub(crate) fn sessions_dir(root: &Path) -> PathBuf {
   root.join(".ribo/sessions")
@@ -492,7 +492,7 @@ struct PluginSpec {
   full: PathBuf,
   config: Option<serde_json::Value>,
   acl: PluginAclSchema,
-  /// 权威清单 + 侧载签名（Step C B3.2 / 来源校验；roots 扫描项为 None）。
+  /// 权威清单 + 侧载签名（来源校验；roots 扫描项为 None）。
   authority: Option<SignedAuthority>,
   /// 来源校验策略（同一进程内由 [plugins.verify] 统一构造）。
   verify_policy: VerificationPolicy,
@@ -624,7 +624,7 @@ fn build_verify_policy(
   if !verify.require_signature {
     return Ok(VerificationPolicy::development());
   }
-  // v3：公钥白名单固定为相对 harness.root 的 .ribo/trusted_keys.json
+  // 公钥白名单固定为相对 harness.root 的 .ribo/trusted_keys.json
   let keys_path = Path::new(".ribo/trusted_keys.json");
   if escapes_root(keys_path) {
     return Err(ra_core::error::RiboError::new(
@@ -717,13 +717,13 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
   // `plugin_file_missing` 终结，故边界缺失按「无边界」处理即可。
   let sandbox = std::fs::canonicalize(&outcome.harness.root).ok();
 
-  // ===== 来源校验策略（Step C）：信任清单是进程级唯一信任锚 =====
+  // 来源校验策略：信任清单是进程级唯一信任锚
   // 生产模式（require_signature = true）必须配置非空公钥清单；公钥文件与
   // wasm / manifest 同属 harness.root 沙箱，路径逃逸一律启动致命。
   let verify_policy = build_verify_policy(outcome)?;
   let mut specs: Vec<PluginSpec> = Vec::new();
 
-  // ===== 目录扫描：固定 .ribo/plugins 下全部 *.wasm（确定性排序）=====
+  // 目录扫描：固定 .ribo/plugins 下全部 *.wasm（确定性排序）
   {
     let root = Path::new(".ribo/plugins");
     let dir = outcome.harness.root.join(root);
@@ -751,7 +751,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
     }
   }
 
-  // ===== 显式清单：路径安全校验（与 fs 沙箱纪律同源）=====
+  // 显式清单：路径安全校验（与 fs 沙箱纪律同源）
   for entry in &cfg.entries {
     if escapes_root(&entry.path) {
       return Err(ra_core::error::RiboError::new(
@@ -763,7 +763,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
         ),
       ));
     }
-    // 权威清单侧载（Step C B3.2）：相对 root 解析，缺失 / 解析失败 =
+    // 权威清单侧载：相对 root 解析，缺失 / 解析失败 =
     // 启动致命（信任链不完整不如明确失败）
     let manifest_bytes = match entry.manifest.as_ref() {
       Some(mpath) => {
@@ -789,7 +789,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
       }
       None => None,
     };
-    // 侧载签名块（Step C 来源校验）：相对 root、沙箱归属校验同 manifest。
+    // 侧载签名块（来源校验）：相对 root、沙箱归属校验同 manifest。
     let provenance_bytes = match entry.provenance.as_ref() {
       Some(ppath) => {
         if escapes_root(ppath) {
@@ -855,7 +855,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
     });
   }
 
-  // ===== 按规范化路径去重（归属校验统一由 validate_plugin_path 承担）=====
+  // 按规范化路径去重（归属校验统一由 validate_plugin_path 承担）
   // 扫描项已在 push 前校验；清单项在此统一复核（避免改变 manifest /
   // provenance 的错误优先级）。校验器同时产出规范化路径，供 roots /
   // entries 指向同一文件时去重。
@@ -870,7 +870,7 @@ fn collect_plugin_specs(outcome: &LoadOutcome) -> RiboResult<Vec<PluginSpec>> {
   Ok(deduped)
 }
 
-/// 加载并注册全部插件（B0.3 / B0.4；失败语义 = **启动致命**）。
+/// 加载并注册全部插件（失败语义 = **启动致命**）。
 ///
 /// `PluginRuntime::global()` 为 `OnceLock` 单例，首次初始化失败即
 /// 毒化整个进程——半装配状态只会把问题推迟到首次工具调用，故任何
@@ -920,7 +920,7 @@ fn load_and_register_plugins(
       "plugin loaded"
     );
 
-    // ===== 装配期 plugin_id 冲突检测 =====
+    // 装配期 plugin_id 冲突检测
     if let Some(first_source) = seen.get(&plugin_id) {
       tracing::warn!(
         plugin = %plugin_id,
@@ -1068,14 +1068,14 @@ fn assemble_impl(
   steps: Vec<MockStep>,
   options: AssembleOptions,
 ) -> RiboResult<CliSession> {
-  // ===== 阶段 0：routing 引用校验（ Real 模式 fail-fast）===
+  // routing 引用校验（Real 模式 fail-fast）
   // 仅 Real 模式校验——mock 模式无 provider 注册，规则本就悬空属预期。
   if outcome.mode == ConfigMode::Real {
     validate_routing_refs(outcome)?;
   }
   // compression 数值范围校验（摘要模型注册校验按模式在函数内判定）
   validate_compression(outcome)?;
-  // ===== 阶段 1：网关 =====
+  // 网关
   let (gateway, model) = match outcome.mode {
     ConfigMode::Real => build_real_gateway(outcome)?,
     ConfigMode::Mock => build_mock_gateway(steps)?,
@@ -1085,14 +1085,14 @@ fn assemble_impl(
   let provider_id = model.provider.to_string();
   let model_name = model.name.clone();
 
-  // ===== 阶段 2：持久化 + 技能 =====
+  // 持久化 + 技能
   let store =
     Arc::new(JsonlSessionStore::new(sessions_dir(&outcome.harness.root)));
-  // provider 在阶段 3 建（需绑定上下文统计估算器，冷启动回放后写三态）
-  // ===== 两域技能汇总（Project > Global）：SkillsLoader 按 roots 顺序
-  // 首个胜出，故此处按优先级排列。v3 起无插件域技能并入。
+  // provider 延后创建（需绑定上下文统计估算器，冷启动回放后写三态）
+  // 两域技能汇总（Project > Global）：SkillsLoader 按 roots 顺序
+  // 首个胜出，故此处按优先级排列。无插件域技能并入。
   let mut skill_roots: Vec<SkillRoot> = Vec::new();
-  // v3：项目技能根固定 <harness.root>/.ribo/skills/（有且仅有一个）
+  // 项目技能根固定 <harness.root>/.ribo/skills/（有且仅有一个）
   skill_roots.push(SkillRoot::new(
     outcome.harness.root.join(".ribo/skills"),
     "project",
@@ -1126,7 +1126,7 @@ fn assemble_impl(
   let skill_origins: Vec<String> =
     skills.iter().map(|s| s.origin.clone()).collect();
 
-  // ===== 域内 AGENTS.md 拼接=====
+  // 域内 AGENTS.md 拼接
   // 顺序 Global → Project → Plugin[* prompts/all]（后写更具体）；
   // 文档级资源默认加载，与代码信任无关。
   let mut instruction_roots: Vec<InstructionRoot> = Vec::new();
@@ -1147,7 +1147,7 @@ fn assemble_impl(
     }
   }
 
-  // ===== 阶段 3：上下文装配（compression 层 → ContextConfig.compaction 唯一真值）=====
+  // 上下文装配（compression 层 → ContextConfig.compaction 唯一真值）
   let ctx_cfg = ContextConfig {
     compaction: CompactionConfig {
       enabled: outcome.compression.enabled,
@@ -1186,7 +1186,7 @@ fn assemble_impl(
       .with_stats_estimator(context.clone()),
   );
 
-  // ===== 阶段 4：内置工具 + WASM 插件 =====
+  // 内置工具 + WASM 插件
   // 沙箱根：以 harness.root 为主根，
   // 沙箱恒位于工作空间之内。
   // 工具面熔断配置统一走插件感知白名单：插件未
@@ -1194,7 +1194,7 @@ fn assemble_impl(
   let manager =
     Arc::new(ToolManager::with_config(plugin_aware_tool_manager_config()));
   if outcome.tools.builtin_enabled {
-    // ===== fs 只读挂载点（v3 取代资源域）=====
+    // fs 只读挂载点（取代资源域）
     let mounts = validate_fs_mounts(outcome)?;
     let main_root = outcome.harness.root.clone();
     let fs_root = build_named_roots(&mounts, &main_root)?;
@@ -1206,7 +1206,7 @@ fn assemble_impl(
     }
     ra_tools::builtin::register_builtin_with_root(&manager, fs_root)?;
   }
-  // ===== 阶段 4.5：代码信任闸门=====
+  // 代码信任闸门
   // Project 插件须显式 code_trust 才加载；无 Global 域（code_trust=None）
   // 时退化为自动加载（回滚开关）。未信任不致命——只弃加载 + warning，
   // 技能与 AGENTS.md 仍照常加载（域故障隔离）。
@@ -1249,7 +1249,7 @@ fn assemble_impl(
     };
   let tools = Arc::new(ToolManagerAdapter::new(Arc::clone(&manager)));
 
-  // ===== 阶段 5：BaseAgent + Harness + CliSession =====
+  // BaseAgent + Harness + CliSession
   let deps = LoopDeps {
     gateway: gateway.clone(),
     model: mid(&outcome.provider.routing.default.model),
@@ -1277,7 +1277,7 @@ fn assemble_impl(
   })
 }
 
-/// T3：会话目录硬切换到 `.ribo/sessions/`，旧布局
+/// 会话目录硬切换到 `.ribo/sessions/`，旧布局
 /// `<root>/sessions/` 不读取、不迁移、不兼容。
 #[test]
 fn t3_sessions_live_under_ribo_dir() {

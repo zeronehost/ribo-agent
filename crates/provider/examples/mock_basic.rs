@@ -55,7 +55,7 @@ fn first_text(message: &AssistantMessage) -> String {
 
 #[tokio::main]
 async fn main() {
-  // ===== 组装 mock provider =====
+  // 组装 mock provider
   // 脚本：回放 "你好，" + "Rust！" 两段增量；适配器自动补发 Start，
   // 并以 Done(Stop) 收敛（最终消息取最后一个事件的 partial）。
   let provider_id = ProviderId::parse("mock").expect("valid provider id");
@@ -83,7 +83,7 @@ async fn main() {
   ])];
   let mock = MockProvider::new(provider_id, vec![model.clone()], script);
 
-  // ===== 建流 =====
+  // 建流
   let stream_options = StreamOptions::default();
   let ctx = Context::default();
   let options = ProviderOptions {
@@ -93,7 +93,7 @@ async fn main() {
   };
   let mut stream = mock.stream(options).await.expect("建流成功");
 
-  // ===== 逐事件消费 =====
+  // 逐事件消费
   while let Some(event) = stream.next().await {
     match event {
       ProviderEvent::Start { partial } => {
@@ -133,7 +133,7 @@ async fn main() {
     }
   }
 
-  // ===== result()：与逐事件路径共享同一终态 =====
+  // result()：与逐事件路径共享同一终态
   // Done 事件已被上面的循环读走，但 oneshot 终态通道独立兑现，
   // result() 仍能取到最终消息。
   let message = stream.result().await.expect("终态消息");

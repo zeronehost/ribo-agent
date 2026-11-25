@@ -14,7 +14,7 @@
 //!   取消信号只经 `CancellationToken` 传播，每 Store 独立 deadline。
 //!
 //! `Store: !Send`——`Store::new` + `linker.instantiate` + 执行全部在
-//! `spawn_blocking` 闭包内完成，闭包边界即 `Send` 边界（纪律 2）。
+//! `spawn_blocking` 闭包内完成，闭包边界即 `Send` 边界。
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -32,11 +32,11 @@ use crate::error::{
 use crate::wasm::hostfns::LogRateLimiter;
 use crate::wasm::storage::Storage;
 
-/// epoch tick：ticker 每 10ms 推进一次（精度需求固定，DoD 的量化
+/// epoch tick：ticker 每 10ms 推进一次（精度需求固定，量化
 /// 区间 `T ∈ [timeout, timeout + EPOCH_TICK]` 依赖此常量）。
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 
-/// 由超时时长换算 epoch tick 数：**向上取整**（§三.3）。
+/// 由超时时长换算 epoch tick 数：**向上取整**。
 ///
 /// floor 会把 15ms 算成 1 tick（=10ms），实际等待 < 请求的 15ms，
 /// 超时断言测试会永远失败；ceil 保证「等待时长 ≥ 请求的 timeout」。
@@ -46,7 +46,7 @@ pub(crate) fn epoch_ticks_for(timeout: Duration) -> u64 {
 }
 
 /// 构建 wasmtime Engine：开启 epoch interruption（确定性中断的前提），
-/// fuel 由配置读取（Step B 恒 false，#5）。
+/// fuel 由配置读取（当前恒 false）。
 fn build_engine(
   runtime_cfg: &PluginRuntimeConfig,
 ) -> wasmtime::Result<wasmtime::Engine> {
@@ -59,9 +59,9 @@ fn build_engine(
 /// Module 缓存：以 wasm 字节内容的 blake3 哈希为键，与 Engine 同生命周期。
 ///
 /// 内容哈希（而非路径）保证「同一份 wasm 从不同路径加载也能命中」；
-/// blake3 为进程间稳定哈希，未来磁盘缓存不需改键（决策 5）。
+/// blake3 为进程间稳定哈希，未来磁盘缓存不需改键。
 /// 容量由 [`PluginRuntimeConfig::module_cache_capacity`] 注入，超限按
-/// **LRU** 淘汰最久未使用的条目（新问题 5 的收口）：
+/// **LRU** 淘汰最久未使用的条目：
 /// 恶意插件反复换字节加载会填充缓存，无上界即无界内存增长。
 pub struct ModuleCache {
   entries: Mutex<LruCache<[u8; 32], Arc<wasmtime::Module>>>,
@@ -182,7 +182,7 @@ impl core::fmt::Debug for PluginRuntime {
 impl PluginRuntime {
   /// 全局唯一入口（`OnceLock` 单例）。
   ///
-  /// **不可重试语义（§二.2，有意为之）**：一旦初始化返回 `Err`，
+  /// **不可重试语义（有意为之）**：一旦初始化返回 `Err`，
   /// `OnceLock` 会**永久缓存该错误**，整个进程无法恢复——epoch 基础
   /// 设施是进程级前提，初始化失败意味着运行环境不可用，应定位根因而
   /// 非靠重试掩盖。
@@ -206,14 +206,14 @@ impl PluginRuntime {
   /// stop / shutdown（撤销 `shutdown_for_test`：停 ticker 后
   /// 单例无法重启会导致后续同进程测试假死）。
   fn start() -> ra_core::error::RiboResult<Self> {
-    // ===== 初始化阶段：进程参数仅此处构造一次（OnceLock 后不可变） =====
+    // 初始化：进程参数仅此处构造一次（OnceLock 后不可变）
     let cfg = PluginRuntimeConfig::from_env();
     let engine = build_engine(&cfg)
       .map_err(|e| plugin_internal("engine init failed", e))?;
     // HTTP client 同样是进程级基础设施：一次构造，所有插件共享同一连接池
     let http_client = Arc::new(crate::wasm::hostfns::build_http_client()?);
 
-    // ===== 后台 ticker：唯一 epoch 推进者 =====
+    // 后台 ticker：唯一 epoch 推进者
     let e = engine.clone();
     std::thread::Builder::new()
       .name("ra-plugins-epoch-ticker".into())
@@ -238,7 +238,7 @@ impl PluginRuntime {
 ///
 /// 每次 execute 新建，但插件级共享状态经 `Arc<PluginShared>` 跨调用
 /// 存活（storage / 限流器 / 连接池不被 Stateless Store 重置）。
-/// 约束：`Send + 'static`（纪律 2，编译期断言见本模块测试）。
+/// 约束：`Send + 'static`（编译期断言见本模块测试）。
 pub struct HostState {
   /// 本插件被授予的能力集合（含单工具收紧后的内存覆写）。
   pub acl: PluginAcl,
@@ -259,8 +259,8 @@ pub struct HostState {
 }
 
 impl HostState {
-  /// 装配 HostState：内存上限取 `min(插件覆写, 进程默认)`（两阶段 min
-  /// 的阶段 2，只能收紧；配置注入，不新增 run_tool 参数）。
+  /// 装配 HostState：内存上限取 `min(插件覆写, 进程默认)`（第二级 min，
+  /// 只能收紧；配置注入，不新增 run_tool 参数）。
   pub fn new(
     acl: PluginAcl,
     signal: CancellationToken,
@@ -471,7 +471,7 @@ fn classify_resource(msg: &str) -> Option<WasmRuntimeError> {
 }
 
 /// 将 wasmtime 错误分类为 [`WasmRuntimeError`]（用于 **instantiate**
-/// 及加载期调用，含 start 段 trap，新问题 1）。
+/// 及加载期调用，含 start 段 trap）。
 ///
 /// 分类顺序：① 结构化前缀（最先判）→ ② epoch / 内存超限措辞 →
 /// ③ **其余一律 Internal**（保守默认：计入熔断，暴露问题而非掩盖）。
@@ -553,7 +553,7 @@ pub async fn run_tool(
   plugin_id: &str,
   timeout: Duration,
 ) -> ra_core::error::RiboResult<serde_json::Value> {
-  // ===== 准备阶段：clone 进闭包（Send 边界在 spawn_blocking 入口） =====
+  // 准备：clone 进闭包（Send 边界在 spawn_blocking 入口）
   let started = std::time::Instant::now();
   let signal: CancellationToken = ctx.signal().clone();
   let engine = engine.clone();
@@ -590,7 +590,7 @@ pub async fn run_tool(
           .map_err(|e| WasmRuntimeError::Internal(format!("set fuel: {e}")))?;
       }
       // start 段（如有）因 epoch / 内存超限 trap 时同样按前缀分类，
-      // 不得一律判 Internal（会误计入熔断，新问题 1）
+      // 不得一律判 Internal（会误计入熔断）
       let instance = linker
         .instantiate(&mut store, &module)
         .map_err(classify_wasmtime_error)?;
@@ -604,7 +604,7 @@ pub async fn run_tool(
   tracing::Span::current()
     .record("duration_ms", started.elapsed().as_millis() as u64);
 
-  // ===== 错误映射阶段：WasmRuntimeError → 插件错误码 =====
+  // 错误映射：WasmRuntimeError → 插件错误码
   match outcome {
     Ok(Ok(v)) => Ok(v),
     Ok(Err(WasmRuntimeError::Timeout(reason))) => {
@@ -717,7 +717,7 @@ fn abi_v0_execute(
   tool: &str,
   args: &serde_json::Value,
 ) -> Result<serde_json::Value, WasmRuntimeError> {
-  // ===== 阶段 1：解析 guest 导出（缺 memory / alloc / dealloc / execute 均为宿主内部错误） =====
+  // 解析 guest 导出（缺 memory / alloc / dealloc / execute 均为宿主内部错误）
   let mem = instance.get_memory(&mut *store, "memory").ok_or_else(|| {
     WasmRuntimeError::Internal("guest memory export missing".into())
   })?;
@@ -731,7 +731,7 @@ fn abi_v0_execute(
     WasmRuntimeError::Internal("guest execute export missing".into())
   })?;
 
-  // ===== 阶段 2：args JSON 编码（编码失败 / 超限是业务级，归 GuestError） =====
+  // args JSON 编码（编码失败 / 超限是业务级，归 GuestError）
   let args_bytes = serde_json::to_vec(args)
     .map_err(|e| WasmRuntimeError::GuestError(format!("args encode: {e}")))?;
   let args_len = i32::try_from(args_bytes.len())
@@ -756,7 +756,7 @@ fn abi_v0_execute(
   let name_len = i32::try_from(name_bytes.len())
     .map_err(|_| WasmRuntimeError::GuestError("tool name too large".into()))?;
 
-  // ===== 阶段 3：分配并写入输入缓冲区（错误路径由守卫统一释放） =====
+  // 分配并写入输入缓冲区（错误路径由守卫统一释放）
   let mut bufs = GuestBufs::new();
   let result = execute_inner(
     store, &mem, &alloc, &execute, name_bytes, name_len, args_bytes, args_len,
@@ -828,7 +828,7 @@ fn execute_inner(
     .write(&mut *store, name_ptr as usize, name_bytes)
     .map_err(|e| WasmRuntimeError::Internal(format!("write tool name: {e}")))?;
 
-  // ===== 调 guest execute(name_ptr, name_len, args_ptr, args_len) =====
+  // 调 guest execute(name_ptr, name_len, args_ptr, args_len)
   // 结果形态二选一（wasmtime 50 / rustc 稳定性约束实测校准）：
   // - **多值 ABI**（手写 WAT guest）：`(res_ptr, res_len)` 双 i32 返回；
   // - **单 i32 返回**（Rust PDK guest，rustc 不支持 extern "C" 多值返回）：
@@ -849,7 +849,7 @@ fn execute_inner(
     )
     .map_err(classify_guest_call_error)?;
 
-  // ===== 读回结果（ptr == 0 → 无结果，按 ABI v0 返回 Null） =====
+  // 读回结果（ptr == 0 → 无结果，按 ABI v0 返回 Null）
   let (res_ptr, res_len, packed_block) = match n_results {
     2 => (out[0].i32().unwrap_or(0), out[1].i32().unwrap_or(0), None),
     1 => {
@@ -891,7 +891,7 @@ fn execute_inner(
 mod tests {
   use super::*;
 
-  // ===== 编译期契约断言（纪律 2 / 决策 3 / 决策 4） =====
+  // 编译期契约断言
 
   /// `HostState` 必须 `Send + 'static`（作为 Store data 进入
   /// spawn_blocking 闭包的前提）。
@@ -911,8 +911,8 @@ mod tests {
     assert_clone_debug::<HostStateSnapshot>();
   }
 
-  /// `Linker<HostState>` 必须可跨线程共享（决策 3）：`Arc<Linker>` 跨
-  /// execute 复用的前提。若失败退回每次执行构建并标记 Step C。
+  /// `Linker<HostState>` 必须可跨线程共享：`Arc<Linker>` 跨
+  /// execute 复用的前提。若失败退回每次执行构建。
   #[test]
   fn linker_is_sync() {
     fn assert_sync<S: Sync>() {}
@@ -922,13 +922,13 @@ mod tests {
     f::<HostState>();
   }
 
-  /// `StoreLimits` 可用（决策 4）：`runtime` feature 已开启的证明。
+  /// `StoreLimits` 可用：`runtime` feature 已开启的证明。
   #[test]
   fn store_limits_available() {
     let _ = wasmtime::StoreLimitsBuilder::new();
   }
 
-  // ===== epoch_ticks_for（§三.3 ceil） =====
+  // epoch_ticks_for（ceil）
 
   /// 场景：tick 换算向上取整——15ms → 2 ticks，
   /// 恰好整除时不多算。
@@ -941,7 +941,7 @@ mod tests {
     assert_eq!(epoch_ticks_for(Duration::from_millis(0)), 1);
   }
 
-  // ===== trap 载荷剥离与错误分类（三段式 + 防回归） =====
+  // trap 载荷剥离与错误分类（三段式 + 防回归）
 
   /// 场景：`trap_payload` 取第一个 `"wasm trap: "` 之后的载荷；
   /// 无该标记时返回 None。

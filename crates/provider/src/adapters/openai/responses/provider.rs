@@ -81,16 +81,16 @@ impl Provider for OpenAiResponsesAdapter {
       options,
     } = options;
 
-    // ===== 阶段 1：本地校验（PreStream）=====
+    // 本地校验（PreStream）
     // 模型归属 / 鉴权配置 / 采样参数（Responses 与 Chat 温度范围一致）。
     let api_key = self.core.validate(model, options, 2.0)?;
 
-    // ===== 阶段 2：构造请求（PreStream）=====
+    // 构造请求（PreStream）
     let endpoint =
       format!("{}/responses", model.base_url.trim_end_matches('/'));
     let body = build_params::build(model, context, options);
 
-    // ===== 阶段 3：发送并等待响应头（PreStream，受 timeout 约束）=====
+    // 发送并等待响应头（PreStream，受 timeout 约束）
     let response = self
       .core
       .send_stream(&endpoint, model, options, |req| {
@@ -105,10 +105,10 @@ impl Provider for OpenAiResponsesAdapter {
       "response headers received"
     );
 
-    // ===== 阶段 4：建立事件通道（PreStream）=====
+    // 建立事件通道（PreStream）
     let (producer, stream) = ProviderEventStreamProducer::build();
 
-    // ===== 阶段 5：spawn 解析任务（InStream）=====
+    // spawn 解析任务（InStream）
     sse::spawn_parse_task(
       response,
       producer,

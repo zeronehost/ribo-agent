@@ -101,7 +101,7 @@ impl CircuitBreaker {
   /// 用 `compare_exchange` 保证并发调用下只有一个调用者完成
   /// Open → HalfOpen 迁移，其余调用者看到迁移后的状态。
   pub fn state(&self) -> CircuitState {
-    // ===== 惰性半开迁移 =====
+    // 惰性半开迁移
     // 三个条件短路检查：状态为 Open、冷却已期满，再 CAS 抢占迁移权。
     if self.state.load(Ordering::Acquire) == STATE_OPEN
       && self.now_ms() >= self.deadline_ms.load(Ordering::Acquire)
@@ -164,7 +164,7 @@ impl CircuitBreaker {
     let failures = self.failures.fetch_add(1, Ordering::AcqRel) + 1;
     let prev = self.state.load(Ordering::Acquire);
     // 只有「闭合态达到阈值」或「半开探测失败」才迁移到 Open 并重设冷却；
-    // Open 期间的迟到失败只累计计数，避免反复延后冷却起点（R9）。
+    // Open 期间的迟到失败只累计计数，避免反复延后冷却起点。
     if prev == STATE_HALF_OPEN
       || (prev == STATE_CLOSED && failures >= self.threshold)
     {
@@ -280,7 +280,7 @@ mod tests {
     assert_eq!(breaker.admit(), Admission::Reject);
   }
 
-  /// 场景：熔断打开后迟到的失败不应延长冷却（对应审查报告 R9）。
+  /// 场景：熔断打开后迟到的失败不应延长冷却。
   ///
   /// 预期：t0 打开（冷却 30s），t10 的迟到失败不改变截止点，
   /// t31 时应已进入 HalfOpen。
