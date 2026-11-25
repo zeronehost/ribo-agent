@@ -82,7 +82,7 @@ impl<P: Provider> Provider for RetryingProvider<P> {
     let mut attempt: u32 = 0;
 
     loop {
-      // ===== 取消检查 =====
+      // 取消检查
       // 每次尝试前先看取消令牌，避免在已取消的任务上继续发请求。
       if let Some(c) = cancel
         && c.is_cancelled()
@@ -101,17 +101,17 @@ impl<P: Provider> Provider for RetryingProvider<P> {
       );
       let _g = _attempt_span.enter();
 
-      // ===== 建流尝试 =====
+      // 建流尝试
       // Ok 分支先过首包守卫再交付；Err 分支进入重试判定。
       match self.inner.stream(options).await {
         Ok(stream) => {
-          // ===== 首包守卫 =====
+          // 首包守卫
           // 窥视首个内容事件：超时/异常关闭按策略决定重试或直接报错。
           if let Some(guard) = self.first_token {
             match peek_first_content(stream, &guard, cancel).await {
               Peeked::Ready(new_stream) => return Ok(new_stream),
               Peeked::Timeout => {
-                // ===== 首包超时处置 =====
+                // 首包超时处置
                 if !guard.retry_on_timeout {
                   tracing::warn!(
                     "first-token guard timed out, retry disabled — returning error"
@@ -167,7 +167,7 @@ impl<P: Provider> Provider for RetryingProvider<P> {
           }
         }
         Err(err) => {
-          // ===== 建流失败：按策略判定重试 =====
+          // 建流失败：按策略判定重试
           // 仅 PreStream 错误会走到这里（流内失败由 Ok 分支的终结事件承载）。
           match effective.decide(&err, attempt) {
             RetryDecision::Retry { delay, .. } => {

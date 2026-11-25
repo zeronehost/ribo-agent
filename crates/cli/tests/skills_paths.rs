@@ -43,7 +43,7 @@ fn write_skill(dir: &Path, name: &str, description: &str) {
   .expect("write SKILL.md");
 }
 
-/// 场景（T2）：`.ribo/skills/` 与旧 `<root>/skills/` 并存 → 只读新路径，
+/// 场景：`.ribo/skills/` 与旧 `<root>/skills/` 并存 → 只读新路径，
 /// 旧布局技能不识别（硬切换，无迁移无兼容）。
 #[test]
 fn t2_old_skills_dir_is_not_scanned() {
@@ -68,7 +68,7 @@ fn t2_old_skills_dir_is_not_scanned() {
   );
 }
 
-/// 场景（T12）：全局域与项目 `.ribo/skills/` 有同名技能 → 项目根胜出
+/// 场景：全局域与项目 `.ribo/skills/` 有同名技能 → 项目根胜出
 ///（first root wins，Project 在 Global 之前）。
 #[test]
 fn t12_project_skill_wins_over_global() {

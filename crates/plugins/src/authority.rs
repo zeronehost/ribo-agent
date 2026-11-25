@@ -1,10 +1,10 @@
-//! 权威清单（Step C B3.2，「权威 schema 来源」）：宿主侧载的
+//! 权威清单（「权威 schema 来源」）：宿主侧载的
 //! 信任源，guest 自述降级为交叉校验。
 //!
-//! **信任链问题**：Step B 的 host 侧 schema 采信 guest `list_tools()`
+//! **信任链问题**：host 侧 schema 采信 guest `list_tools()`
 //! 自述——guest 声称什么工具就注册什么，恶意 guest 可谎报工具能力。
 //!
-//! 生产禁用理由 ②。本模块提供宿主侧权威清单：宿主在装配期读取
+//! 本模块提供宿主侧权威清单：宿主在装配期读取
 //! `manifest.json`（与 guest ABI 同构的 JSON），加载期逐项比对 guest
 //! 自述——**不符即拒绝加载**，guest 自述从「信任源」降级为「交叉
 //! 校验样本」，信任链闭合。
@@ -29,7 +29,7 @@ use ra_core::error::RiboResult;
 use crate::traits::ToolManifest;
 use crate::wasm::abi::parse_manifest;
 
-/// 宿主侧权威清单：插件 ID 与工具清单的唯一信任源（B3.2）。
+/// 宿主侧权威清单：插件 ID 与工具清单的唯一信任源。
 ///
 /// 结构与 guest ABI 的 manifest JSON 同构（`plugin_id` + `tools`），
 /// 经 [`AuthorityManifest::from_json`] 解析——`timeout_hint_ms` 走与
@@ -58,7 +58,7 @@ impl AuthorityManifest {
   }
 }
 
-/// 加载期权威校验：plugin_id 与工具清单逐项比对（B3.2）。
+/// 加载期权威校验：plugin_id 与工具清单逐项比对。
 ///
 /// 比对规则（任一不符即拒绝加载，错误信息指明具体差异）：
 ///

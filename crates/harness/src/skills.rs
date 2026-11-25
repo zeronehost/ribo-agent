@@ -165,7 +165,7 @@ impl SkillsLoader {
     (skills, diagnostics)
   }
 
-  // ===== 内部辅助 =====
+  // 内部辅助
 
   fn load_entry(
     &self,
@@ -319,9 +319,7 @@ impl SkillsLoader {
   }
 }
 
-// ============================================================================
 // frontmatter 手写解析
-// ============================================================================
 
 struct ParsedFm {
   meta: Frontmatter,
@@ -447,9 +445,7 @@ fn strip_quotes(s: &str) -> &str {
   }
 }
 
-// ============================================================================
 // 测试
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -461,7 +457,7 @@ mod tests {
     crate::test_util::test_dir(name)
   }
 
-  /// SK-01：dir/SKILL.md + flat.md 两种布局都能加载，name 升序，location 正确。
+  /// dir/SKILL.md + flat.md 两种布局都能加载，name 升序，location 正确。
   #[test]
   fn load_scans_dir_and_file_layouts() {
     let root = td("load_scans_dir_and_file_layouts");
@@ -504,7 +500,7 @@ mod tests {
     assert_eq!(skills[1].content, "Flat body");
   }
 
-  /// SK-02：md 无 frontmatter → 该技能被跳过，ParseFailed 诊断，其余继续加载。
+  /// md 无 frontmatter → 该技能被跳过，ParseFailed 诊断，其余继续加载。
   #[test]
   fn missing_frontmatter_yields_diagnostic() {
     let root = td("missing_frontmatter_yields_diagnostic");
@@ -527,7 +523,7 @@ mod tests {
     assert!(diagnostics[0].message.contains("missing frontmatter"));
   }
 
-  /// SK-03：description 使用块标量语法（`|`）+ 无 name 回退文件主干。
+  /// description 使用块标量语法（`|`）+ 无 name 回退文件主干。
   #[test]
   fn multiline_description_and_name_fallback() {
     let root = td("multiline_description_and_name_fallback");
@@ -564,7 +560,7 @@ mod tests {
     assert_eq!(diagnostics[0].code, SkillDiagnosticCode::ListFailed);
   }
 
-  /// Step 5-A：多域来源标签 + 同名优先级（首个 roots 胜出）。
+  /// 多域来源标签 + 同名优先级（首个 roots 胜出）。
   ///
   /// 场景：global / project 两域都有同名技能 `dup`，按 project 优先顺序
   /// 排列；预期加载 project 版本，origin 标记正确。
@@ -596,7 +592,7 @@ mod tests {
     assert_eq!(only.origin, "project");
   }
 
-  /// Step 5-A：旧 new() 构造器的 origin 恒为 project（零配置兼容）。
+  /// 旧 new() 构造器的 origin 恒为 project（零配置兼容）。
   #[test]
   fn legacy_new_marks_origin_as_project() {
     let root = td("legacy_new_marks_origin_as_project");

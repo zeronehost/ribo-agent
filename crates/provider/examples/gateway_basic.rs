@@ -148,7 +148,7 @@ async fn consume(mut stream: ObservedStream, tag: &str) {
 async fn main() {
   let ctx = Context::default();
 
-  // ===== 主网关组装：两个降级场景共用一个网关 =====
+  // 主网关组装：两个降级场景共用一个网关
   // alpha：第一次调用（alpha-main）建流失败，第二次（降级候选
   // alpha-backup）成功——mock 脚本按调用顺序逐个弹出。
   let alpha = MockProvider::new(
@@ -172,7 +172,7 @@ async fn main() {
     vec![success_step("来自 gamma-model 的跨提供方降级响应")],
   );
 
-  // ===== 降级路由表 =====
+  // 降级路由表
   // 隐式同提供方链：alpha-main 失败 → alpha-backup（声明序）；
   // fallback 规则：beta 通道失败 → gamma 通道（{ provider } 形态 =
   // 同名 → 目标默认两级解析，命中 gamma-model）。
@@ -198,7 +198,7 @@ async fn main() {
   let err = gateway.register(alpha_arc).expect_err("重复注册应被拒绝");
   println!("[注册] 重复注册被拒绝：code={}", err.code());
 
-  // ===== 场景 1：同提供方降级（SERVER_ERROR → alpha-backup）=====
+  // 场景 1：同提供方降级（SERVER_ERROR → alpha-backup）
   println!("\n===== 场景 1：同提供方降级（SERVER_ERROR → alpha-backup）=====");
   let stream = gateway
     .stream(&mid("alpha-main"), &ctx, StreamOptions::default())
@@ -206,7 +206,7 @@ async fn main() {
     .expect("主候选失败后应降级到 alpha-backup 建流成功");
   consume(stream, "场景1").await;
 
-  // ===== 场景 2：跨提供方降级（RATE_LIMITED → gamma-model）=====
+  // 场景 2：跨提供方降级（RATE_LIMITED → gamma-model）
   println!("\n===== 场景 2：跨提供方降级（RATE_LIMITED → gamma-model）=====");
   let message = gateway
     .stream(&mid("beta-model"), &ctx, StreamOptions::default())
@@ -221,7 +221,7 @@ async fn main() {
     first_text(&message)
   );
 
-  // ===== 场景 3：请求未注册模型（MODEL_NOT_FOUND）=====
+  // 场景 3：请求未注册模型（MODEL_NOT_FOUND）
   println!("\n===== 场景 3：请求未注册模型（MODEL_NOT_FOUND）=====");
   match gateway
     .stream(&mid("no-such-model"), &ctx, StreamOptions::default())
@@ -231,7 +231,7 @@ async fn main() {
     Err(e) => println!("[场景3] code={} msg={}", e.code(), e.message()),
   }
 
-  // ===== 场景 4：熔断（threshold=1，首次失败即打开）=====
+  // 场景 4：熔断（threshold=1，首次失败即打开）
   println!("\n===== 场景 4：熔断（threshold=1，首次失败即打开）=====");
   let delta = MockProvider::new(
     pid("delta"),
@@ -263,7 +263,7 @@ async fn main() {
     .expect_err("第二次请求应被熔断拒绝");
   println!("[场景4b] code={}", err.code());
 
-  // ===== 场景 5：并发准入（max_in_flight=1）=====
+  // 场景 5：并发准入（max_in_flight=1）
   println!("\n===== 场景 5：并发准入（max_in_flight=1）=====");
   let echo = MockProvider::new(
     pid("echo"),

@@ -1,11 +1,10 @@
-//! `plugin-demo` guest：以 PDK 宏声明的演示插件（18_ §13.2 / §11.1）。
+//! `plugin-demo` guest：以 PDK 宏声明的演示插件。
 //!
 //! 构建产物（wasm32-unknown-unknown，cdylib）经宿主
 //! `WasmPluginHost::load` 加载，覆盖三类场景：
 //!
 //! - [`echo`](mod@plugin)：纯 CPU 工具（幂等，默认 2s 超时）；
-//! - [`greet`](mod@plugin)：config（args 信封）+ storage 一次读写
-//!   （§11.1 ③ 完整示例）；
+//! - [`greet`](mod@plugin)：config（args 信封）+ storage 一次读写；
 //! - [`spin`](mod@plugin)：死循环，演示 epoch 超时 →
 //!   `plugin.plugin_timeout`（不打开工具面熔断）。
 //!
@@ -47,7 +46,7 @@ mod guest {
       Ok(args)
     }
 
-    /// greet：config 前缀 + storage 计数（§11.1 ③）。
+    /// greet：config 前缀 + storage 计数。
     ///
     /// - config 经 args 信封由宿主注入，`ribo::config()` 透明读取；
     /// - `storage::get` 的 `Ok(None)` = key 不存在（首次调用），
@@ -70,7 +69,7 @@ mod guest {
         .unwrap_or("Hello");
       let name = args["name"].as_str().ok_or("missing name")?;
 
-      // storage：进程内 / 插件级 / 不持久化（§6.2）
+      // storage：进程内 / 插件级 / 不持久化
       let key = format!("count:{name}");
       let seen: u64 = ribo::storage::get(&key)?
         .map(|b| String::from_utf8_lossy(&b).parse().unwrap_or(0))
@@ -99,7 +98,7 @@ mod guest {
       }
     }
 
-    /// fetch：经 host 代理发起 GET（§14 DoD 3 越权演示——宿主 ACL
+    /// fetch：经 host 代理发起 GET（越权演示——宿主 ACL
     /// 未授予 http 能力时，guest 的请求在 host function 入口被拦）。
     #[ribo_tool(
       name = "fetch",

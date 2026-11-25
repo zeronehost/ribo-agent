@@ -64,7 +64,7 @@ impl AgentTool for GlobTool {
     args: serde_json::Value,
     ctx: &ToolContext,
   ) -> RiboResult<ToolExecutionResult> {
-    // ===== 取参与基准目录解析 =====
+    // 取参与基准目录解析
     let pattern = args["pattern"].as_str().ok_or_else(|| {
       invalid_arguments("glob", "field 'pattern' must be a string")
     })?;
@@ -72,14 +72,14 @@ impl AgentTool for GlobTool {
     let max_results = args["max_results"].as_u64().unwrap_or(200) as usize;
     let cwd = self.root.resolve(cwd_raw)?;
     check_cancel(ctx, "glob")?;
-    // ===== 模式编译 =====
+    // 模式编译
     // 完整模式 = cwd 绝对路径 join pattern（分隔符经 Path 抽象）；
     // 模式非法属入参问题 → INVALID_ARGUMENTS
     let full = cwd.join(pattern);
     let paths = glob::glob(&full.to_string_lossy()).map_err(|e| {
       invalid_arguments("glob", format!("invalid pattern: {e}"))
     })?;
-    // ===== 迭代收集（IO 项跳过不整体失败） =====
+    // 迭代收集（IO 项跳过不整体失败）
     let mut results: Vec<String> = Vec::new();
     let mut truncated = false;
     for entry in paths {
@@ -100,7 +100,7 @@ impl AgentTool for GlobTool {
       }
     }
     results.sort();
-    // ===== 输出（空结果不视为错误） =====
+    // 输出（空结果不视为错误）
     let mut text = if results.is_empty() {
       "(no matches)".to_string()
     } else {

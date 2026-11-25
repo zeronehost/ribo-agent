@@ -1,5 +1,6 @@
 [package]
 name = "ra-agent"
+description = "Agent 运行时：消息循环、会话管理与工具编排"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

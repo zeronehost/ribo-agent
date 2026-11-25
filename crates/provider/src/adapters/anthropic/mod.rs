@@ -1,4 +1,4 @@
-//! Anthropic Claude 适配器骨架（阶段 1）。
+//! Anthropic Claude 适配器骨架。
 //!
 //! 本模块将 Anthropic Messages API 的线格式（`/v1/messages` + SSE 流）
 //! 折叠为统一的 [`ProviderEvent`](crate::stream::ProviderEvent) 事件模型。
@@ -15,7 +15,7 @@
 //!
 //! # 设计原则
 //!
-//! - **文本优先**：阶段 1 仅处理 `text` 块 + `tool_use` / `tool_result` 块；
+//! - **文本优先**：仅处理 `text` 块 + `tool_use` / `tool_result` 块；
 //!   `thinking` / `redacted_thinking` / `image` 等块静默丢弃并记 warn 日志。
 //! - **同构 OpenAI**：StreamAggregator / LineFlow / map_stop_reason 复用 `crate::stream`，
 //!   SSE 帧分派 / spawn_parse_task 模式同构 openai 适配器。

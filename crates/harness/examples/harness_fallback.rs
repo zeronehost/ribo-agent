@@ -1,4 +1,4 @@
-//! 真实 provider + 配置驱动 + 跨提供方降级的会话容器示例（EX-02）。
+//! 真实 provider + 配置驱动 + 跨提供方降级的会话容器示例。
 //!
 //! 在 [`harness_session`](crate) 的基础上叠加 provider 层真实能力：
 //!
@@ -49,9 +49,7 @@ use tokio::{
   net::TcpListener,
 };
 
-// ============================================================================
 // 配置结构（精简自 provider/examples/gateway_fallback.rs）
-// ============================================================================
 
 /// `[[providers]]` 数组的单个条目：定义一个提供商适配器。
 #[derive(Debug, Deserialize)]
@@ -186,7 +184,7 @@ fn load_config() -> Option<RealConfig> {
     })
     .ok()?;
 
-  // ===== 字段完整性校验：任一 provider 不完整 → 整组未配置 =====
+  // 字段完整性校验：任一 provider 不完整 → 整组未配置
   if cfg.providers.is_empty() {
     tracing::warn!("config has no providers, using offline stubs");
     return None;
@@ -296,9 +294,7 @@ fn build_adapter(
   }
 }
 
-// ============================================================================
 // 会话容器组装（两模式共用）
-// ============================================================================
 
 /// 写入两个演示技能（目录型 + 扁平型，覆盖 SkillsLoader 的两种布局）。
 fn write_skill_files(skills_dir: &Path) {
@@ -334,7 +330,7 @@ async fn run_session(
   model: Model,
   data_dir: &Path,
 ) -> RiboResult<()> {
-  // ===== 阶段 1：技能加载 =====
+  // 技能加载
   let skills_dir = data_dir
     .parent()
     .expect("data_dir has parent")
@@ -348,7 +344,7 @@ async fn run_session(
   );
   assert_eq!(skills.len(), 2, "terminal + note");
 
-  // ===== 阶段 2：Harness 装配（HarnessContext + 持久化） =====
+  // Harness 装配（HarnessContext + 持久化）
   let builder = SystemPromptBuilder::new()
     .with_template("You are a helpful assistant with fallback providers.");
   let context = HarnessContext::new(
@@ -374,7 +370,7 @@ async fn run_session(
   let agent = BaseAgent::new(deps, provider.clone());
   let harness = Harness::new(agent, provider.clone(), store.clone());
 
-  // ===== 阶段 3：一轮对话（离线模式经降级链到兜底桩；真实模式直达） =====
+  // 一轮对话（离线模式经降级链到兜底桩；真实模式直达）
   let new_messages = harness
     .prompt("demo", "用一句话介绍 Rust 的所有权。")
     .await?;
@@ -400,7 +396,7 @@ async fn run_session(
     );
   }
 
-  // ===== 阶段 4：模拟重启，回放无重复 =====
+  // 模拟重启，回放无重复
   drop(harness);
   drop(provider);
   drop(store);
@@ -434,9 +430,7 @@ async fn run_session(
   Ok(())
 }
 
-// ============================================================================
 // 离线演示模式：主链返回可跨 provider 降级的错误，兜底桩返回成功流
-// ============================================================================
 
 /// 启动一次性本地 HTTP 服务：读取请求后返回 `response` 并关闭。
 async fn serve_once(response: String) -> std::net::SocketAddr {

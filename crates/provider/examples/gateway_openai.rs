@@ -118,9 +118,7 @@ async fn consume(mut stream: ObservedStream) {
   );
 }
 
-// ============================================================================
 // 真实 API 模式（配置文件驱动）
-// ============================================================================
 
 /// 真实 API 配置：从 `gateway_openai.toml` 读取。
 ///
@@ -193,7 +191,7 @@ async fn run_real(cfg: RealConfig) {
     "real api mode"
   );
 
-  // ===== 组装模型与适配器 =====
+  // 组装模型与适配器
   let model_id = ModelId::parse(&cfg.model).expect("模型名非空即合法");
   let model = Model::new(
     ProviderId::parse("openai").expect("提供方 ID 合法"),
@@ -210,7 +208,7 @@ async fn run_real(cfg: RealConfig) {
     Some(cfg.api_key),
   );
 
-  // ===== 注册进网关 =====
+  // 注册进网关
   tracing::info!(provider = "openai", model = %cfg.model, "registering provider");
   let mut gateway = Gateway::new(GatewayConfig::default());
   gateway
@@ -218,7 +216,7 @@ async fn run_real(cfg: RealConfig) {
     .expect("适配器应通过注册校验");
   tracing::info!(provider = "openai", "provider registered");
 
-  // ===== 构造上下文并发起请求 =====
+  // 构造上下文并发起请求
   let ctx = Context {
     message: vec![Message::User(UserMessage {
       content: UserContent::Text(
@@ -245,9 +243,7 @@ async fn run_real(cfg: RealConfig) {
   }
 }
 
-// ============================================================================
 // 离线演示模式（本地服务桩）
-// ============================================================================
 
 /// 构造网关注册要求的模型（上下文窗口与输出限额非零且合理）。
 fn local_model(base_url: String) -> Model {
@@ -334,7 +330,7 @@ async fn run_offline() {
   tracing::info!("offline demo mode: using local stubs");
   let ctx = Context::default();
 
-  // ===== 场景 1：正常 SSE 流 =====
+  // 场景 1：正常 SSE 流
   // 服务桩返回两段文本增量 + [DONE]；网关建流成功后由消费端逐事件读取。
   println!("\n===== 场景 1：网关建流成功（SSE 增量）=====");
   let addr = serve_once(sse_success_body()).await;
@@ -358,7 +354,7 @@ async fn run_offline() {
     .expect("网关应建流成功");
   consume(stream).await;
 
-  // ===== 场景 2：建流错误（HTTP 429 → RATE_LIMITED）=====
+  // 场景 2：建流错误（HTTP 429 → RATE_LIMITED）
   // 服务桩返回 429；适配器映射为 RATE_LIMITED（可降级），网关无降级
   // 路由可用，重试耗尽后上抛最后一次错误并附降级链摘要。
   println!("\n===== 场景 2：建流错误（HTTP 429）=====");

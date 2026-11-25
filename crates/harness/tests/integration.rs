@@ -97,7 +97,7 @@ fn stop_step(text: &'static str) -> MockStep {
   }))
 }
 
-/// INT-HARNESS-01：会话跨「重启」持久化，回放无重复，continue_run 成功。
+/// 会话跨「重启」持久化，回放无重复，continue_run 成功。
 ///
 /// 场景：两轮 prompt 落盘 → 丢弃全部内存结构（模拟进程重启）→
 /// 用同一磁盘目录重建 Provider/Agent → 回放校验 → 模拟一条未处理的
@@ -108,7 +108,7 @@ async fn session_survives_restart_without_duplicates() {
   let config = HarnessConfig::new(dir.clone());
   let store = Arc::new(JsonlSessionStore::new(config.sessions_dir()));
 
-  // ===== 第一轮：两步 mock（首轮 prompt + 续跑用）=====
+  // 第一轮：两步 mock（首轮 prompt + 续跑用）
   let (harness, _provider) = build_harness(
     store.clone(),
     vec![stop_step("reply-1"), stop_step("reply-2")],
@@ -126,10 +126,10 @@ async fn session_survives_restart_without_duplicates() {
   let snapshot = harness.session_messages("s1").await.unwrap();
   assert_eq!(snapshot.len(), 4);
 
-  // ===== 模拟重启：丢弃 harness / agent / provider，仅保留磁盘 =====
+  // 模拟重启：丢弃 harness / agent / provider，仅保留磁盘
   drop(harness);
 
-  // ===== 用同一目录重建 =====
+  // 用同一目录重建
   let (harness2, provider2) =
     build_harness(store.clone(), vec![stop_step("reply-continue")]);
 

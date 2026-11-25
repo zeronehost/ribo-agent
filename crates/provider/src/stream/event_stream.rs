@@ -28,9 +28,7 @@ use crate::error::{STREAM_INTERRUPTED, in_stream};
 
 use super::event::ProviderEvent;
 
-// ============================================================================
 // 消费端
-// ============================================================================
 
 /// 事件流的消费端。
 ///
@@ -83,7 +81,7 @@ impl ProviderEventStream {
   pub async fn result(self) -> RiboResult<AssistantMessage> {
     match self.res_rx.await {
       Ok(message) => Ok(message),
-      // ===== 兜底：生产端未终结即消失 =====
+      // 兜底：生产端未终结即消失
       // oneshot 发送端被 drop 而未兑现（逻辑漏洞或任务异常退出）。
       // 按不变量 3 兜底为 STREAM_INTERRUPTED，保证永不永久挂起。
       Err(_) => {
@@ -119,7 +117,7 @@ impl ProviderEventStream {
     match result {
       Ok(stream) => stream,
       Err(e) => {
-        // ===== 从错误 context 还原 provider / model =====
+        // 从错误 context 还原 provider / model
         // 约定构造器会注入这两个键；极早期失败（如 PROVIDER_NOT_FOUND）
         // 时可能缺失，回退为空串占位。
         let (provider, model) = e
@@ -142,7 +140,7 @@ impl ProviderEventStream {
           now_ms(),
         );
 
-        // ===== 构造生产端、立即终结、取消费端 =====
+        // 构造生产端、立即终结、取消费端
         let (producer, stream) = ProviderEventStreamProducer::build();
         producer.error(StopReason::Error, msg, Some(e.code()));
         stream
@@ -151,9 +149,7 @@ impl ProviderEventStream {
   }
 }
 
-// ============================================================================
 // 生产端
-// ============================================================================
 
 /// 事件流的生产端。
 ///
@@ -214,16 +210,16 @@ impl ProviderEventStreamProducer {
   ///
   /// 生产端由此被消费，终结唯一性在类型层面成立。
   pub fn done(mut self, reason: StopReason, message: AssistantMessage) {
-    // ===== 克隆给终态通道 =====
+    // 克隆给终态通道
     // 事件通道与 oneshot 各自持有一份 message，保证两条路径独立。
     let msg = message.clone();
 
-    // ===== 推入终结事件 =====
+    // 推入终结事件
     // 收方关闭时 send 返回 Err(event)，用 `let _ =` 忽略——
     // 生产端不应因对端已放弃而 panic。
     let _ = self.tx.send(ProviderEvent::Done { reason, message });
 
-    // ===== 兑现 oneshot =====
+    // 兑现 oneshot
     // 终结只会发生一次（`done` 消费 `self`），因此发送端必定存在。
     let tx = self
       .res_tx
@@ -243,17 +239,17 @@ impl ProviderEventStreamProducer {
     message: AssistantMessage,
     code: Option<&'static str>,
   ) {
-    // ===== 克隆给终态通道 =====
+    // 克隆给终态通道
     let msg = message.clone();
 
-    // ===== 推入终结事件 =====
+    // 推入终结事件
     let _ = self.tx.send(ProviderEvent::Error {
       reason,
       message,
       code,
     });
 
-    // ===== 兑现 oneshot =====
+    // 兑现 oneshot
     // 终结只会发生一次（`error` 消费 `self`），因此发送端必定存在。
     let tx = self
       .res_tx

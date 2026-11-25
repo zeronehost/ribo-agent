@@ -28,7 +28,7 @@ pub trait LineSource {
   fn next_line(&mut self) -> impl Future<Output = Option<String>> + Send;
 }
 
-/// 在途回合状态（概设 B3）：在途 key 与当前会话键解耦。
+/// 在途回合状态：在途 key 与当前会话键解耦。
 enum TurnState {
   /// 空闲：可发起新回合。
   Idle,
@@ -89,13 +89,13 @@ impl<S: LineSource + Send + 'static> Repl<S> {
     loop {
       tokio::select! {
         biased;
-        // ===== 回合任务完成：复位 TurnState 的唯一权威 =====
+        // 回合任务完成：复位 TurnState 的唯一权威
         result = self.turn_done_rx.recv(),
           if matches!(self.turn, TurnState::Running { .. }) =>
         {
           self.reset_turn(result);
         }
-        // ===== 输入行 =====
+        // 输入行
         line = self.source.next_line() => match line {
           // EOF：请求取消在途回合后退出（不等待收尾——进程即将结束）
           None => {
@@ -112,7 +112,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
             Err(e) => println!("{e}"),
           },
         },
-        // ===== 事件流：仅渲染权威；复位见回合完成分支 =====
+        // 事件流：仅渲染权威；复位见回合完成分支
         recv = self.session.events.recv() => match recv {
           Ok(event) => self.renderer.on_event(&event),
           Err(broadcast_lagged) => {
@@ -132,13 +132,13 @@ impl<S: LineSource + Send + 'static> Repl<S> {
     Ok(())
   }
 
-  /// 发起用户回合：在途时拒绝（决策 6——串行回合，进度可观察）。
+  /// 发起用户回合：在途时拒绝（串行回合，进度可观察）。
   async fn handle_chat(&mut self, text: String) {
     if matches!(self.turn, TurnState::Running { .. }) {
       println!("回合进行中：/stop 取消后可继续。");
       return;
     }
-    // ===== 阶段 1：spawn prompt 任务（结果经通道回传）=====
+    // spawn prompt 任务（结果经通道回传）
     let key = self.current_key.clone();
     let (tx, rx) = mpsc::channel(1);
     let harness = self.session.harness.clone();
@@ -149,7 +149,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
       // 任务 panic/被杀时不发送：recv 返回 None，三分支兜底覆盖
       let _ = tx.send(result).await;
     });
-    // ===== 阶段 2：登记在途状态（key 与当前会话键解耦快照）=====
+    // 登记在途状态（key 与当前会话键解耦快照）
     self.turn_done_rx = rx;
     self.turn = TurnState::Running { key, task };
   }
@@ -166,7 +166,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
     };
     let key = key.clone();
 
-    // ===== 阶段 1：触发取消（重试直至命中或回合已自行收尾）=====
+    // 触发取消（重试直至命中或回合已自行收尾）
     loop {
       if self.session.harness.stop(&key).await {
         break;
@@ -188,7 +188,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
       }
     }
 
-    // ===== 阶段 2：等待复位（取消收敛后 prompt 返回 Ok）=====
+    // 等待复位（取消收敛后 prompt 返回 Ok）
     while matches!(self.turn, TurnState::Running { .. }) {
       // 先取值再复位（避免 recv 与 reset_turn 的借用重叠）
       let result = self.turn_done_rx.recv().await;
@@ -198,7 +198,7 @@ impl<S: LineSource + Send + 'static> Repl<S> {
 
   /// `/sessions [name]`：无参列出会话；带参切换会话（不存在则新建）。
   ///
-  /// 在途回合时拒绝切换（概设 B3——串行回合期间切换会让「在途」与
+  /// 在途回合时拒绝切换（串行回合期间切换会让「在途」与
   /// 「当前」分离，保持语义简单）。
   async fn handle_sessions(&mut self, name: Option<String>) {
     let Some(name) = name else {

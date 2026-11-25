@@ -1,4 +1,4 @@
-//! 全局目录写入端与读取端一致性测试（T1–T7）。
+//! 全局目录写入端与读取端一致性测试。
 //!
 //! 核心断言：`[global].dir` 不仅影响读取端，也影响 `auth` / `trust`
 //! 等写入型子命令——两端共用 `resolve_global_dir`。
@@ -32,7 +32,7 @@ fn toml_string(s: &str) -> String {
   format!("\"{}\"", s.replace('\\', "\\\\"))
 }
 
-/// T1/G3：无 CLI 参数、无 [global].dir → 平台默认（零行为变化）。
+/// 无 CLI 参数、无 [global].dir → 平台默认（零行为变化）。
 #[test]
 fn t1_no_override_uses_platform_default() {
   let resolved = resolve_global_dir(None, None);
@@ -40,7 +40,7 @@ fn t1_no_override_uses_platform_default() {
   assert_eq!(resolved, expected);
 }
 
-/// T2（核心）：[global].dir 生效于写入端解析。
+/// 核心：[global].dir 生效于写入端解析。
 #[test]
 fn t2_project_global_dir_is_resolved() {
   let tmp = tempfile::tempdir().expect("temp");
@@ -74,7 +74,7 @@ fn t2_project_global_dir_is_resolved() {
   );
 }
 
-/// T3：--global-dir 与 [global].dir 同时存在 → CLI 优先。
+/// --global-dir 与 [global].dir 同时存在 → CLI 优先。
 #[test]
 fn t3_cli_dir_wins_over_project_dir() {
   let tmp = tempfile::tempdir().expect("temp");
@@ -92,7 +92,7 @@ fn t3_cli_dir_wins_over_project_dir() {
   );
 }
 
-/// T4：trust add 同样受 [global].dir 影响。
+/// trust add 同样受 [global].dir 影响。
 #[test]
 fn t4_trust_add_honors_project_global_dir() {
   let tmp = tempfile::tempdir().expect("temp");
@@ -118,7 +118,7 @@ fn t4_trust_add_honors_project_global_dir() {
   );
 }
 
-/// T5：enabled = false 不影响显式写入。
+/// enabled = false 不影响显式写入。
 #[test]
 fn t5_disabled_global_still_writes_to_dir() {
   let tmp = tempfile::tempdir().expect("temp");
@@ -144,7 +144,7 @@ fn t5_disabled_global_still_writes_to_dir() {
   );
 }
 
-/// T6（读写闭环）：写入自定义目录后，读取端能从同一路径读到凭证。
+/// 读写闭环：写入自定义目录后，读取端能从同一路径读到凭证。
 #[test]
 fn t6_write_then_read_roundtrip() {
   let tmp = tempfile::tempdir().expect("temp");
@@ -176,7 +176,7 @@ fn t6_write_then_read_roundtrip() {
   )
   .expect("auth login");
 
-  // 注意：provider 声明在项目配置里 → 属 Project 来源，按 G2 不会用 auth
+  // provider 声明在项目配置里 → 属 Project 来源，不会用 auth
   // 的 key；这里只验证「读取端解析到的全局目录 == 写入端」这一闭环。
   let table: toml::Table = std::fs::read_to_string(&cfg)
     .expect("read")
@@ -186,7 +186,7 @@ fn t6_write_then_read_roundtrip() {
   assert!(custom.join("auth.toml").is_file());
 }
 
-/// T7：dir 指向不存在的目录 → 写入端自动创建。
+/// dir 指向不存在的目录 → 写入端自动创建。
 #[test]
 fn t7_nonexistent_dir_is_created() {
   let tmp = tempfile::tempdir().expect("temp");

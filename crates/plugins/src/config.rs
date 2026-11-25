@@ -19,10 +19,10 @@ pub struct PluginRuntimeConfig {
   pub log_burst: u64,
   /// log 限流：每秒采样放行速率。
   pub log_rate_per_sec: u64,
-  /// 单工具执行超时的宿主侧上限（ai_0018 / B2.5）：工具自述
+  /// 单工具执行超时的宿主侧上限：工具自述
   /// `timeout_hint` 与插件 ACL ceiling 合并后再与本值取 min（只收紧）。
   pub tool_timeout_ceiling: std::time::Duration,
-  /// 是否启用 fuel（指令数中断）。Step B 恒 `false`；Step C 启用需改
+  /// 是否启用 fuel（指令数中断）。当前恒 `false`；启用需改
   /// 配置并**重启进程**——`Engine` 配置在 `new()` 时固化，`PluginRuntime`
   /// 为 `OnceLock` 单例不可重置。
   pub enable_fuel: bool,
@@ -44,7 +44,7 @@ impl Default for PluginRuntimeConfig {
       log_burst: 200,               // 窗口内最多 200 条
       log_rate_per_sec: 50,         // 50 条/秒
       tool_timeout_ceiling: std::time::Duration::from_secs(60),
-      enable_fuel: false, // Step B 不启用 fuel
+      enable_fuel: false, // 当前不启用 fuel
       fuel_limit: 1_000_000_000,
       module_cache_capacity: 64,
     }

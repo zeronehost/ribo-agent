@@ -130,7 +130,7 @@ impl FsRoot {
   ///
   /// **`scheme://` 前缀**：`dataset://a/b.jpg` 取 scheme
   /// `dataset` 查具名域根，剩余相对部分按该域的 规则解析；无前缀路径
-  /// 仍走主根，行为与 Step 2 完全一致。具名域内部不再解析前缀（防串联）。
+  /// 仍走主根，行为不变。具名域内部不再解析前缀（防串联）。
   ///
   /// # Errors
   ///
@@ -138,7 +138,7 @@ impl FsRoot {
   /// 根目录内时返回错误（未知 scheme / 域内非法词法为 `path.invalid`，
   /// 其余越界维持 `tool.invalid_arguments` 的稳定消息）。
   pub fn resolve(&self, raw: &str) -> RiboResult<PathBuf> {
-    // ===== scheme 前缀分派（仅主根持有具名域表）=====
+    // scheme 前缀分派（仅主根持有具名域表）
     if let Some((scheme, rest)) = split_scheme(raw) {
       let domain = self.named_roots.get(scheme).ok_or_else(|| {
         path_invalid(
@@ -260,7 +260,7 @@ impl FsRoot {
   /// 保持零行为变化的承诺。
   fn resolve_canonical(&self, candidate: &Path) -> RiboResult<PathBuf> {
     let mut probe = candidate;
-    // ===== ① 向上找到最近的存在祖先（含符号链接本身）=====
+    // ① 向上找到最近的存在祖先（含符号链接本身）
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     while std::fs::symlink_metadata(probe).is_err() {
       let name = probe
@@ -273,14 +273,14 @@ impl FsRoot {
       })?;
     }
 
-    // ===== ② canonicalize 祖先并判定归属（复用统一原语）=====
+    // ② canonicalize 祖先并判定归属（复用统一原语）
     let canonical = canonicalize(probe)
       .map_err(|_| invalid_arguments("fs", "path escapes workspace root"))?;
     if !is_within(&self.root, &canonical) {
       return Err(invalid_arguments("fs", "path escapes workspace root"));
     }
 
-    // ===== ③ 拼回缺失尾部（新建文件场景）=====
+    // ③ 拼回缺失尾部（新建文件场景）
     let mut resolved = canonical;
     for name in tail.into_iter().rev() {
       resolved.push(name);

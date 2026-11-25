@@ -1,7 +1,7 @@
 //! 插件声明层：语言无关的 [`Plugin`] trait 与 [`ToolManifest`]。
 //!
 //! `Plugin` 描述「一个插件提供哪些工具、如何执行」，不绑定任何运行时：
-//! native Rust 插件与（Step B 的）WASM guest 共用同一声明边界，经
+//! native Rust 插件与 WASM guest 共用同一声明边界，经
 //! [`PluginToolAdapter`](crate::adapter::PluginToolAdapter) 桥接为
 //! `Arc<dyn AgentTool>` 注入 `ToolManager`（主循环零改动）。
 //!
@@ -25,8 +25,8 @@ use ra_tools::context::ToolContext;
 ///   内部可变状态必须用 `Mutex` / `RwLock` / 原子类型（禁止
 ///   `RefCell` / `Cell` 等 `!Sync` 类型）；
 /// - `execute` 内部如有阻塞操作须自行 `spawn_blocking` 隔离，不得
-///   阻塞 async runtime（Step B 的 WASM 宿主在 `run_tool` 内统一隔离）；
-/// - `tools()` 在注册期被调用（Step B 中仅加载期一次并缓存），
+///   阻塞 async runtime（WASM 宿主在 `run_tool` 内统一隔离）；
+/// - `tools()` 在注册期被调用（仅加载期一次并缓存），
 ///   实现应保持无副作用。
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -59,7 +59,7 @@ pub trait Plugin: Send + Sync {
     ctx: &ToolContext,
   ) -> RiboResult<serde_json::Value>;
 
-  /// 可选事件订阅（Step B 宿主**不调用**；Step C 经 Manifest 门禁且仅
+  /// 可选事件订阅（宿主当前**不调用**；经 Manifest 门禁启用后仅
   /// 转发脱敏元事件 / `type_tag`，避免对话内容泄露与广播路径阻塞）。
   fn on_event(&self, _event: &AgentEvent) {}
 }
@@ -77,14 +77,14 @@ pub struct ToolManifest {
   pub description: String,
   /// 参数 JSON Schema（复用 `ra_tools::schema` 校验）。
   pub parameters: serde_json::Value,
-  /// 可选：单工具超时覆盖（覆盖全局默认 2s；Step B 读取并换算为
-  /// epoch 预算，Step A 阶段仅透传声明）。
+  /// 可选：单工具超时覆盖（覆盖全局默认 2s；宿主读取并换算为
+  /// epoch 预算，本层仅透传声明）。
   pub timeout_hint: Option<Duration>,
   /// 工具是否幂等：① 决定 `execution_mode`（非幂等 → `Sequential`，
   /// 防止有副作用的工具在并行批中交错执行）；② 供上层重试决策
   /// （仅幂等工具的业务错误可安全重试）。
   pub idempotent: bool,
-  /// 可选：单工具线性内存覆写（Step B 两阶段 `min` 的工具级输入，
+  /// 可选：单工具线性内存覆写（两级 `min` 的工具级输入，
   /// **只能收紧不能放大**进程默认 32MB）。
   pub memory_limit_bytes: Option<usize>,
 }

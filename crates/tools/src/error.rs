@@ -20,7 +20,7 @@ pub const INVALID_ARGUMENTS: &str = "tool.invalid_arguments";
 pub const EXEC_FAILED: &str = "tool.exec_failed";
 /// 错误码：执行被取消。
 pub const CANCELLED: &str = "tool.cancelled";
-/// 错误码：具名域只读写入被拒（复用 plugin 域既有码，Step 3）。
+/// 错误码：具名域只读写入被拒（复用 plugin 域既有码）。
 pub const PLUGIN_FORBIDDEN: &str = "plugin.plugin_forbidden";
 /// 错误码：熔断打开，调用被拒绝。
 pub const RATE_LIMITED: &str = "tool.rate_limited";

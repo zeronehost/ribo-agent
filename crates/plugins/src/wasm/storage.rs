@@ -2,7 +2,7 @@
 //!
 //! 语义边界：
 //!
-//! - **进程内**：重启即丢失，持久化归 Step C；
+//! - **进程内**：重启即丢失，不做持久化；
 //! - **插件级**：每个插件一个 [`Storage`] 实例（挂
 //!   `Arc<PluginShared>`，跨 Stateless Store 存活），互不可见；
 //! - **不持久化**：无落盘路径。
@@ -17,7 +17,7 @@ use std::sync::{Mutex, PoisonError};
 use crate::acl::PluginAcl;
 use crate::config::PluginRuntimeConfig;
 
-// ===== DoS 边界：单条 key / value 长度上限 =====
+// DoS 边界：单条 key / value 长度上限
 // `StoreLimits` 只约束 guest 线性内存，**不约束 host 堆上的 Vec 分配**——
 // 恶意 guest 传巨大 len 即可在不触碰沙箱的前提下打爆 host。长度判定
 // 必须在读取点（`read_guest_bytes_limited`，第一道）先做；本模块的检查
@@ -48,7 +48,7 @@ pub enum StorageError {
   /// 表内部错 → `storage_internal:{stage}` trap → `plugin.plugin_internal`。
   ///
   /// 当前 [`PluginTable`] 基于 HashMap，本变体尚无真实触发路径；
-  /// 保留是为 trap 前缀契约完整（Step C 持久化路径启用），
+  /// 保留是为 trap 前缀契约完整，
   /// host function 侧已实现对应匹配分支。
   #[allow(dead_code)] // 契约保留项：无触发路径属预期，见上注释
   Internal(String),
@@ -282,7 +282,7 @@ mod tests {
   }
 
   /// 场景：`Storage` 满足 Send + Sync（作为 `Arc<Storage>` 放进
-  /// `HostState` / `HostStateSnapshot` 的前提，纪律 2）。
+  /// `HostState` / `HostStateSnapshot` 的前提）。
   #[test]
   fn storage_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}

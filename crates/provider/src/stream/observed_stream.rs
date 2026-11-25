@@ -142,7 +142,7 @@ impl ObservedStream {
         ev
       }
       NextOutcome::IdleTimeout => {
-        // ===== 空闲超时：回收原流并合成 TIMEOUT 终结 =====
+        // 空闲超时：回收原流并合成 TIMEOUT 终结
         let taken = self.inner.take();
         drop(taken);
         self.observe_error(&StopReason::Error, Some(TIMEOUT));
@@ -175,7 +175,7 @@ impl ObservedStream {
       observed,
     } = self;
 
-    // ===== 等待终态 =====
+    // 等待终态
     // inner 为 None 说明空闲超时已回收原流，直接以 TIMEOUT 收场。
     let awaited = match (inner, idle_timeout) {
       (None, _) => Err(in_stream(TIMEOUT, "stream idle")),
@@ -189,13 +189,13 @@ impl ObservedStream {
       },
     };
 
-    // ===== 熔断回报与配额释放 =====
+    // 熔断回报与配额释放
     // `if !observed` 守卫保证熔断回报恰好执行一次：若调用方先经
     // next() 消费到终结事件（已回报并置位标志），此处直接跳过。
     // 本函数随即返回，无需再置位 observed——该赋值在此路径无读取方。
     if !observed {
       match &awaited {
-        // ===== 按终态消息的真实结果回报 =====
+        // 按终态消息的真实结果回报
         // `Error` 终结事件经 oneshot 兑现后 `result()` 仍返回 `Ok(message)`，
         // 仅凭 `Ok/Err` 会把失败误记为成功；必须看 `stop_reason`。
         Ok(message) if message.stop_reason == StopReason::Error => {

@@ -109,7 +109,7 @@ pub struct ToolEntry {
   pub call: fn(serde_json::Value) -> Result<serde_json::Value, String>,
 }
 
-// ===== 长度上限（与宿主侧 crates/plugins/src/wasm 同值，契约） =====
+// 长度上限（与宿主侧 crates/plugins/src/wasm 同值，契约）
 
 /// storage key 长度上限（字节）。
 pub const MAX_KEY_LEN: usize = 256;

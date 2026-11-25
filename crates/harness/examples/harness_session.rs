@@ -1,4 +1,4 @@
-//! ra-harness 完整会话示例（EX-01）。
+//! ra-harness 完整会话示例。
 //!
 //! 演示：技能加载 → 系统提示组装 → Harness 门面两轮对话 → 模拟重启回放无重复。
 //!
@@ -67,7 +67,7 @@ fn text_step(model_id: &str, text: &str) -> MockStep {
 
 #[tokio::main]
 async fn main() -> ra_core::error::RiboResult<()> {
-  // ===== 阶段 0：临时目录 + 技能文件 =====
+  // 临时目录 + 技能文件
   // 产物落 workspace 的 tmp/harness_session/ 下（与 src/test_util.rs 的
   // tmp/ 约定一致）。用 CARGO_MANIFEST_DIR（crates/harness）向上两级定位
   // workspace 根——与运行 cargo run 时的 shell cwd 无关；每次运行前清理
@@ -109,7 +109,7 @@ async fn main() -> ra_core::error::RiboResult<()> {
 
   tracing::info!(out_dir = %root.display(), "output directory ready");
 
-  // ===== 阶段 1：加载技能 =====
+  // 加载技能
   let loader = SkillsLoader::new(vec![skills_dir.clone()]);
   let (skills, diagnostics) = loader.load();
   tracing::info!(
@@ -137,7 +137,7 @@ async fn main() -> ra_core::error::RiboResult<()> {
       .join(", ")
   );
 
-  // ===== 阶段 2：系统提示组装 =====
+  // 系统提示组装
   let system_prompt = SystemPromptBuilder::new()
     .with_template("You are a helpful assistant.")
     .with_environment(true)
@@ -153,7 +153,7 @@ async fn main() -> ra_core::error::RiboResult<()> {
   );
   tracing::info!("skill invocation preview:\n{}", invocation);
 
-  // ===== 阶段 3：Harness 装配 =====
+  // Harness 装配
   let provider_id = ProviderId::parse("mock").unwrap();
   let model_id = ModelId::parse("mock-model").unwrap();
 
@@ -186,7 +186,7 @@ async fn main() -> ra_core::error::RiboResult<()> {
   let agent = BaseAgent::new(deps, provider.clone());
   let harness = Harness::new(agent, provider.clone(), store.clone());
 
-  // ===== 阶段 4：两轮对话 =====
+  // 两轮对话
   let msgs = harness.prompt("demo", "Hello").await?;
   tracing::info!("round 1: {} new messages", msgs.len());
   for m in &msgs {
@@ -205,7 +205,7 @@ async fn main() -> ra_core::error::RiboResult<()> {
   tracing::info!("transcript after 2 rounds: {} messages", transcript.len());
   assert_eq!(transcript.len(), 4, "user1 + asst1 + user2 + asst2");
 
-  // ===== 阶段 5：模拟重启（drop → 重建 Harness，回放无重复）=====
+  // 模拟重启（drop → 重建 Harness，回放无重复）
   drop(harness);
   drop(provider);
   drop(store);

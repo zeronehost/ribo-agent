@@ -65,7 +65,7 @@ impl AgentTool for EditTool {
     args: serde_json::Value,
     ctx: &ToolContext,
   ) -> RiboResult<ToolExecutionResult> {
-    // ===== 前置校验（入参问题 → INVALID_ARGUMENTS，不记账） =====
+    // 前置校验（入参问题 → INVALID_ARGUMENTS，不记账）
     let raw = args["path"].as_str().ok_or_else(|| {
       invalid_arguments("edit", "field 'path' must be a string")
     })?;
@@ -84,7 +84,7 @@ impl AgentTool for EditTool {
     let replace_all = args["replace_all"].as_bool().unwrap_or(false);
     let path = self.root.resolve_for_write(raw, "edit")?;
     check_cancel(ctx, "edit")?;
-    // ===== 读全文 =====
+    // 读全文
     let bytes = tokio::fs::read(&path).await.map_err(|e| {
       if e.kind() == std::io::ErrorKind::NotFound {
         tracing::warn!(path = %raw, "edit tool: file not found");
@@ -95,7 +95,7 @@ impl AgentTool for EditTool {
     })?;
     let text = String::from_utf8(bytes)
       .map_err(|_| exec_failed("edit", "file is not valid utf-8"))?;
-    // ===== 出现次数判定（唯一性保护） =====
+    // 出现次数判定（唯一性保护）
     // 步骤：count==0 → 失败；count>1 且未开 replace_all → 失败
     let count = text.matches(old).count();
     if count == 0 {
@@ -109,7 +109,7 @@ impl AgentTool for EditTool {
         ),
       ));
     }
-    // ===== 替换并写回（覆盖原文件，不备份） =====
+    // 替换并写回（覆盖原文件，不备份）
     let updated = text.replace(old, new);
     tokio::fs::write(&path, updated).await.map_err(|e| {
       exec_failed("edit", format!("write back failed ({:?}): {raw}", e.kind()))

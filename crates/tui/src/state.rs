@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use ra_cli::config::ConfigMode;
 use ra_cli::config::assemble::TurnHandle;
-use tui_textarea::TextArea;
+use ratatui_textarea::TextArea;
 
 /// 全局可变状态树：所有事件与按键的最终落点。
 pub struct AppState {
@@ -19,7 +19,7 @@ pub struct AppState {
   pub chat: ChatState,
   /// 状态行数据。
   pub status: StatusLine,
-  /// 输入编辑器（`RefCell` 解决渲染需 `&mut self`，R-B3）。
+  /// 输入编辑器（`RefCell` 解决渲染需 `&mut self`）。
   pub editor: RefCell<TextArea<'static>>,
   /// `/help` 帮助浮层开关。
   pub help_open: bool,

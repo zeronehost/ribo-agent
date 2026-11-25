@@ -79,8 +79,8 @@ pub struct Gateway {
   route: RouteMap,
   /// 全局在途请求配额；permit 由 `ObservedStream` 持有至流终结。
   semaphore: Arc<Semaphore>,
-  /// 首次降级 stderr 提示已输出（进程内一次，AtomicBool 防重复）。
-  stderr_fallback_warned: AtomicBool,
+  /// 首次降级日志提示已输出（进程内一次，AtomicBool 防重复）。
+  fallback_warned: AtomicBool,
 }
 
 impl Gateway {
@@ -91,7 +91,7 @@ impl Gateway {
       config,
       catalog: RwLock::new(CatalogIndex::default()),
       breakers: DashMap::new(),
-      stderr_fallback_warned: AtomicBool::new(false),
+      fallback_warned: AtomicBool::new(false),
       route: RouteMap::default(),
       semaphore,
     }
@@ -187,7 +187,7 @@ impl Gateway {
     context: &Context,
     options: StreamOptions,
   ) -> RiboResult<ObservedStream> {
-    // ===== 并发准入 =====
+    // 并发准入
     // 超限直接拒绝；permit 持有至流终结，由 ObservedStream 释放。
     let permit = self.semaphore.clone().try_acquire_owned().map_err(|e| {
       tracing::warn!(model = %model, "gateway overloaded: max in-flight reached");
@@ -195,7 +195,7 @@ impl Gateway {
       pre_stream(OVERLOADED, "gateway max in-flight reached")
     })?;
 
-    // ===== 主候选解析 =====
+    // 主候选解析
     // 读锁内一次性取出 (提供方 ID, 模型, 提供方实例)。
     let (primary_id, primary_model) = {
       let catalog = self.catalog.read().expect("catalog lock poisoned");
@@ -208,7 +208,7 @@ impl Gateway {
       })?;
       (pid, m)
     };
-    // ===== 合并默认超时与生效重试策略 =====
+    // 合并默认超时与生效重试策略
     let effective_options = {
       let mut o = options.clone();
       if o.timeout.is_none() {
@@ -241,7 +241,7 @@ impl Gateway {
     let mut long_fallback_warned = false;
     let mut idx = 0usize;
 
-    // ===== 候选链循环 =====
+    // 候选链循环
     // 外层遍历候选（主候选 + 惰性解析的 fallback），内层对每个
     // 候选按策略做建流重试；`last_err` 保留最后一次可降级错误。
     while let Some(candidate_ref) = chain.get(idx) {
@@ -262,7 +262,7 @@ impl Gateway {
         catalog.provider(&candidate.provider)
       }
       .expect("fallback candidate provider must be registered");
-      // ===== 熔断准入 =====
+      // 熔断准入
       // 打开的候选直接跳过；半开放行的探测请求终结时需回报结果。
       let breaker = self.breaker_for(&candidate.provider);
       let admission = breaker.admit();
@@ -275,13 +275,13 @@ impl Gateway {
       let mut accounted = false;
       let mut attempt: u32 = 0;
 
-      // ===== 候选内建流重试循环 =====
+      // 候选内建流重试循环
       // 每轮先检查取消，再以 build_timeout 包裹建流调用。
       loop {
         if let Some(c) = cancel
           && c.is_cancelled()
         {
-          // 探测请求在回报前被取消：归还探测资格，避免熔断永久停留半开（R2）。
+          // 探测请求在回报前被取消：归还探测资格，避免熔断永久停留半开。
           if is_probe {
             breaker.abort_probe();
           }
@@ -303,7 +303,7 @@ impl Gateway {
         )
         .await;
         match outcome {
-          // ===== 建流成功：打包观察流 =====
+          // 建流成功：打包观察流
           // permit 与熔断器移交 ObservedStream，终结时回报并释放。
           Ok(Ok(stream)) => {
             return Ok(ObservedStream::new(
@@ -314,7 +314,7 @@ impl Gateway {
               self.config.stream_idle_timeout,
             ));
           }
-          // ===== 建流失败：回报熔断并按策略处置 =====
+          // 建流失败：回报熔断并按策略处置
           Ok(Err(e)) => {
             if e.is_circuit_trigger() {
               breaker.record_failure();
@@ -342,7 +342,7 @@ impl Gateway {
                 attempt += 1;
               }
               RetryDecision::Exhausted | RetryDecision::NotRetryable => {
-                // ===== 探测失败回报 =====
+                // 探测失败回报
                 if is_probe && !accounted {
                   breaker.record_failure();
                 }
@@ -363,13 +363,12 @@ impl Gateway {
                         "switched: {}/{}",
                         next.provider, next.model.id
                       ));
-                      // 首次降级 stderr 提示（进程内一次）
-                      if !self
-                        .stderr_fallback_warned
-                        .swap(true, Ordering::Relaxed)
-                      {
-                        eprintln!(
-                          "WARN model fallback: {}/{} unavailable ({}), switching candidates",
+                      // 首次降级日志提示（进程内一次）。只走 tracing 落日志
+                      // 文件，绝不写 stderr/stdout——TUI 备用屏下终端直写
+                      // 会污染全屏界面（涂在光标所在行）。
+                      if !self.fallback_warned.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(
+                          "model fallback: {}/{} unavailable ({}), switching candidates",
                           primary_id,
                           primary_model.id,
                           e.code()
@@ -392,7 +391,7 @@ impl Gateway {
               }
             }
           }
-          // ===== 建流超时：与失败同径处置 =====
+          // 建流超时：与失败同径处置
           // 超时合成 TIMEOUT 错误后，走同一套熔断回报与重试/降级判定。
           Err(_elapsed) => {
             let e = pre_stream(
@@ -439,12 +438,9 @@ impl Gateway {
                       "switched: {}/{}",
                       next.provider, next.model.id
                     ));
-                    if !self
-                      .stderr_fallback_warned
-                      .swap(true, Ordering::Relaxed)
-                    {
-                      eprintln!(
-                        "WARN model fallback: {}/{} unavailable ({}), switching candidates",
+                    if !self.fallback_warned.swap(true, Ordering::Relaxed) {
+                      tracing::warn!(
+                        "model fallback: {}/{} unavailable ({}), switching candidates",
                         primary_id,
                         primary_model.id,
                         e.code()
@@ -910,7 +906,7 @@ mod tests {
     assert_eq!(stub.calls(), 0);
   }
 
-  /// 场景：半开探测在首次尝试前被取消（对应审查报告 R2）。
+  /// 场景：半开探测在首次尝试前被取消。
   ///
   /// 预期：探测资格被归还，后续请求仍能重新准入并成功。
   #[tokio::test(start_paused = true)]

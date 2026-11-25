@@ -7,7 +7,7 @@ publish.workspace = true
 repository.workspace = true
 readme.workspace = true
 license.workspace = true
-description = "Ribo Agent 会话容器：持久化、上下文压缩、系统提示与技能加载"
+description = "会话容器：持久化、上下文压缩、系统提示与技能加载"
 
 [dependencies]
 ra-core = { workspace = true }

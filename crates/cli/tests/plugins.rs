@@ -1,6 +1,6 @@
-//! 插件装配集成测试（B0：阶段 6 接入层）。
+//! 插件装配集成测试。
 //!
-//! 覆盖：配置层解析（CFG）、装配契约（默认关闭零行为变化、未触碰
+//! 覆盖：配置层解析、装配契约（默认关闭零行为变化、未触碰
 //! wasmtime 初始化）、启动致命失败语义（缺文件 / 路径逃逸 / 目录缺失）。
 //! 真实 wasm 的 Agent 全链路见 plugin-demo e2e（独立子 crate，自带
 //! guest 构建与专用 CI，不进 workspace 主路径）。
@@ -196,7 +196,7 @@ fn sandbox_layout() -> (tempfile::TempDir, PathBuf, PathBuf) {
 /// → 启动致命。
 ///
 /// 预期：`config.plugin_load_failed`——词法合法（相对路径、无 `..`）但
-/// 规范化后落在沙箱之外，属链接逃逸。v3 扫描目录固定为 `.ribo/plugins`，
+/// 规范化后落在沙箱之外，属链接逃逸。扫描目录固定为 `.ribo/plugins`，
 /// 链接必须建在该固定路径上才会被扫描。
 #[test]
 fn plugins_reject_symlinked_escape_from_root_scan() {
@@ -276,7 +276,7 @@ fn plugins_accept_absolute_harness_root() {
   assert!(session.loaded_plugins.is_empty());
 }
 
-/// 场景：`entries.manifest` 配置解析（Step C B3.2 权威清单字段）。
+/// 场景：`entries.manifest` 配置解析（权威清单字段）。
 #[test]
 fn plugins_manifest_field_parses_from_toml() {
   let dir = tempfile::tempdir().expect("temp dir");
@@ -298,7 +298,7 @@ manifest = "auth/demo.json"
   assert_eq!(entry.manifest.as_deref(), Some(Path::new("auth/demo.json")));
 }
 
-/// 场景：权威清单文件缺失 → 启动致命（B3.2 信任链不完整不如明确失败）。
+/// 场景：权威清单文件缺失 → 启动致命（信任链不完整不如明确失败）。
 #[test]
 fn plugins_missing_authority_manifest_is_fatal() {
   let dir = tempfile::tempdir().expect("temp dir");
@@ -330,7 +330,7 @@ fn plugins_missing_authority_manifest_is_fatal() {
 
 /// 场景：固定扫描目录 `.ribo/plugins` 不存在 → 软跳过（非致命）。
 ///
-/// 预期：装配成功、无插件加载——v3 固定路径缺失属正常（项目可只用
+/// 预期：装配成功、无插件加载——固定路径缺失属正常（项目可只用
 /// `[[plugins.entries]]` 清单），不再视为配置错误。
 #[test]
 fn plugins_scan_missing_dir_is_soft_skipped() {
@@ -347,7 +347,7 @@ fn plugins_scan_missing_dir_is_soft_skipped() {
   assert!(session.loaded_plugins.is_empty());
 }
 
-// ===== Step C 来源校验（签名 / 信任链）=====
+// 来源校验（签名 / 信任链）
 
 use ring::signature::KeyPair;
 
@@ -407,7 +407,7 @@ fn signed_fixture(
   let sig = pair.sign(&signature_message("signed", wasm, manifest));
   let trusted = ring::signature::Ed25519KeyPair::from_seed_unchecked(seed)
     .expect("valid seed");
-  // v3：公钥白名单固定为 .ribo/trusted_keys.json（内容为 JSON 格式）
+  // 公钥白名单固定为 .ribo/trusted_keys.json（内容为 JSON 格式）
   let ribo_dir = dir.join(".ribo");
   std::fs::create_dir_all(&ribo_dir).expect("mkdir .ribo");
   std::fs::write(
@@ -554,7 +554,7 @@ fn plugins_untrusted_signer_is_rejected() {
 fn plugins_unsigned_root_scan_is_rejected_in_production() {
   let dir = tempfile::tempdir().expect("temp dir");
   let (wasm, _) = signed_guest();
-  // v3：扫描目录固定为 .ribo/plugins；公钥白名单固定为 .ribo/trusted_keys.json
+  // 扫描目录固定为 .ribo/plugins；公钥白名单固定为 .ribo/trusted_keys.json
   std::fs::create_dir_all(dir.path().join(".ribo").join("plugins"))
     .expect("create scan dir");
   std::fs::write(

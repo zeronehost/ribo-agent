@@ -33,13 +33,13 @@ impl ProviderId {
   /// 大写字母同样视为非法——大小写不归一化，强制调用方显式提供小写形式，
   /// 避免"同一 provider 注册出两个键"。
   pub fn parse(raw: &str) -> RiboResult<Self> {
-    // ===== 第一步：非空检查 =====
+    // 非空检查
     // 空标识无法作为注册表键，也无法出现在日志字段中定位问题。
     if raw.is_empty() {
       return Err(pre_stream(INVALID_REQUEST, "provider id must not be empty"));
     }
 
-    // ===== 第二步：字符集检查 =====
+    // 字符集检查
     // 首个非法字符即短路返回，消息中带出该字符与原始输入以利排查。
     if let Some(ch) = raw
       .chars()
@@ -51,7 +51,7 @@ impl ProviderId {
       ));
     }
 
-    // ===== 构造 =====
+    // 构造
     // 校验通过后一次性转入 `Arc<str>`，后续克隆只增引用计数。
     Ok(Self(Arc::from(raw)))
   }
@@ -130,17 +130,17 @@ macro_rules! impl_id {
     }
     // 反序列化：先按字符串读取，再走内部构造器。
     //
-    // 注意：此处不重复 `parse` 的字符集/非空校验（见审查报告 R17）；
+    // 此处不重复 `parse` 的字符集/非空校验；
     // 需要强校验的入口应使用 `parse`。
     impl<'de> serde::Deserialize<'de> for $name {
       fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
       where
         D: serde::Deserializer<'de>,
       {
-        // ===== 第一步：读取字符串 =====
+        // 读取字符串
         // 非字符串输入（数字、null 等）在此处直接返回反序列化错误。
         let s = String::deserialize(deserializer)?;
-        // ===== 第二步：包装为强类型标识 =====
+        // 包装为强类型标识
         Ok(Self::new(s))
       }
     }

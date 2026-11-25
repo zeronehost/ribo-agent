@@ -1,6 +1,6 @@
 [package]
 name = "plugin-demo"
-description = "Ribo Agent 插件端到端演示（18_ §13.2）：PDK guest 构建 + 宿主全链路集成测试"
+description = "插件端到端演示：PDK guest 构建与宿主全链路集成测试"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

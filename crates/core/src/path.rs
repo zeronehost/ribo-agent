@@ -195,7 +195,7 @@ pub fn resolve_in_domain(
   raw: &Path,
   ctx: &str,
 ) -> RiboResult<PathBuf> {
-  // ===== ① 词法拒绝（先判后解析，避免对非法路径做 IO）=====
+  // ① 词法拒绝（先判后解析，避免对非法路径做 IO）
   if !is_lexically_safe(raw) {
     let reason = if raw.as_os_str().is_empty() {
       "empty path"
@@ -207,7 +207,7 @@ pub fn resolve_in_domain(
     return Err(path_invalid(reason, ctx));
   }
 
-  // ===== ② 物理校验（域根与候选各自 canonicalize 后判归属）=====
+  // ② 物理校验（域根与候选各自 canonicalize 后判归属）
   let canonical_root = domain_root
     .canonicalize()
     .map_err(|e| path_internal("domain root unreadable", e))?;

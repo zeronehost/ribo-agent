@@ -18,9 +18,7 @@ use crate::{
   traits::{ProviderCatalog, ProviderErrorExt},
 };
 
-// ============================================================================
 // 规则表达（配置层映射目标）
-// ============================================================================
 
 /// 匹配条件两形态：精确二元组 / provider 级通配（model 缺失）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,9 +51,7 @@ pub struct FallbackRule {
   pub targets: Vec<FallbackTarget>,
 }
 
-// ============================================================================
 // 解析结果
-// ============================================================================
 
 /// 降级落空原因（零候选时供摘要使用；互斥按序判定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,9 +95,7 @@ pub struct Candidate {
   pub model: Model,
 }
 
-// ============================================================================
 // 路由表
-// ============================================================================
 
 /// 降级路由表。
 ///
@@ -160,7 +154,7 @@ impl RouteMap {
     let auth_failed = err.code() == AUTH_FAILED;
     let mut out: Vec<Candidate> = Vec::new();
 
-    // ===== 1. 隐式同 provider 链（；AUTH_FAILED 时跳过）=====
+    // 1. 隐式同 provider 链（；AUTH_FAILED 时跳过）
     if !auth_failed && let Some(chain) = self.same_provider.get(&primary.id) {
       for m in chain {
         if let Some(m) = catalog.model(&primary.provider, m) {
@@ -169,7 +163,7 @@ impl RouteMap {
       }
     }
 
-    // ===== 2. fallback 规则（声明序，首条命中生效）=====
+    // 2. fallback 规则（声明序，首条命中生效）
     let mut rule_matched = false;
     for (index, rule) in self.rules.iter().enumerate() {
       if !rule_matches(&rule.match_, primary) {
@@ -204,7 +198,7 @@ impl RouteMap {
       break; // 首条命中规则生效，后续规则不再评估
     }
 
-    // ===== 3. 窗口过滤（min=0 不过滤）=====
+    // 3. 窗口过滤（min=0 不过滤）
     let mut window_filtered = false;
     if min_context_window > 0 {
       let before = out.len();
@@ -212,7 +206,7 @@ impl RouteMap {
       window_filtered = before > 0 && out.is_empty();
     }
 
-    // ===== 4. reason 判定（互斥按序）=====
+    // 4. reason 判定（互斥按序）
     let reason = if !out.is_empty() {
       None
     } else if window_filtered {
@@ -387,7 +381,7 @@ mod tests {
       .collect()
   }
 
-  // ===== 规则匹配语义 =====
+  // 规则匹配语义
 
   /// 场景：规则按声明顺序匹配——精确规则在前不被通配覆盖。
   #[test]
@@ -570,7 +564,7 @@ mod tests {
     assert_eq!(out.reason, None);
   }
 
-  // ===== 隐式链 =====
+  // 隐式链
 
   /// 场景：隐式同 provider 链按声明序产出（先于 fallback 规则候选）。
   #[test]
@@ -656,7 +650,7 @@ mod tests {
     assert_eq!(out.reason, Some(DegradeReason::NoCandidatesConfigured));
   }
 
-  // ===== 窗口过滤 =====
+  // 窗口过滤
 
   /// 场景：窗口过滤边界——`window == min` 通过，`window < min` 滤除。
   #[test]
@@ -730,7 +724,7 @@ mod tests {
     assert_eq!(ids(&out), vec!["p2/m_tiny"]);
   }
 
-  // ===== 去重与防御 =====
+  // 去重与防御
 
   /// 场景：去重防环（A → B → A 不产出自我映射）。
   #[test]
@@ -789,7 +783,7 @@ mod tests {
     assert_eq!(ids(&out), vec!["p2/m2"]);
   }
 
-  // ===== shadowing 判定伪码 =====
+  // shadowing 判定伪码
 
   /// 场景：shadows 判定——通配覆盖精确、精确不覆盖通配、完全重复覆盖。
   #[test]

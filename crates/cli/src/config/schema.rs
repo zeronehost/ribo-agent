@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 /// global 层：全局域开关与目录（对应设计）。
 ///
-/// `enabled` 默认 `true`，但全局目录不存在时自动禁用（非致命，R4：不主动创建）。
+/// `enabled` 默认 `true`，但全局目录不存在时自动禁用（非致命，不主动创建）。
 /// `dir` 由 `--global-dir` 覆盖；未设置时用平台默认配置目录 + `/ribo`。
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
@@ -67,7 +67,7 @@ pub struct ProviderEntry {
   /// 基础端点（适配器自动拼接路径）。
   pub base_url: String,
   /// 支持 `$ENV_NAME` 占位（解析期读取环境变量）。
-  /// 缺省为空串（Step 8）：Global 来源从 auth.toml 补、Project 必须显式。
+  /// 缺省为空串：Global 来源从 auth.toml 补、Project 必须显式。
   #[serde(default)]
   pub api_key: String,
   /// 该通道可用的模型清单（必填非空）：声明顺序 = same_provider
@@ -272,7 +272,7 @@ impl Default for ToolsSchema {
   }
 }
 
-/// `fs` 层：项目外只读挂载点（v3 取代资源域）。
+/// `fs` 层：项目外只读挂载点（取代资源域）。
 ///
 /// 仅全局 settings.toml 声明；名字 → 绝对路径。项目配置无权声明
 /// （项目内路径本就可读，项目外路径的暴露决定权只属用户）。
@@ -283,7 +283,7 @@ pub struct FsMountsSchema {
   pub mounts: std::collections::HashMap<String, PathBuf>,
 }
 
-/// harness 层：存储与技能目录（概设双真值裁决：不含 compaction）。
+/// harness 层：存储与技能目录（不含 compaction）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct HarnessLayerSchema {
@@ -303,7 +303,7 @@ impl Default for HarnessLayerSchema {
   }
 }
 
-/// plugins 层：WASM 插件装配声明（阶段 6 Step B 接入）。
+/// plugins 层：WASM 插件装配声明。
 ///
 /// 层间零交叉纪律：本层只描述「加载什么文件、授予什么能力」，与
 /// [`ra_plugins::acl::PluginAcl`] 的运行时转换在装配层（assemble）完成；
@@ -316,7 +316,7 @@ pub struct PluginsSchema {
   pub enabled: bool,
   /// 显式插件清单（相对 harness.root 解析），可逐插件声明 ACL 与 config。
   pub entries: Vec<PluginEntrySchema>,
-  /// 来源校验策略（Step C 签名校验）：生产须 `require_signature = true`
+  /// 来源校验策略（签名校验）：生产须 `require_signature = true`
   /// 并提供非空公钥白名单；默认关闭，保持既有配置零行为变化。
   pub verify: PluginVerifySchema,
 }
@@ -361,10 +361,10 @@ pub struct PluginEntrySchema {
   pub path: PathBuf,
   /// 注入插件的 config（经 args 信封在每次 `execute` 生效）。
   pub config: Option<serde_json::Value>,
-  /// 权威清单文件（Step C B3.2，可选）：相对 harness.root 的
+  /// 权威清单文件（可选）：相对 harness.root 的
   /// manifest.json（与 guest ABI 同构）。提供时宿主以其为信任源，
-  /// guest `list_tools()` 自述与之不符即拒绝加载；缺省维持 Step B
-  /// 语义（采信自述，开发 / CI 模式）。
+  /// guest `list_tools()` 自述与之不符即拒绝加载；缺省维持采信自述的
+  /// 语义（开发 / CI 模式）。
   pub manifest: Option<PathBuf>,
   /// 侧载签名块（provenance.json，相对 harness.root）：含签名者 ID、
   /// Ed25519 签名与 wasm 摘要；仅在 `manifest` 存在时有意义。生产策略下

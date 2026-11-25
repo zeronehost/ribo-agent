@@ -76,7 +76,7 @@ async fn walk(
     return Ok(());
   }
   check_cancel(ctx, "ls")?;
-  // ===== 收集条目（read_dir 逐项） =====
+  // 收集条目（read_dir 逐项）
   let mut entries: Vec<(String, bool)> = Vec::new();
   let mut rd = tokio::fs::read_dir(dir)
     .await
@@ -93,9 +93,9 @@ async fn walk(
       .is_dir();
     entries.push((entry.file_name().to_string_lossy().into_owned(), is_dir));
   }
-  // ===== 排序：目录优先、组内字典序 =====
+  // 排序：目录优先、组内字典序
   entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-  // ===== 输出与下钻 =====
+  // 输出与下钻
   for (name, is_dir) in entries {
     if st.total >= st.max_entries {
       st.truncated = true;
@@ -137,7 +137,7 @@ impl AgentTool for LsTool {
     args: serde_json::Value,
     ctx: &ToolContext,
   ) -> RiboResult<ToolExecutionResult> {
-    // ===== 取参与路径解析（缺省列工作目录根） =====
+    // 取参与路径解析（缺省列工作目录根）
     let raw = args["path"].as_str().unwrap_or(".");
     let depth = args["depth"]
       .as_u64()
@@ -151,7 +151,7 @@ impl AgentTool for LsTool {
     if !path.is_dir() {
       return Err(exec_failed("ls", format!("not a directory: {raw}")));
     }
-    // ===== 递归遍历 =====
+    // 递归遍历
     let mut st = WalkState {
       max_entries,
       lines: Vec::new(),
@@ -162,7 +162,7 @@ impl AgentTool for LsTool {
     if st.truncated {
       st.lines.push("[... more entries truncated]".to_string());
     }
-    // ===== 输出 =====
+    // 输出
     let text = if st.lines.is_empty() {
       "(empty)".to_string()
     } else {

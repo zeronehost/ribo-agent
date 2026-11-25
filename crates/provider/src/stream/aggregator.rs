@@ -37,7 +37,7 @@ pub(crate) struct ToolState {
 /// 消费端从不拼接增量——每个事件的 `partial` 都是本结构在 push 前
 /// 生成的快照（`Arc` 共享，克隆廉价）；聚合状态只存在于本结构内。
 ///
-/// # R2 截断修复
+/// # 截断修复
 ///
 /// 新增 `had_done_sentinel: bool` 标志。[DONE] 帧到达时置 true。
 /// finalize 检查：EOF 终结但无 [DONE] 哨兵 → 截断 → Error + STREAM_INTERRUPTED。
@@ -100,7 +100,7 @@ impl StreamAggregator {
     }
   }
 
-  /// 标记 [DONE] 哨兵已到达——R2 截断检测的关键标志。
+  /// 标记 [DONE] 哨兵已到达——截断检测的关键标志。
   pub(crate) fn mark_done_sentinel(&mut self) {
     self.had_done_sentinel = true;
   }
@@ -173,7 +173,7 @@ impl StreamAggregator {
     let index = match self.content_index {
       Some(index) => index,
       None => {
-        // ===== 块纪律自愈：首个文本增量自动开块 =====
+        // 块纪律自愈：首个文本增量自动开块
         let index = self.output.content.len();
         self.output.content.push(Content::Text(TextContent {
           content: String::new(),
@@ -212,7 +212,7 @@ impl StreamAggregator {
     let index = match self.reasoning_index {
       Some(index) => index,
       None => {
-        // ===== 块纪律自愈：首个推理增量自动开块 =====
+        // 块纪律自愈：首个推理增量自动开块
         let index = self.output.content.len();
         self.output.content.push(Content::Thinking(ThinkingContent {
           content: String::new(),
@@ -255,7 +255,7 @@ impl StreamAggregator {
     name: Option<&str>,
     args_fragment: Option<&str>,
   ) -> LineFlow {
-    // ===== 块登记：线格式下标首次出现 → 开 ToolCall 块并推 Start =====
+    // 块登记：线格式下标首次出现 → 开 ToolCall 块并推 Start
     if !self.tools.contains_key(&wire_index) {
       let content_index = self.output.content.len();
       self.output.content.push(Content::ToolCall(ToolCall {
@@ -282,7 +282,7 @@ impl StreamAggregator {
       }
     }
 
-    // ===== 片段累积（id / 函数名 / 参数可能分段到达）=====
+    // 片段累积（id / 函数名 / 参数可能分段到达）
     let content_index = self.tools[&wire_index].content_index;
     {
       let state = self.tools.get_mut(&wire_index).expect("registered above");
@@ -296,7 +296,7 @@ impl StreamAggregator {
         state.arguments.push_str(args);
       }
     }
-    // ===== 同步占位 ToolCall 的 id / 函数名（partial 快照可见）=====
+    // 同步占位 ToolCall 的 id / 函数名（partial 快照可见）
     if let Some(Content::ToolCall(call)) =
       self.output.content.get_mut(content_index)
     {
@@ -304,7 +304,7 @@ impl StreamAggregator {
       call.id = state.id.clone();
       call.name = state.name.clone();
     }
-    // ===== 参数片段事件（空片段跳过）=====
+    // 参数片段事件（空片段跳过）
     if let Some(args) = args_fragment.filter(|s| !s.is_empty()) {
       return self.push_or_gone(
         producer,
@@ -341,7 +341,7 @@ impl StreamAggregator {
   /// `finished` 标志保证只有第一次调用生效，`producer` 为 `None`
   /// （消费端已放弃）时安全退出，不再产生任何事件。
   ///
-  /// # R2 截断检测
+  /// # 截断检测
   ///
   /// EOF 提前断开且无 [DONE] 哨兵（had_done_sentinel == false）时，
   /// 直接以 Error + STREAM_INTERRUPTED 终结，不做块纪律收尾。
@@ -354,7 +354,7 @@ impl StreamAggregator {
     }
     self.finished = true;
 
-    // ===== R2 截断检测：EOF 提前断开且无 [DONE] 哨兵 =====
+    // 截断检测：EOF 提前断开且无 [DONE] 哨兵
     // [DONE] 路径已在 dispatch_frame 里调 mark_done_sentinel + finalize，
     // 此处 finalize 再进入就是 finished 返回；本路径进入且 had_done_sentinel=false
     // 说明 EOF 提前断开（spawn_parse_task 的 Ok(None) 路径），没有收到 [DONE]。
@@ -374,7 +374,7 @@ impl StreamAggregator {
       return;
     }
 
-    // ===== 阶段 1：关闭未闭合的内容块（块纪律收尾）=====
+    // 关闭未闭合的内容块（块纪律收尾）
     let Some(p) = producer.as_ref() else {
       return; // 消费端已放弃：不再产生任何事件
     };
@@ -429,7 +429,7 @@ impl StreamAggregator {
         namespace: None,
       };
 
-      // ===== R1 修复：同步回写 output.content =====
+      // 同步回写 output.content
       // 重建后的完整 ToolCall 必须同时写入 output.content，
       // 保证 done 消息的 content 与 ToolCallEnd 事件携带的 arguments 一致。
       if let Some(Content::ToolCall(existing)) =
@@ -447,7 +447,7 @@ impl StreamAggregator {
       }
     }
 
-    // ===== 阶段 2：映射停止原因并产出最终消息 =====
+    // 映射停止原因并产出最终消息
     let (reason, raw) = map_stop_reason(self.raw_finish_reason.as_deref());
     if let Some(raw) = raw {
       self.output.raw_stop_reason = Some(raw);
@@ -476,7 +476,7 @@ pub(crate) enum LineFlow {
 mod tests {
   use super::*;
 
-  // ===== 测试辅助构造 =====
+  // 测试辅助构造
 
   // 构造聚合器（provider / model 取自固定测试标识）。
   fn test_aggregator() -> StreamAggregator {
@@ -498,7 +498,7 @@ mod tests {
     events
   }
 
-  // ===== R2 新增单测 =====
+  // 新增单测
 
   /// 场景：StreamAggregator::new() 后 had_done_sentinel 默认 false。
   #[test]
@@ -589,7 +589,7 @@ mod tests {
     }
   }
 
-  // ===== R1 新增单测 =====
+  // 新增单测
 
   /// 场景：finalize 必须把重建后的 ToolCall 完整 arguments 写回 output.content。
   ///
@@ -621,7 +621,7 @@ mod tests {
     let events = collect_events(&mut stream).await;
     match events.last().expect("terminal event") {
       ProviderEvent::Done { message, .. } => {
-        // R1 修复：done 消息的 content 里 arguments 是完整的（不是占位 {}）
+        // done 消息的 content 里 arguments 是完整的（不是占位 {}）
         assert!(matches!(
           message.content.first(),
           Some(Content::ToolCall(call))

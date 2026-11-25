@@ -130,7 +130,7 @@ pub(crate) fn call_list_tools(
   shared: &Arc<PluginShared>,
   acl: &PluginAcl,
 ) -> RiboResult<Vec<u8>> {
-  // ===== 阶段 1：新建一次性 Store =====
+  // 新建一次性 Store
   let state = HostState::new(
     acl.clone(),
     CancellationToken::new(),
@@ -149,7 +149,7 @@ pub(crate) fn call_list_tools(
       .map_err(|e| plugin_internal("list_tools set fuel", e))?;
   }
 
-  // ===== 阶段 2：实例化（start 段 trap 按前缀分类，不得一律 Internal） =====
+  // 实例化（start 段 trap 按前缀分类，不得一律 Internal）
   let instance = linker.instantiate(&mut store, module).map_err(|e| {
     // classify → RiboError 的最小映射：复用 run_tool 的语义
     let classified = classify_wasmtime_error(e);
@@ -182,7 +182,7 @@ pub(crate) fn call_list_tools(
     }
   })?;
 
-  // ===== 阶段 3：调用 list_tools() =====
+  // 调用 list_tools()
   // 结果形态二选一（与 abi_v0_execute 相同的实测校准）：多值 ABI 返回
   // `(ptr, len)` 双 i32；单 i32 返回（Rust PDK）为打包指针，指向
   // 8 字节块 `{ptr: i32 LE, len: i32 LE}`。
@@ -226,7 +226,7 @@ pub(crate) fn call_list_tools(
     }
   };
 
-  // ===== 阶段 4：读回 manifest JSON（ptr == 0 → 空 manifest，随后 parse 报错） =====
+  // 读回 manifest JSON（ptr == 0 → 空 manifest，随后 parse 报错）
   if ptr == 0 || len <= 0 {
     return Err(plugin_exec_failed(
       "<unknown>",
@@ -242,7 +242,7 @@ pub(crate) fn call_list_tools(
     .read(&mut store, ptr as usize, &mut buf)
     .map_err(|e| plugin_internal("read manifest", e))?;
 
-  // ===== 阶段 5：释放结果缓冲区（打包块与 guest 自 alloc 的载荷） =====
+  // 释放结果缓冲区（打包块与 guest 自 alloc 的载荷）
   // guest 按 ABI 约定必须导出 dealloc；缺失时跳过释放（一次性 Store
   // 生命周期内回收，不构成泄漏），不视为错误。
   let dealloc_func = instance.get_func(&mut store, "dealloc");

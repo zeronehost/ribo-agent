@@ -229,10 +229,10 @@ impl RiboError {
     k: impl Into<String>,
     v: impl Into<String>,
   ) -> Self {
-    // ===== 惰性初始化 =====
+    // 惰性初始化
     // 仅在首次写入时分配 HashMap，避免无上下文的错误承担空 map 的开销。
     let context = self.context.get_or_insert_with(|| Box::new(HashMap::new()));
-    // ===== 覆盖写入 =====
+    // 覆盖写入
     // 同键以新值覆盖，语义与 HashMap::insert 一致。
     context.insert(k.into(), v.into());
     self

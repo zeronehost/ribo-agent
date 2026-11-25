@@ -91,7 +91,7 @@ pub enum TrustAction {
 
 #[derive(Debug, Subcommand)]
 pub enum PluginsAction {
-  /// 列出插件条目与只读挂载点（v3 取代插件域）
+  /// 列出插件条目与只读挂载点（取代插件域）
   List,
 }
 
@@ -172,7 +172,7 @@ fn execute_auth(
         None => {
           // 提示用标准库 print!（Windows 控制台 UTF-8 正常）；
           // 密钥用 rpassword 从 TTY 无回显读取（不回显到终端）。
-          // 注意：rpassword::prompt_password 的内部输出通道在 Windows
+          // rpassword::prompt_password 的内部输出通道在 Windows
           // 会把 UTF-8 中文按 GBK 解码导致乱码，故提示与读取分离。
           use std::io::Write;
           print!("请输入 provider `{provider}` 的 API key：");

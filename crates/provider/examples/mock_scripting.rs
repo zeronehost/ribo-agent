@@ -48,8 +48,8 @@ fn text_partial(text: &str) -> Arc<AssistantMessage> {
 
 #[tokio::main]
 async fn main() {
-  // ===== 组装脚本 =====
-  // 注意 Fail 步骤的错误经 pre_stream 阶段门构造（stage = PreStream，
+  // 组装脚本
+  // Fail 步骤的错误经 pre_stream 阶段门构造（stage = PreStream，
   // 契约层 ：建流阶段失败只能是 Err）。
   let steps = vec![
     MockStep::Complete(Arc::new(|_ctx| {
@@ -88,7 +88,7 @@ async fn main() {
   let mock = MockProvider::new(provider_id, vec![model.clone()], steps);
   let ctx = Context::default();
 
-  // ===== 1. Complete：同步完成 =====
+  // 1. Complete：同步完成
   {
     println!("--- Complete ---");
     let options = ProviderOptions {
@@ -109,7 +109,7 @@ async fn main() {
     );
   }
 
-  // ===== 2. Events：后台回放，Done(Stop) 收敛 =====
+  // 2. Events：后台回放，Done(Stop) 收敛
   {
     println!("--- Events ---");
     let options = ProviderOptions {
@@ -125,7 +125,7 @@ async fn main() {
     }
   }
 
-  // ===== 3. StreamFail：错误码经事件路径传递 =====
+  // 3. StreamFail：错误码经事件路径传递
   {
     println!("--- StreamFail ---");
     let options = ProviderOptions {
@@ -142,7 +142,7 @@ async fn main() {
     }
   }
 
-  // ===== 4. Fail：建流阶段直接失败 =====
+  // 4. Fail：建流阶段直接失败
   {
     println!("--- Fail ---");
     let options = ProviderOptions {
@@ -159,7 +159,7 @@ async fn main() {
     }
   }
 
-  // ===== 5. Silent：静默期间取消立即终结 =====
+  // 5. Silent：静默期间取消立即终结
   {
     println!("--- Silent + cancel ---");
     let mut stream_options = StreamOptions::default();
@@ -182,7 +182,7 @@ async fn main() {
     }
   }
 
-  // ===== 6. 脚本耗尽：可预测的 INVALID_REQUEST 错误终结 =====
+  // 6. 脚本耗尽：可预测的 INVALID_REQUEST 错误终结
   {
     println!("--- 耗尽 ---");
     let options = ProviderOptions {
@@ -199,7 +199,7 @@ async fn main() {
     }
   }
 
-  // ===== 调用记录：断言重试次数与降级路径的依据 =====
+  // 调用记录：断言重试次数与降级路径的依据
   println!("--- record ---");
   for call in mock.record() {
     println!(

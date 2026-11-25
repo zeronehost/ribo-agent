@@ -1,6 +1,6 @@
 [package]
 name = "ra-provider"
-description = "Ribo Agent 模型提供方层：Provider 抽象、模型目录、网关（降级/熔断/准入）与 OpenAI 兼容适配器"
+description = "模型提供方抽象、模型目录、网关（降级/熔断/准入）与 OpenAI 兼容适配器"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

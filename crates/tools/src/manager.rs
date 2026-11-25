@@ -28,7 +28,7 @@ pub struct ToolManagerConfig {
   pub failure_threshold: u64,
   /// 熔断打开后的冷却时长，期满进入半开放行单个探测。
   pub cooldown: Duration,
-  /// 不计入熔断记账的错误码白名单（阶段 6 新增）。
+  /// 不计入熔断记账的错误码白名单。
   ///
   /// 命中任一 code 的执行失败**不调用** `record_failure()`，避免该类
   /// 错误触发整个工具面熔断；匹配规则为错误码字符串**完全相等**，
@@ -123,7 +123,7 @@ impl ToolManager {
   pub fn register(&self, tool: Arc<dyn AgentTool>) -> RiboResult<()> {
     let name = tool.schema().name.clone();
 
-    // ===== 阶段 1：Schema 编译（失败则拒绝注册） =====
+    // Schema 编译（失败则拒绝注册）
     let validator = schema::compile_validator(&tool.schema().input_schema)
       .map_err(|e| {
         tracing::warn!(
@@ -133,7 +133,7 @@ impl ToolManager {
         e
       })?;
 
-    // ===== 阶段 2：入注册表 + 缓存校验器 =====
+    // 入注册表 + 缓存校验器
     self.registry.registry(tool)?;
     self
       .validators
@@ -149,7 +149,7 @@ impl ToolManager {
   /// 与逐个调用 [`ToolManager::register`] 的区别在于**原子性**：批次内
   /// 任意工具预检失败（Schema 非法、批内重名、与已注册工具冲突）时，
   /// **不写入任何工具**（零写入），适合插件等「全成或全不成」的注册
-  /// 场景（阶段 6）。
+  /// 场景。
   ///
   /// # Errors
   ///
@@ -165,7 +165,7 @@ impl ToolManager {
     &self,
     tools: Vec<Arc<dyn AgentTool>>,
   ) -> RiboResult<()> {
-    // ===== 阶段 1：全量预检（零写入） =====
+    // 全量预检（零写入）
     // 批内重名用 HashSet 检测；与已有工具的冲突经注册表查询确认；
     // Schema 编译在预检期完成，通过后随写入阶段直接入缓存。
     let mut seen: HashSet<String> = HashSet::with_capacity(tools.len());
@@ -181,7 +181,7 @@ impl ToolManager {
       prepared.push((name, tool.clone(), validator));
     }
 
-    // ===== 阶段 2：写入（注册表 + 校验器缓存） =====
+    // 写入（注册表 + 校验器缓存）
     // 写锁中毒时改用 into_inner 取回守卫继续写入：HashMap 本身未被破坏，
     // 中毒仅代表其他线程在持锁期间 panic，放弃整批写入反而扩大故障面。
     let mut cache = self
@@ -198,7 +198,7 @@ impl ToolManager {
   /// 按工具名前缀批量注销，并同步清理其校验器缓存，返回移除数量。
   ///
   /// 典型用途：按插件 ID 前缀（`{plugin_id}__`）一次性移除该插件的
-  /// 全部工具（阶段 6）。
+  /// 全部工具。
   ///
   /// # Panics
   ///
@@ -284,7 +284,7 @@ impl ToolManager {
   ) -> RiboResult<ToolExecutionResult> {
     let name = call.name.as_str();
 
-    // ===== 阶段 1：熔断准入 =====
+    // 熔断准入
     // probe 标记本请求是否为半开探测：终结时需回报，取消时需归还资格。
     let probe = match self.circuit.admit() {
       Admission::Allow => false,
@@ -295,12 +295,12 @@ impl ToolManager {
       }
     };
 
-    // ===== 阶段 2：取工具（未注册不记账，属用法错误） =====
+    // 取工具（未注册不记账，属用法错误）
     let Some(tool) = self.registry.get(name) else {
       return Err(not_found(name));
     };
 
-    // ===== 阶段 3：参数预处理（入参问题不计熔断失败） =====
+    // 参数预处理（入参问题不计熔断失败）
     // 预处理失败属入参错误：记 warn 供排查，但不计入熔断失败
     let args =
       tool
@@ -312,7 +312,7 @@ impl ToolManager {
           );
         })?;
 
-    // ===== 阶段 4：Schema 校验（读锁内取缓存副本，缩小临界区） =====
+    // Schema 校验（读锁内取缓存副本，缩小临界区）
     let validator = {
       let guard = self.validators.read().expect("validator lock poisoned");
       guard.get(name).cloned()
@@ -329,7 +329,7 @@ impl ToolManager {
       tracing::warn!(tool = %name, "validator cache miss, skip schema validation");
     }
 
-    // ===== 阶段 5：执行与取消竞争 =====
+    // 执行与取消竞争
     // biased 保证取消信号优先被轮询；工具实例克隆进 select 分支，
     // 与管理器生命周期解耦。
     let tool = tool.clone();
@@ -340,7 +340,7 @@ impl ToolManager {
       result = tool.execute(&call.id, args, ctx) => Some(result),
     };
 
-    // ===== 阶段 6：终结记账 =====
+    // 终结记账
     match outcome {
       Some(Ok(result)) => {
         self.circuit.record_success();
@@ -356,7 +356,7 @@ impl ToolManager {
         Err(e)
       }
       Some(Err(e)) => {
-        // ===== 白名单分支（阶段 6） =====
+        // 白名单分支
         // 命中 non_counting_codes 的失败不计入熔断记账：半开探测需归还
         // 探测资格（与取消路径一致），避免探测资格永久占用。
         if self.non_counting_codes.contains(&e.code()) {
@@ -402,7 +402,7 @@ mod tests {
     types::ToolOutput,
   };
 
-  // ===== 测试辅助 =====
+  // 测试辅助
 
   /// 测试工具的执行行为。
   #[derive(Clone, Copy)]
@@ -553,7 +553,7 @@ mod tests {
     ToolContext::new(token, Arc::new(|_| {}))
   }
 
-  // ===== 用例 =====
+  // 用例
 
   /// 场景：execute 成功路径——返回工具产出内容，多次成功后仍可调用。
   ///
@@ -611,7 +611,7 @@ mod tests {
       .register(TestTool::controlled("typed", Behavior::Succeed))
       .expect("register typed tool");
 
-    // ===== 阶段 1：预处理失败连续 3 次（超过阈值 2） =====
+    // 预处理失败连续 3 次（超过阈值 2）
     for _ in 0..3 {
       let err = manager
         .execute(
@@ -623,7 +623,7 @@ mod tests {
       assert_eq!(err.code(), INVALID_ARGUMENTS);
     }
 
-    // ===== 阶段 2：Schema 校验失败（类型错误）连续 3 次 =====
+    // Schema 校验失败（类型错误）连续 3 次
     for _ in 0..3 {
       let err = manager
         .execute(
@@ -635,7 +635,7 @@ mod tests {
       assert_eq!(err.code(), INVALID_ARGUMENTS);
     }
 
-    // ===== 阶段 3：熔断仍闭合——合法调用成功 =====
+    // 熔断仍闭合——合法调用成功
     let result = manager
       .execute(
         &call("typed", json!({ "x": "v" })),
@@ -661,7 +661,7 @@ mod tests {
       .expect("register calm tool");
     let ctx = ToolContext::detached();
 
-    // ===== 阶段 1：两次业务失败达到阈值 =====
+    // 两次业务失败达到阈值
     for _ in 0..2 {
       let err = manager
         .execute(&call("boom", json!({ "x": "v" })), &ctx)
@@ -670,7 +670,7 @@ mod tests {
       assert_eq!(err.code(), EXEC_FAILED);
     }
 
-    // ===== 阶段 2：冷却期内一律拒绝（含原本会成功的工具） =====
+    // 冷却期内一律拒绝（含原本会成功的工具）
     for name in ["boom", "calm"] {
       let err = manager
         .execute(&call(name, json!({ "x": "v" })), &ctx)
@@ -694,7 +694,7 @@ mod tests {
       .expect("register calm tool");
     let ctx = ToolContext::detached();
 
-    // ===== 阶段 1：打满失败 → 熔断打开 =====
+    // 打满失败 → 熔断打开
     for _ in 0..2 {
       manager
         .execute(&call("boom", json!({ "x": "v" })), &ctx)
@@ -702,17 +702,17 @@ mod tests {
         .unwrap_err();
     }
 
-    // ===== 阶段 2：等待冷却期满进入半开 =====
+    // 等待冷却期满进入半开
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // ===== 阶段 3：半开探测成功 → 闭合 =====
+    // 半开探测成功 → 闭合
     let result = manager
       .execute(&call("calm", json!({ "x": "v" })), &ctx)
       .await
       .expect("probe should be admitted after cooldown and succeed");
     assert_eq!(first_text(&result), "ok");
 
-    // ===== 阶段 4：恢复闭合后继续正常放行 =====
+    // 恢复闭合后继续正常放行
     manager
       .execute(&call("calm", json!({ "x": "v" })), &ctx)
       .await
@@ -734,7 +734,7 @@ mod tests {
       .expect("register calm tool");
     let ctx = ToolContext::detached();
 
-    // ===== 阶段 1：打满失败 → 打开 → 冷却期满进入半开 =====
+    // 打满失败 → 打开 → 冷却期满进入半开
     for _ in 0..2 {
       manager
         .execute(&call("boom", json!({ "x": "v" })), &ctx)
@@ -743,14 +743,14 @@ mod tests {
     }
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // ===== 阶段 2：探测失败 → 立即重新打开 =====
+    // 探测失败 → 立即重新打开
     let err = manager
       .execute(&call("boom", json!({ "x": "v" })), &ctx)
       .await
       .unwrap_err();
     assert_eq!(err.code(), EXEC_FAILED);
 
-    // ===== 阶段 3：新冷却期内拒绝一切请求 =====
+    // 新冷却期内拒绝一切请求
     let err = manager
       .execute(&call("calm", json!({ "x": "v" })), &ctx)
       .await
@@ -797,14 +797,14 @@ mod tests {
       .register(TestTool::controlled("calm", Behavior::Succeed))
       .expect("register calm tool");
 
-    // ===== 阶段 1：单次失败即打开熔断（阈值 1） =====
+    // 单次失败即打开熔断（阈值 1）
     let err = manager
       .execute(&call("boom", json!({ "x": "v" })), &ToolContext::detached())
       .await
       .unwrap_err();
     assert_eq!(err.code(), EXEC_FAILED);
 
-    // ===== 阶段 2：冷却期满进入半开，用已取消的 ctx 发探测请求 =====
+    // 冷却期满进入半开，用已取消的 ctx 发探测请求
     tokio::time::sleep(Duration::from_millis(60)).await;
     let err = manager
       .execute(&call("boom", json!({ "x": "v" })), &cancelled_ctx())
@@ -812,7 +812,7 @@ mod tests {
       .unwrap_err();
     assert_eq!(err.code(), CANCELLED);
 
-    // ===== 阶段 3：探测资格已归还——新请求可探测并成功闭合 =====
+    // 探测资格已归还——新请求可探测并成功闭合
     let result = manager
       .execute(&call("calm", json!({ "x": "v" })), &ToolContext::detached())
       .await
@@ -854,7 +854,7 @@ mod tests {
     assert_eq!(err.code(), NOT_FOUND);
   }
 
-  // ===== 阶段 6 · Step 0 验收 =====
+  // 验收用例
 
   /// 场景：`register_batch` 原子性——批次内第 3 个工具与已注册工具
   /// 冲突时整批拒绝，**0 个工具写入**。
@@ -912,7 +912,7 @@ mod tests {
     }
   }
 
-  /// 场景：方案 A 白名单——白名单内错误码（插件超时）连续超过阈值
+  /// 场景：白名单——白名单内错误码（插件超时）连续超过阈值
   /// **不打开熔断**，内置工具不受影响。
   #[tokio::test]
   async fn whitelisted_plugin_timeout_does_not_trip_breaker() {

@@ -1,6 +1,6 @@
-//! `ra-plugins`：Ribo Agent 插件能力 crate（阶段 6）。
+//! `ra-plugins`：Ribo Agent 插件能力 crate。
 //!
-//! 让外部插件（native Rust 与 Step B 的 WASM guest）产出的工具经统一
+//! 让外部插件（native Rust 与 WASM guest）产出的工具经统一
 //! 声明边界注入 [`ToolManager`](ra_tools::manager::ToolManager)，agent
 //! 主循环零改动。模块分层：
 //!
@@ -11,7 +11,7 @@
 //! 4. **能力层**：[`acl::UrlPolicy`] / [`acl::PluginAcl`]（出站 URL 裁决
 //!    与插件能力声明，`http-proxy` 等宿主能力的 ACL 基础）；
 //! 5. **权威层**：[`authority::AuthorityManifest`]（宿主侧载的信任源，
-//!    guest 自述降级为交叉校验——Step C B3.2 信任链闭合）。
+//!    guest 自述降级为交叉校验，信任链闭合）。
 //!
 //! 错误码统一以 `plugin.plugin_*` 为前缀（见 [`error`]）。
 //!

@@ -40,7 +40,7 @@ pub struct CliArgs {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-  // ===== 阶段 1：参数与配置加载 =====
+  // 参数与配置加载
   let args = CliArgs::parse();
   // 未指定 --config 时向上探测；显式指定但文件不存在 → 报错退出
   let config_path = match resolve_config_path(args.config.as_deref()) {
@@ -51,7 +51,7 @@ async fn main() -> ExitCode {
     }
   };
 
-  // ===== 阶段 1.5：一次性子命令（装配前执行、打印后退出）=====
+  // 一次性子命令（装配前执行、打印后退出）
   if let Some(command) = &args.command {
     match execute(
       command,
@@ -81,7 +81,7 @@ async fn main() -> ExitCode {
     return ExitCode::FAILURE;
   }
 
-  // ===== 阶段 2：日志落文件（stdout 只留对话渲染）=====
+  // 日志落文件（stdout 只留对话渲染）
   // guard 持有到进程结束：非阻塞写入线程随 guard drop 停止，
   // 提前 drop 会丢尾部日志
   // 全局域启用 → 日志写全局目录；否则写项目目录（失败自动回退）
@@ -95,7 +95,7 @@ async fn main() -> ExitCode {
       return ExitCode::FAILURE;
     }
   };
-  // 启动摘要补记到日志文件：订阅器此刻才就绪，配置加载阶段（阶段 1）
+  // 启动摘要补记到日志文件：订阅器此刻才就绪，此前配置加载
   // 产生的 tracing 记录不会落盘，故 mode / warnings 在此集中补记。
   tracing::info!(
     mode = ?outcome.mode,
@@ -107,7 +107,7 @@ async fn main() -> ExitCode {
     tracing::warn!(warning = %w, "config warning");
   }
 
-  // ===== 阶段 3：装配 =====
+  // 装配
   let options = ra_cli::config::assemble::AssembleOptions {
     allow_duplicate_plugin_id: args.allow_duplicate_plugin_id,
   };
@@ -124,7 +124,7 @@ async fn main() -> ExitCode {
     }
   };
 
-  // ===== 阶段 4：REPL 主循环 =====
+  // REPL 主循环
   let repl = Repl::new(
     StdinLineSource::new(),
     session,

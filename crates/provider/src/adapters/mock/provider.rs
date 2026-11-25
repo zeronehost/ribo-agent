@@ -111,7 +111,7 @@ impl Provider for MockProvider {
     &self,
     options: ProviderOptions<'_>,
   ) -> RiboResult<ProviderEventStream> {
-    // ===== 阶段 1：登记调用 + 弹出步骤 =====
+    // 登记调用 + 弹出步骤
     // 先记录后弹出：即使脚本耗尽，调用记录也必须完整（断言重试次数依赖它）。
     // 序号先于 push 取出：push 会可变借用 calls，参数内再取 len 会冲突。
     {
@@ -125,7 +125,7 @@ impl Provider for MockProvider {
     }
     let step = self.steps.lock().unwrap().pop_front();
 
-    // ===== 阶段 2：建流并按步骤类型分派 =====
+    // 建流并按步骤类型分派
     let (producer, stream) = ProviderEventStreamProducer::build();
     match step {
       // 建流失败：直接返回 Err（PreStream 通道）
@@ -226,7 +226,7 @@ fn spawn_mock_replay(
     // producer 以 Option 持有：done/error 消费 self，每条路径先 take
     let mut producer = Some(producer);
 
-    // ===== 阶段 1：Start 自动补发 =====
+    // Start 自动补发
     // 归属与时间戳在此统一注入，脚本步骤不携带 Start。
     let partial = Arc::new(AssistantMessage::empty(
       provider.as_str(),
@@ -237,7 +237,7 @@ fn spawn_mock_replay(
       p.push(ProviderEvent::Start { partial });
     }
 
-    // ===== 阶段 2：逐事件回放（限速 + 取消监听）=====
+    // 逐事件回放（限速 + 取消监听）
     // 记录最后一个内容事件的 partial：Events 步骤的 Done 最终消息由它收敛。
     let mut last_partial: Option<AssistantMessage> = None;
     for event in events {
@@ -269,7 +269,7 @@ fn spawn_mock_replay(
       }
     }
 
-    // ===== 阶段 3：收尾终结 =====
+    // 收尾终结
     match terminal {
       // StreamFail：以脚本指定的原因与错误码终结
       // （StopReason 不实现 Copy：message 携带克隆，原值留给 error）
@@ -323,7 +323,7 @@ fn spawn_mock_silent(
       p.push(ProviderEvent::Start { partial });
     }
 
-    // ===== 静默等待：取消与到期竞争 =====
+    // 静默等待：取消与到期竞争
     tokio::select! {
       biased;
       _ = cancel.cancelled() => {

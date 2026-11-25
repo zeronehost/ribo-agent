@@ -81,17 +81,17 @@ impl Provider for OpenAiCompatibleAdapter {
       options,
     } = options;
 
-    // ===== 阶段 1：本地校验（PreStream）=====
+    // 本地校验（PreStream）
     // 模型归属 / 鉴权配置 / 采样参数合法性由共享骨架统一校验。
     let api_key = self.core.validate(model, options, 2.0)?;
 
-    // ===== 阶段 2：构造请求（PreStream）=====
+    // 构造请求（PreStream）
     // 端点取自模型快照（支持按模型代理）；请求体由 build_params 模块负责。
     let endpoint =
       format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
     let body = build_params::build(model, context, options);
 
-    // ===== 阶段 3：发送并等待响应头（PreStream，受 timeout 约束）=====
+    // 发送并等待响应头（PreStream，受 timeout 约束）
     let response = self
       .core
       .send_stream(&endpoint, model, options, |req| {
@@ -107,10 +107,10 @@ impl Provider for OpenAiCompatibleAdapter {
       "response headers received"
     );
 
-    // ===== 阶段 4：建立事件通道（PreStream）=====
+    // 建立事件通道（PreStream）
     let (producer, stream) = ProviderEventStreamProducer::build();
 
-    // ===== 阶段 5：spawn 解析任务（InStream）=====
+    // spawn 解析任务（InStream）
     // 建流 Promise：此处返回 Ok 不保证已有任何内容事件；
     // 首字迟滞由 TTFT 守卫或看门狗处理，绝不在建流路径等待首包。
     sse::spawn_parse_task(
@@ -356,7 +356,7 @@ mod tests {
   async fn maps_transport_error() {
     let addr = "127.0.0.1:1".parse::<SocketAddr>().expect("地址");
     // no_proxy：带 HTTP 代理的环境会把连接失败顶替为 502，connect 断言
-    // 落空（B2.4 代理陷阱）——本测试直接构造 no_proxy 适配器
+    // 落空（代理陷阱）——本测试直接构造 no_proxy 适配器
     let client = reqwest::Client::builder()
       .no_proxy()
       .build()
@@ -543,7 +543,7 @@ mod tests {
 
   /// 场景：SSE 在最后一个帧后直接 EOF（无 [DONE] 哨兵）。
   ///
-  /// 预期：R2 截断检测生效——finalize 收敛为 Error + STREAM_INTERRUPTED，
+  /// 预期：截断检测生效——finalize 收敛为 Error + STREAM_INTERRUPTED，
   /// 已聚合内容（"x"）仍保留在 terminal_error 消息里。
   #[tokio::test]
   async fn stream_eof_without_done_converges_to_error() {
@@ -566,7 +566,7 @@ mod tests {
     let message = stream.result().await.expect("EOF 后应收敛");
     handle.await.expect("服务端任务不应 panic");
 
-    // R2 修复：EOF 无 [DONE] 应收敛为 Error + STREAM_INTERRUPTED
+    // 修复：EOF 无 [DONE] 应收敛为 Error + STREAM_INTERRUPTED
     assert_eq!(message.stop_reason, ra_core::message::StopReason::Error);
     assert!(message.content.len() == 1, "已聚合内容应保留");
     assert!(

@@ -49,7 +49,7 @@ use crate::traits::{Plugin, ToolManifest};
 /// ```
 pub fn plugin_aware_tool_manager_config() -> ToolManagerConfig {
   let mut cfg = ToolManagerConfig::default();
-  // 装配期追加（决策 1）：精确匹配，无通配
+  // 装配期追加：精确匹配，无通配
   cfg.non_counting_codes.push(PLUGIN_TIMEOUT);
   cfg.non_counting_codes.push(PLUGIN_FORBIDDEN);
   cfg
@@ -106,7 +106,7 @@ impl PluginRegistry {
   pub fn register(&self, plugin: Arc<dyn Plugin>) -> RiboResult<()> {
     let pid = plugin.id().to_string();
 
-    // ===== 阶段 1：全量校验（零写入） =====
+    // 全量校验（零写入）
     validate_plugin_id(&pid)?;
     if self.plugins.contains_key(&pid) {
       tracing::warn!(plugin = %pid, "duplicate plugin registration refused");
@@ -122,18 +122,18 @@ impl PluginRegistry {
         .map_err(|e| plugin_schema_invalid(&pid, &m.name, e.message()))?;
     }
 
-    // ===== 阶段 2：生成全部 AgentTool（仍零写入） =====
+    // 生成全部 AgentTool（仍零写入）
     let adapter = PluginToolAdapter::new(plugin.clone());
     let tools: Vec<Arc<dyn ra_tools::traits::AgentTool>> =
       manifests.iter().map(|m| adapter.make_tool(m)).collect();
 
-    // ===== 阶段 3：原子批量注入（全成或全不成） =====
+    // 原子批量注入（全成或全不成）
     self
       .tool_manager
       .register_batch(tools)
       .map_err(|e| plugin_batch_failed(&pid, e.message()))?;
 
-    // ===== 阶段 4：登记注册表 =====
+    // 登记注册表
     self.plugins.insert(pid.clone(), plugin);
     tracing::info!(plugin = %pid, tools = manifests.len(), "plugin registered");
     Ok(())
@@ -368,7 +368,7 @@ mod tests {
     ids.sort();
     assert_eq!(ids, vec!["a", "b"]);
   }
-  /// 场景：装配期白名单（决策 1 / 验收）——连续插件超时 /
+  /// 场景：装配期白名单——连续插件超时 /
   /// 越权**不打开**工具面熔断（默认配置下第 5 次连续失败即熔断，
   /// 全部请求将被 `tool.rate_limited` 拒绝）。
   #[tokio::test]

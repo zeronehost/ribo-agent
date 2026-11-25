@@ -98,8 +98,8 @@ impl BaseAgent {
   ///
   /// # Panics
   ///
-  /// 会话创建失败时 panic（内存实现不会发生；持久化实现随阶段 4
-  /// 改为错误返回）。
+  /// 会话创建失败时 panic（内存实现不会发生；若未来引入持久化实现
+  /// 再改为错误返回）。
   pub async fn follow_up(&self, session_key: &str, message: Message) {
     let session = self
       .sessions
@@ -421,7 +421,7 @@ mod tests {
     );
     let agent = Arc::new(agent);
 
-    // ===== 阶段 1：首次运行进入工具挂起 =====
+    // 首次运行进入工具挂起
     let first = {
       let agent = agent.clone();
       tokio::spawn(async move { agent.prompt("s1", "hi").await })
@@ -430,14 +430,14 @@ mod tests {
       tokio::task::yield_now().await;
     }
 
-    // ===== 阶段 2：重入被 CAS 门禁拒绝 =====
+    // 重入被 CAS 门禁拒绝
     let err = agent
       .prompt("s1", "second")
       .await
       .expect_err("重入应被拒绝");
     assert_eq!(err.code(), SESSION_BUSY);
 
-    // ===== 阶段 3：stop 触发取消，首次运行以中止收敛 =====
+    // stop 触发取消，首次运行以中止收敛
     assert!(agent.stop("s1").await);
     let messages = first
       .await

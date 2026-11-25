@@ -32,7 +32,7 @@ pub struct CalculatorTool {
 
 impl CalculatorTool {
   fn new() -> Self {
-    // ===== 求值上下文：evalexpr 无内置 pi / e / abs，构造期注入 =====
+    // 求值上下文：evalexpr 无内置 pi / e / abs，构造期注入
     // 静态字面构造，失败只可能是宏用法错误，构造期 expect 合理
     let context = context_map! {
       "pi" => float core::f64::consts::PI,
@@ -97,7 +97,7 @@ impl AgentTool for CalculatorTool {
     args: serde_json::Value,
     _ctx: &ToolContext,
   ) -> RiboResult<ToolExecutionResult> {
-    // ===== 取参：缺失或非字符串 → INVALID_ARGUMENTS（不记账） =====
+    // 取参：缺失或非字符串 → INVALID_ARGUMENTS（不记账）
     let expr =
       args
         .get("expression")
@@ -105,12 +105,12 @@ impl AgentTool for CalculatorTool {
         .ok_or_else(|| {
           invalid_arguments("calculator", "field 'expression' must be a string")
         })?;
-    // ===== 求值：语法 / 语义错误（含整数除零、溢出）→ EXEC_FAILED =====
+    // 求值：语法 / 语义错误（含整数除零、溢出）→ EXEC_FAILED
     let value = eval_with_context(expr, &self.context).map_err(|e| {
       exec_failed("calculator", format!("expression error: {e}"))
     })?;
 
-    // ===== 结果归一：仅接受数值结果；NaN / 无穷大转文本表示 =====
+    // 结果归一：仅接受数值结果；NaN / 无穷大转文本表示
     let (value_text, details) = match value {
       Value::Int(i) => (format!("{i}"), serde_json::json!({ "result": i })),
       Value::Float(f) if f.is_nan() => {

@@ -1,6 +1,6 @@
-//! `.wasm` 签名与来源校验（Step C，「来源校验」）。
+//! `.wasm` 签名与来源校验（「来源校验」）。
 //!
-//! **信任链的最后一项**：B3.2 的 [`AuthorityManifest`](crate::authority::AuthorityManifest)
+//! **信任链的最后一项**：[`AuthorityManifest`](crate::authority::AuthorityManifest)
 //! 保证「guest 自述与宿主侧载清单一致」，但不保证清单与 wasm 字节本身
 //! 来自可信发布方——攻击者可同时替换 wasm 与清单。本模块以宿主侧载的
 //! Ed25519 公钥白名单为信任锚，验证发布方签名，并把签名载荷与
@@ -50,12 +50,12 @@ const DOMAIN_PREFIX: &[u8] = b"ribo-plugin-provenance-v1\0";
 
 /// `algo` 字段的唯一合法取值（JSON 信任清单格式约定）。
 ///
-/// 验签实现固定为 Ed25519（ring，C3 零改动）：写侧恒输出该值，读侧
+/// 验签实现固定为 Ed25519（ring）：写侧恒输出该值，读侧
 /// 仅校验 `algo` 出现时取值必须命中——缺省视为 `ed25519`（前向兼容），
 /// 其它取值在解析期拒绝，不进入验签路径。
 pub const KEY_ALGO_ED25519: &str = "ed25519";
 
-// ===== hex 编解码（避免为 32/64 字节引入额外依赖） =====
+// hex 编解码（避免为 32/64 字节引入额外依赖）
 
 fn hex_encode(bytes: &[u8]) -> String {
   const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -166,7 +166,7 @@ pub struct VerificationPolicy {
 }
 
 impl VerificationPolicy {
-  /// 开发 / CI 策略：不强制签名（维持 B3.2 既有语义）。
+  /// 开发 / CI 策略：不强制签名。
   pub fn development() -> Self {
     Self {
       require_signature: false,
@@ -235,7 +235,7 @@ impl Provenance {
 /// 经过来源校验封装的权威材料：manifest + 原始 JSON + 可选签名块。
 #[derive(Debug, Clone)]
 pub struct SignedAuthority {
-  /// B3.2 权威清单（guest 自述的交叉校验基准）。
+  /// 权威清单（guest 自述的交叉校验基准）。
   pub manifest: AuthorityManifest,
   /// manifest 原始字节：签名载荷的摘要输入（保留原始形态，禁止重序列化）。
   pub manifest_bytes: Vec<u8>,
@@ -249,7 +249,7 @@ impl SignedAuthority {
   /// # Errors
   ///
   /// manifest / provenance 非法 → `plugin.plugin_signature_invalid` /
-  /// `plugin.plugin_exec_failed`（manifest 复用 B3.2 解析错误）。
+  /// `plugin.plugin_exec_failed`（manifest 复用其解析错误）。
   pub fn from_json(
     manifest_bytes: &[u8],
     provenance_bytes: Option<&[u8]>,

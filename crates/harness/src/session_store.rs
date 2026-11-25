@@ -92,15 +92,15 @@ impl JsonlSessionStore {
       return Ok(());
     }
 
-    // ===== 阶段 1：键编码与路径解析 =====
+    // 键编码与路径解析
     let encoded = SessionKeyCodec::encode(key)?;
     let path = self.root.join(format!("{encoded}.jsonl"));
 
-    // ===== 阶段 2：逐键写锁（同键写入绝不并发）=====
+    // 逐键写锁（同键写入绝不并发）
     let lock = self.write_lock(&encoded);
     let _guard = lock.lock().await;
 
-    // ===== 阶段 3：一次组装、一次追加 =====
+    // 一次组装、一次追加
     fs::create_dir_all(&self.root).await.map_err(|err| {
       session_create_failed(key, format!("create sessions dir: {err}"))
     })?;
@@ -313,7 +313,7 @@ impl JsonlSessionStore {
     let lines: Vec<&str> = content.lines().collect();
     let last = lines.len().saturating_sub(1);
 
-    // ===== 逐行解析：任何单行问题都只记诊断，不中断回放 =====
+    // 逐行解析：任何单行问题都只记诊断，不中断回放
     for (index, raw) in lines.iter().enumerate() {
       let trimmed = raw.trim();
       if trimmed.is_empty() {
@@ -695,7 +695,7 @@ mod tests {
     Message::Assistant(msg)
   }
 
-  /// ST-01：append 后 load 能完整回放，不重复、首行为 meta。
+  /// append 后 load 能完整回放，不重复、首行为 meta。
   #[tokio::test]
   async fn append_then_load_roundtrips_messages() {
     let dir =
@@ -716,7 +716,7 @@ mod tests {
     assert!(first_line.contains("\"type\":\"meta\""));
   }
 
-  /// ST-02：破损尾行 + 未知 type 行被跳过并记诊断，不报错。
+  /// 破损尾行 + 未知 type 行被跳过并记诊断，不报错。
   #[tokio::test]
   async fn load_tolerates_torn_tail_and_unknown_records() {
     let dir = crate::test_util::test_dir(
@@ -766,7 +766,7 @@ mod tests {
     assert!(codes.contains(&ReplayDiagnosticCode::TornTail));
   }
 
-  /// ST-03：键编码不含分隔符、短键可往返、长键被截断且稳定。
+  /// 键编码不含分隔符、短键可往返、长键被截断且稳定。
   #[test]
   fn key_codec_roundtrip_and_length_cap() {
     // 短键：纯 ASCII 可往返
@@ -793,7 +793,7 @@ mod tests {
     assert!(SessionKeyCodec::encode("").is_err());
   }
 
-  /// ST-04：list_keys 列出键、delete 幂等。
+  /// list_keys 列出键、delete 幂等。
   #[tokio::test]
   async fn delete_is_idempotent_and_list_keys_roundtrip() {
     let dir = crate::test_util::test_dir(

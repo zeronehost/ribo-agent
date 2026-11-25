@@ -39,7 +39,7 @@ use crate::wasm::storage::Storage;
 ///
 /// 若把 Storage / LogRateLimiter / Client 放进每次新建的 HostState，
 /// Stateless Store 模型会让它们每次调用重置——违背「插件级、进程内」
-/// 语义。三者均 `Send + Sync`（纪律 2）。
+/// 语义。三者均 `Send + Sync`。
 pub struct PluginShared {
   /// HTTP 客户端：直接共享 [`PluginRuntime::http_client`] 的 Arc，连接池
   /// 进程级唯一（不再每插件各建一份）。
@@ -104,15 +104,15 @@ impl WasmPluginHost {
     config: Option<serde_json::Value>,
     acl: &PluginAcl,
   ) -> RiboResult<Arc<dyn Plugin>> {
-    // 无权威清单：维持 Step B 语义（采信 guest 自述，开发 / CI 模式）
+    // 无权威清单：采信 guest 自述（开发 / CI 模式）
     self.load_with_authority(wasm_bytes, config, acl, None)
   }
 
-  /// 带权威清单的加载（Step C B3.2，「权威 schema 来源」）。
+  /// 带权威清单的加载（「权威 schema 来源」）。
   ///
   /// `authority = Some(m)` 时宿主以侧载清单为信任源：plugin_id 与
   /// 工具清单逐项比对，与 guest `list_tools()` 自述不符即拒绝加载
-  /// （信任链闭合，生产模式必用）；`None` 维持 Step B 语义。
+  /// （信任链闭合，生产模式必用）；`None` 维持采信 guest 自述的默认语义。
   ///
   /// # Errors
   ///
@@ -128,7 +128,7 @@ impl WasmPluginHost {
     self.load_inner(wasm_bytes, config, acl, authority)
   }
 
-  /// 带来源校验的加载（Step C 签名校验，「来源校验」）。
+  /// 带来源校验的加载（签名校验，「来源校验」）。
   ///
   /// 与 [`load_with_authority`] 的差别：在**编译之前**验证 Ed25519 签名，
   /// 载荷绑定 wasm 摘要 + 原始 manifest 摘要 + plugin_id。生产策略下
@@ -146,7 +146,7 @@ impl WasmPluginHost {
     authority: Option<&SignedAuthority>,
     policy: &VerificationPolicy,
   ) -> RiboResult<Arc<dyn Plugin>> {
-    // ===== 阶段 0：来源校验（必须早于编译，防不可信字节进入 JIT） =====
+    // 来源校验（必须早于编译，防不可信字节进入 JIT）
     if let Some(auth) = authority {
       verify_provenance(wasm_bytes, auth, policy)?;
     } else if policy.require_signature {
@@ -157,7 +157,7 @@ impl WasmPluginHost {
     self.load_inner(wasm_bytes, config, acl, authority.map(|a| &a.manifest))
   }
 
-  /// 加载主体（B3.2 权威清单校验 + 编译 + 注册 manifest）。
+  /// 加载主体（权威清单校验 + 编译 + 注册 manifest）。
   fn load_inner(
     &self,
     wasm_bytes: &[u8],
@@ -165,14 +165,14 @@ impl WasmPluginHost {
     acl: &PluginAcl,
     authority: Option<&crate::authority::AuthorityManifest>,
   ) -> RiboResult<Arc<dyn Plugin>> {
-    // ===== 阶段 1：编译（缓存键 = 内容哈希；多 host 只编译一次） =====
+    // 编译（缓存键 = 内容哈希；多 host 只编译一次）
     let module = self
       .runtime
       .module_cache
       .get_or_compile(&self.runtime.engine, wasm_bytes)
       .map_err(|e| crate::error::plugin_internal("module compile", e))?;
 
-    // ===== 阶段 2：插件级共享状态（加载期一次，跨 execute 存活） =====
+    // 插件级共享状态（加载期一次，跨 execute 存活）
     let shared = Arc::new(PluginShared {
       client: Arc::clone(&self.runtime.http_client),
       storage: Arc::new(Storage::new(&self.runtime.cfg, acl)),
@@ -180,7 +180,7 @@ impl WasmPluginHost {
       config: Arc::new(self.runtime.cfg.clone()),
     });
 
-    // ===== 阶段 3：list_tools（加载期一次；结果缓存） =====
+    // list_tools（加载期一次；结果缓存）
     let raw = abi::call_list_tools(
       &self.runtime.engine,
       &self.linker,
@@ -190,7 +190,7 @@ impl WasmPluginHost {
     )?;
     let manifest = abi::parse_manifest(&raw)?;
 
-    // ===== 阶段 3.5：权威清单校验（Step C B3.2 信任链闭合）=====
+    // 权威清单校验（信任链闭合）
     if let Some(auth) = authority {
       crate::authority::check_authority(
         &manifest.plugin_id,
@@ -199,7 +199,7 @@ impl WasmPluginHost {
       )?;
     }
 
-    // ===== 阶段 4：plugin_id 校验（前缀合法性前置） =====
+    // plugin_id 校验（前缀合法性前置）
     crate::adapter::validate_plugin_id(&manifest.plugin_id)?;
 
     Ok(Arc::new(WasmPlugin {
@@ -236,7 +236,7 @@ pub struct WasmPlugin {
 }
 
 impl WasmPlugin {
-  /// config 信封构造（方案 A）。
+  /// config 信封构造。
   ///
   /// `None` 原样透传；`Some(cfg)` 包裹为 `{"config": cfg, "args": args}`，
   /// 保证每次 execute 都能拿到配置（PDK 经 `ribo::config()` 透明解包，
@@ -267,7 +267,7 @@ impl Plugin for WasmPlugin {
     self.manifests.clone()
   }
 
-  /// 执行：args 信封 → 查工具超时 / 内存覆写 → 两阶段 min 阶段 1
+  /// 执行：args 信封 → 查工具超时 / 内存覆写 → 合并内存覆写
   /// （工具级与插件级内存覆写合并进 acl 克隆，只收紧）→ `run_tool`。
   ///
   /// # Errors
@@ -279,10 +279,10 @@ impl Plugin for WasmPlugin {
     args: serde_json::Value,
     ctx: &ToolContext,
   ) -> RiboResult<serde_json::Value> {
-    // ===== 阶段 1：config 经 args 信封注入（与 Stateless Store 一致） =====
+    // config 经 args 信封注入（与 Stateless Store 一致）
     let args = self.build_args_envelope(args);
 
-    // ===== 阶段 2：查工具声明（超时默认 2s；未知工具拒绝） =====
+    // 查工具声明（超时默认 2s；未知工具拒绝）
     let (timeout, mem_override) = self
       .manifests
       .iter()
@@ -303,9 +303,9 @@ impl Plugin for WasmPlugin {
         .with_context("tool_name", tool)
       })?;
 
-    // ===== 阶段 3：两阶段 min 的阶段 1——工具级覆写合并进 acl 克隆 =====
+    // 两级 min 的第一级：工具级覆写合并进 acl 克隆
     //   min(工具级 ToolManifest.memory_limit_bytes, 插件级 PluginAcl.memory_limit_bytes)
-    // 阶段 2「min(合并值, 进程默认)」由 HostState::new 完成。
+    // 第二级 min(合并值, 进程默认) 由 HostState::new 完成。
     let mut acl = self.acl.clone(); // 依赖 PluginAcl: Clone
     if let Some(v) = mem_override {
       acl.memory_limit_bytes = Some(match acl.memory_limit_bytes {
@@ -314,9 +314,9 @@ impl Plugin for WasmPlugin {
       });
     }
 
-    // ===== 阶段 3.5：执行超时的宿主侧 ceiling（ai_0018 / B2.5）=====
+    // 执行超时的宿主侧 ceiling
     // min(工具 hint / 默认 2s, ACL 覆写, 进程 ceiling)——只收紧不放大，
-    // 与内存覆写的两阶段 min 同纪律；PluginAcl 此前无超时能力的不对称
+    // 与内存覆写的两级 min 同理；PluginAcl 此前无超时能力的不对称
     // 由此补齐。
     let mut timeout = timeout;
     if let Some(ceiling) = acl.timeout_ceiling_ms {
@@ -324,7 +324,7 @@ impl Plugin for WasmPlugin {
     }
     timeout = timeout.min(self.shared.config.tool_timeout_ceiling);
 
-    // ===== 阶段 4：执行（spawn_blocking + Stateless Store） =====
+    // 执行（spawn_blocking + Stateless Store）
     run_tool(
       &self.runtime.engine,
       &self.module,

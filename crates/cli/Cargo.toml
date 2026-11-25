@@ -7,7 +7,7 @@ publish.workspace = true
 repository.workspace = true
 readme.workspace = true
 license.workspace = true
-description = "Ribo Agent 命令行交互层：REPL、流式渲染与分层配置"
+description = "命令行交互：REPL、流式渲染与分层配置"
 
 [[bin]]
 name = "ribo"
@@ -41,5 +41,5 @@ tempfile = { workspace = true }
 ring = { workspace = true }
 blake3 = { workspace = true }
 wat = { workspace = true }
-# start_paused 虚拟时钟（APP-01 E2E）必需：full 不含 test-util
+# start_paused 虚拟时钟测试必需：full 不含 test-util
 tokio = { workspace = true, features = ["test-util"] }

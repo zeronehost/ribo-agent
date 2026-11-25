@@ -64,7 +64,7 @@ impl AgentTool for WriteTool {
     args: serde_json::Value,
     ctx: &ToolContext,
   ) -> RiboResult<ToolExecutionResult> {
-    // ===== 取参与路径解析 =====
+    // 取参与路径解析
     let raw = args["path"].as_str().ok_or_else(|| {
       invalid_arguments("write", "field 'path' must be a string")
     })?;
@@ -74,7 +74,7 @@ impl AgentTool for WriteTool {
     let create_dirs = args["create_dirs"].as_bool().unwrap_or(false);
     let path = self.root.resolve_for_write(raw, "write")?;
     check_cancel(ctx, "write")?;
-    // ===== 父目录保障（目录创建必须显式） =====
+    // 父目录保障（目录创建必须显式）
     let parent = path
       .parent()
       .ok_or_else(|| exec_failed("write", "path has no parent directory"))?;
@@ -90,7 +90,7 @@ impl AgentTool for WriteTool {
         ));
       }
     }
-    // ===== 写入（覆盖语义；目标为目录时由 io 错误统一映射 EXEC_FAILED） =====
+    // 写入（覆盖语义；目标为目录时由 io 错误统一映射 EXEC_FAILED）
     tokio::fs::write(&path, content).await.map_err(|e| {
       exec_failed("write", format!("write failed ({:?}): {raw}", e.kind()))
     })?;

@@ -26,9 +26,7 @@ use crate::{
   stream::{LineFlow, ProviderEventStreamProducer, SseFrame, StreamAggregator},
 };
 
-// ============================================================================
 // 线格式载荷（只声明读取所需字段）
-// ============================================================================
 
 /// `response.output_item.added` / `response.output_item.done` 载荷。
 #[derive(Debug, serde::Deserialize)]
@@ -101,9 +99,7 @@ struct IncompleteDetails {
   reason: Option<String>,
 }
 
-// ============================================================================
 // 单个流的聚合状态
-// ============================================================================
 
 /// 一次工具调用的元信息（id / 函数名可能只出现在 item 帧，不在 delta 帧）。
 #[derive(Debug, Clone)]
@@ -125,9 +121,7 @@ struct ResponsesState {
   saw_tool: bool,
 }
 
-// ============================================================================
 // 帧分派
-// ============================================================================
 
 /// 事件名解析：优先 SSE 的 `event:` 行，缺省回退 JSON 载荷的 `type`。
 fn event_kind<'a>(
@@ -148,14 +142,14 @@ fn dispatch_frame(
   producer: &mut Option<ProviderEventStreamProducer>,
   state: &mut ResponsesState,
 ) -> LineFlow {
-  // ===== 哨兵兼容：少数网关仍在流末尾发 [DONE] =====
+  // 哨兵兼容：少数网关仍在流末尾发 [DONE]
   if frame.data.trim() == "[DONE]" {
     aggregator.mark_done_sentinel();
     aggregator.finalize(producer);
     return LineFlow::Terminated;
   }
 
-  // ===== 载荷解析：非法 JSON → INVALID_RESPONSE 终结 =====
+  // 载荷解析：非法 JSON → INVALID_RESPONSE 终结
   let value = match serde_json::from_str::<serde_json::Value>(&frame.data) {
     Ok(value) => value,
     Err(err) => {
@@ -178,7 +172,7 @@ fn dispatch_frame(
   };
 
   match kind.as_str() {
-    // ===== 元信息：response.created 只并入快照（Start 已由任务开头推送）=====
+    // 元信息：response.created 只并入快照（Start 已由任务开头推送）
     "response.created" => {
       if let Ok(ev) = serde_json::from_value::<ResponseEvent>(value) {
         aggregator.set_meta(ev.response.id, ev.response.model);
@@ -193,7 +187,7 @@ fn dispatch_frame(
       return output_item_done(value, aggregator, producer, state);
     }
 
-    // ===== 文本增量 =====
+    // 文本增量
     "response.output_text.delta" => {
       let Ok(ev) = serde_json::from_value::<DeltaEvent>(value) else {
         return LineFlow::Continue;
@@ -209,7 +203,7 @@ fn dispatch_frame(
       }
     }
 
-    // ===== 推理摘要 / 推理正文增量 =====
+    // 推理摘要 / 推理正文增量
     "response.reasoning_summary_text.delta"
     | "response.reasoning_text.delta" => {
       let Ok(ev) = serde_json::from_value::<DeltaEvent>(value) else {
@@ -227,17 +221,17 @@ fn dispatch_frame(
       }
     }
 
-    // ===== 工具调用参数增量 =====
+    // 工具调用参数增量
     "response.function_call_arguments.delta" => {
       return args_delta(value, aggregator, producer, state);
     }
 
-    // ===== 工具调用参数收尾（部分网关只在此帧给全量参数）=====
+    // 工具调用参数收尾（部分网关只在此帧给全量参数）
     "response.function_call_arguments.done" => {
       return args_done(value, aggregator, producer, state);
     }
 
-    // ===== 正常终结：completed / incomplete =====
+    // 正常终结：completed / incomplete
     "response.completed" | "response.incomplete" => {
       let ev = match serde_json::from_value::<ResponseEvent>(value) {
         Ok(ev) => ev,
@@ -274,7 +268,7 @@ fn dispatch_frame(
       return LineFlow::Terminated;
     }
 
-    // ===== 错误终结：response.failed =====
+    // 错误终结：response.failed
     "response.failed" => {
       let err = serde_json::from_value::<ResponseEvent>(value)
         .ok()
@@ -292,7 +286,7 @@ fn dispatch_frame(
       return LineFlow::Terminated;
     }
 
-    // ===== 错误终结：顶层 error 事件 =====
+    // 错误终结：顶层 error 事件
     "error" => {
       let code = map_provider_error(&value);
       let text = value
@@ -531,9 +525,7 @@ fn fail_incomplete(
   LineFlow::Terminated
 }
 
-// ============================================================================
 // 用量解析
-// ============================================================================
 
 /// Responses `usage` → 统一 [`Usage`]。
 ///
@@ -571,9 +563,7 @@ fn parse_usage(value: &serde_json::Value) -> Usage {
   }
 }
 
-// ============================================================================
 // 解析任务
-// ============================================================================
 
 /// Responses 流的 SSE 解析任务（适配器建流成功后调用）。
 ///
@@ -606,7 +596,7 @@ mod tests {
   use crate::stream::ProviderEvent;
   use crate::test_support::collect_events;
 
-  // ===== 测试辅助 =====
+  // 测试辅助
 
   // 构造带 event 名的 SSE 帧（Responses 线格式总是带事件名）。
   fn frame(kind: &str, data: serde_json::Value) -> SseFrame {
@@ -801,7 +791,7 @@ mod tests {
 
   /// 场景：EOF 提前断开、未收到 completed（无哨兵）。
   ///
-  /// 预期：finalize 走 R2 截断分支，以 Error + STREAM_INTERRUPTED 终结。
+  /// 预期：finalize 走截断分支，以 Error + STREAM_INTERRUPTED 终结。
   #[tokio::test]
   async fn eof_without_completed_is_truncated() {
     let (producer, mut stream) = ProviderEventStreamProducer::build();

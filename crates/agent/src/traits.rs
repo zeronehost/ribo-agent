@@ -121,7 +121,7 @@ pub trait AgentEmitter: Send + Sync {
 
 /// 直通上下文实现：转录 + 输入原样透传。
 ///
-/// 阶段 4 接入压缩、system prompt 模板与检索前的默认实现；
+/// 接入压缩、system prompt 模板与检索前的默认实现；
 /// 可携带固定系统提示（多模态，空表示无）。
 #[derive(Default)]
 pub struct PassthroughContextProvider {

@@ -227,7 +227,7 @@ mod tests {
     }
   }
 
-  /// SY-01：build 含环境段 + 2 技能 → 输出含 `<environment>` 与两条 `<skill .../>`。
+  /// build 含环境段 + 2 技能 → 输出含 `<environment>` 与两条 `<skill .../>`。
   #[test]
   fn build_includes_env_and_skills() {
     let skills = vec![
@@ -254,7 +254,7 @@ mod tests {
     assert!(text.contains("name=\"write-file\""));
   }
 
-  /// SY-02：技能正文含 `<xml>`；清单条目转义为 `&lt;`；
+  /// 技能正文含 `<xml>`；清单条目转义为 `&lt;`；
   /// format_skill_invocation 正文保持 `<xml>` 原文。
   #[test]
   fn invocation_keeps_body_and_escapes_listing() {
@@ -352,7 +352,7 @@ mod tests {
     assert!(text.contains("from 5 turns ago"));
   }
 
-  /// Step 5-C：技能清单带 origin 属性（来源域标签）。
+  /// 技能清单带 origin 属性（来源域标签）。
   #[test]
   fn skill_list_includes_origin_attribute() {
     let mut s = skill("review", "desc", "body");
@@ -368,7 +368,7 @@ mod tests {
     assert!(text.contains("origin=\"plugin:company\""));
   }
 
-  /// Step 5-C：Instructions 非空 → 产 <agents-instructions> 段；空 → 不产。
+  /// Instructions 非空 → 产 <agents-instructions> 段；空 → 不产。
   #[test]
   fn agents_instructions_section_conditional() {
     let instr = Instructions {

@@ -194,7 +194,7 @@ pub fn join_text(content: &[ra_core::message::Content]) -> String {
     .join("\n")
 }
 
-/// 刷新对话区行数缓存：仅宽度变化或显式失效的气泡才重算（R-R5）。
+/// 刷新对话区行数缓存：仅宽度变化或显式失效的气泡才重算。
 ///
 /// 返回全部气泡在当前宽度下的总视觉行数（粘底滚动上限依据）。
 pub fn refresh_line_cache(state: &mut AppState, width: u16) -> usize {

@@ -1,6 +1,6 @@
 //! 内存会话容器：转录、串行锁、取消根、注入队列与过期清理。
 //!
-//! 最小实现（JSONL 持久化属阶段 4 ra-harness）；跨会话并行由
+//! 当前为内存实现，尚无持久化；跨会话并行由
 //! [`SessionManager`] 的分片锁保证，同会话串行由 [`Session::run_lock`]
 //! 与运行标志 `running` 的 CAS 双检查保证。
 
@@ -17,7 +17,7 @@ use crate::{
 
 /// 会话（内存版）：转录 + 串行锁 + 取消根。
 pub struct Session {
-  /// 会话键（本期 String；强类型身份随阶段 4 引入）。
+  /// 会话键（当前为 String；未来可引入强类型身份）。
   pub key: String,
   /// 完整转录（读经 [`Session::snapshot`]，写经 [`Session::append_messages`]）。
   messages: RwLock<Vec<Message>>,
@@ -522,13 +522,13 @@ mod tests {
   async fn cleanup_expired_only_removes_idle_inactive_sessions() {
     let manager = SessionManager::new();
 
-    // ===== 准备：expired 与 running 同批创建，随后一同闲置超限 =====
+    // 准备：expired 与 running 同批创建，随后一同闲置超限
     manager.get_or_create("expired").await.expect("创建应成功");
     let running = manager.get_or_create("running").await.expect("创建应成功");
     running.running.store(true, Ordering::Release);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    // ===== 场景 2：刚活跃（闲置约 0ms，低于阈值） =====
+    // 场景 2：刚活跃（闲置约 0ms，低于阈值）
     manager.get_or_create("fresh").await.expect("创建应成功");
 
     let removed = manager.cleanup_expired(Duration::from_millis(10)).await;
