@@ -4,6 +4,8 @@
 
 Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ribo-tui` (a full-screen terminal TUI) — built on a set of single-responsibility crates: a provider abstraction, a tool system, an event-driven agent loop, a session container, and configuration assembly.
 
+![ribo-tui screenshot](screenshots/tui-chat.png)
+
 - License: [Mulan Permissive Software License, v2 (MulanPSL-2.0)](LICENSE)
 - Toolchain: Rust **1.85.0+**, `edition = 2024`
 

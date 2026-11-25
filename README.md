@@ -4,6 +4,8 @@
 
 Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端两种交互界面，底层由一组职责单一的 crate 组成：模型提供方抽象、工具系统、事件驱动的 agent 循环、会话容器与配置装配。
 
+![ribo-tui 界面截图](screenshots/tui-chat.png)
+
 - 许可证：[木兰宽松许可证，第 2 版（MulanPSL-2.0）](LICENSE)
 - 语言要求：Rust **1.85.0+**，`edition = 2024`
 
