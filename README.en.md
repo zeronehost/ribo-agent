@@ -44,6 +44,12 @@ The workspace is organized in `Cargo.toml` with `resolver = "3"`; members are `c
 
 ---
 
+## Download Prebuilt Binaries
+
+No need to build from source: [GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) provides prebuilt binaries for Windows (x64), macOS (x64 / arm64), and Linux (x64 / arm64, statically linked with musl). Download the archive for your platform, extract it, and put `ribo` / `ribo-tui` on your `PATH`.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -127,12 +133,12 @@ adapter     = "openai-chat"
 base_url    = "https://your-endpoint.example.com"
 api_key     = "$OPENAI_API_KEY"
 
-  [[providers.models]]
-  id             = "your-model-name"
-  context_window = 131072       # optional, default 8192
+[[providers.models]]
+id             = "your-model-name"
+context_window = 131072       # optional, default 8192
 
-  [[providers.models]]          # same-provider fallback model
-  id             = "your-model-lite"
+[[providers.models]]          # same-provider fallback model
+id             = "your-model-lite"
 
 [[routing.fallback]]            # rules are matched in declaration order
 match = { provider = "chat-primary" }

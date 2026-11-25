@@ -44,6 +44,12 @@ Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端
 
 ---
 
+## 下载安装包
+
+无需自行编译：[GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) 提供编译好的二进制，覆盖 Windows（x64）、macOS（x64 / arm64）与 Linux（x64 / arm64，musl 静态链接）。下载对应平台的压缩包，解压后将 `ribo` / `ribo-tui` 放入 `PATH` 即可使用。
+
+---
+
 ## 快速开始
 
 ```bash
@@ -127,12 +133,12 @@ adapter     = "openai-chat"
 base_url    = "https://your-endpoint.example.com"
 api_key     = "$OPENAI_API_KEY"
 
-  [[providers.models]]
-  id             = "your-model-name"
-  context_window = 131072       # 可选，默认 8192
+[[providers.models]]
+id             = "your-model-name"
+context_window = 131072       # 可选，默认 8192
 
-  [[providers.models]]          # 同通道备选模型（隐式降级链）
-  id             = "your-model-lite"
+[[providers.models]]          # 同通道备选模型（隐式降级链）
+id             = "your-model-lite"
 
 [[routing.fallback]]            # 规则按声明顺序匹配
 match = { provider = "chat-primary" }
