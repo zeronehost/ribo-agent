@@ -26,14 +26,10 @@ jobs:
           # dtolnay 默认 minimal profile 不含 rustfmt/clippy，必须显式安装
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      # 只缓存依赖产物并自动清理增量/过期文件，避免整个 target 目录撑爆
+      # GitHub 每仓库 10GB 的缓存配额（与 release.yml 保持同一策略）。
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       # 提前拦截锁文件漂移：版本 bump 后忘记同步 Cargo.lock 时，
       # release.yml 的 --locked 会在编译前直接失败（v0.0.3 即因此构建失败）。

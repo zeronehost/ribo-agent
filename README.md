@@ -48,7 +48,7 @@ Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端
 
 ## 下载安装包
 
-无需自行编译：[GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) 提供编译好的二进制，覆盖 Windows（x64）、macOS（x64 / arm64）与 Linux（x64 / arm64，musl 静态链接）。下载对应平台的压缩包，解压后将 `ribo` / `ribo-tui` 放入 `PATH` 即可使用。
+无需自行编译：[GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) 提供编译好的二进制，覆盖 Windows（x64）、macOS（arm64）与 Linux（x64 / arm64）。Linux 通用包为 `musl`（静态链接，无系统库依赖，适用于 Alpine 及任意 glibc 版本）；另提供 `aarch64-unknown-linux-gnu` 包，专用于树莓派 3 / 4 / 5 / Zero 2 W 及后续 64 位系统（Raspberry Pi OS）。32 位树莓派（Zero / 1 / 2）暂无预编译包。下载对应平台的压缩包，解压后将 `ribo` / `ribo-tui` 放入 `PATH` 即可使用。
 
 ---
 
