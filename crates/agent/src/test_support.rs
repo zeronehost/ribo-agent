@@ -44,12 +44,27 @@ pub fn mock_gateway(steps: Vec<MockStep>) -> Arc<Gateway> {
 }
 
 /// 构造网关并返回 mock 提供方句柄（`record()` 断言 LLM 调用次数用）。
-///
+pub fn mock_gateway_with_recorder(
+  steps: Vec<MockStep>,
+) -> (Arc<Gateway>, Arc<MockProvider>) {
+  mock_gateway_with_config(steps, GatewayConfig::default())
+}
+
+/// 构造禁用重试的网关：建流失败直接上抛，不做第二次脚本消费。
+pub fn mock_gateway_no_retry(
+  steps: Vec<MockStep>,
+) -> (Arc<Gateway>, Arc<MockProvider>) {
+  let mut config = GatewayConfig::default();
+  config.retry.max_retries = 0;
+  mock_gateway_with_config(steps, config)
+}
+
 /// # Panics
 ///
 /// 提供方 ID 解析失败或网关注册被拒时 panic（测试环境不应发生）。
-pub fn mock_gateway_with_recorder(
+fn mock_gateway_with_config(
   steps: Vec<MockStep>,
+  config: GatewayConfig,
 ) -> (Arc<Gateway>, Arc<MockProvider>) {
   let provider_id = ProviderId::parse("mock").expect("mock 提供方 ID 合法");
   let model = Model::new(
@@ -62,7 +77,7 @@ pub fn mock_gateway_with_recorder(
   .with_context_window(8192)
   .with_max_tokens(1024);
   let mock = Arc::new(MockProvider::new(provider_id, vec![model], steps));
-  let mut gateway = Gateway::new(GatewayConfig::default());
+  let mut gateway = Gateway::new(config);
   gateway.register(mock.clone()).expect("mock 提供方注册成功");
   (Arc::new(gateway), mock)
 }

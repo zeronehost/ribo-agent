@@ -33,8 +33,20 @@ env:
 jobs:
   sync-to-gitee:
     runs-on: ubuntu-latest
+    # 实测旧配置完整同步耗时约 39 分钟（Python 依赖安装 + 跨境上传附件），
+    # 20 分钟会把成功运行误杀；留足余量到 60 分钟，但仍防止彻底挂死。
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      # action-gitee-release 每次运行都会 pip install；复用 pip 缓存可省去重复下载。
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-gitee-release-${{ hashFiles('.github/workflows/sync-release-to-gitee.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-gitee-release-
 
       - name: Get Release Info
         id: release_info
@@ -42,25 +54,39 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
         run: |
-          RELEASE_INFO=$(gh release view "$TAG_NAME" --json name,body,targetCommitish)
+          RELEASE_INFO=$(gh release view "$TAG_NAME" --json name,body,targetCommitish,assets)
           {
             echo "release_name=$(echo "$RELEASE_INFO" | jq -r '.name')"
             echo "target_commitish=$(echo "$RELEASE_INFO" | jq -r '.targetCommitish')"
+            echo "asset_count=$(echo "$RELEASE_INFO" | jq '.assets | length')"
             echo "release_body<<EOF"
             echo "$RELEASE_INFO" | jq -r '.body'
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Download Release Assets
+        id: check_assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
+          ASSET_COUNT: ${{ steps.release_info.outputs.asset_count }}
         run: |
           mkdir -p release_assets
-          gh release download "$TAG_NAME" --dir release_assets
-          ls -la release_assets/
+          # 无附件时 gh release download 会报错退出，这里按附件数提前跳过；
+          # 有附件却下载失败必须报错，不能用 || true 吞掉网络/权限故障。
+          if [ "$ASSET_COUNT" -gt 0 ]; then
+            gh release download "$TAG_NAME" --dir release_assets
+          fi
+          if [ -z "$(ls -A release_assets)" ]; then
+            echo "HAS_ASSETS=false" >> "$GITHUB_OUTPUT"
+            echo "No assets found, syncing release metadata only."
+          else
+            echo "HAS_ASSETS=true" >> "$GITHUB_OUTPUT"
+            ls -la release_assets/
+          fi
 
-      - name: Create Gitee Release and Upload Assets
+      - name: Create Gitee Release with Assets
+        if: steps.check_assets.outputs.HAS_ASSETS == 'true'
         uses: nICEnnnnnnnLee/action-gitee-release@v2.0.0
         with:
           gitee_action: create_release
@@ -74,6 +100,19 @@ jobs:
           gitee_upload_retry_times: 3
           gitee_files: |
             release_assets/*
+
+      - name: Create Gitee Release (No Assets)
+        if: steps.check_assets.outputs.HAS_ASSETS == 'false'
+        uses: nICEnnnnnnnLee/action-gitee-release@v2.0.0
+        with:
+          gitee_action: create_release
+          gitee_owner: ${{ env.GITEE_OWNER }}
+          gitee_repo: ${{ env.GITEE_REPO }}
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          gitee_tag_name: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
+          gitee_release_name: ${{ steps.release_info.outputs.release_name }}
+          gitee_release_body: ${{ steps.release_info.outputs.release_body }}
+          gitee_target_commitish: ${{ steps.release_info.outputs.target_commitish }}
 
       - name: Cleanup
         if: always()
