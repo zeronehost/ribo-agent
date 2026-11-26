@@ -18,6 +18,7 @@ use ra_cli::config::assemble::{
   AssembleOptions, CliSession, assemble_with_options,
 };
 use ra_cli::config::{LoadOutcome, resolve_config_path};
+use ra_core::error::for_error;
 
 mod app;
 mod input;
@@ -62,7 +63,8 @@ async fn main() -> ExitCode {
   let config_path = match resolve_config_path(args.config.as_deref()) {
     Ok(p) => p,
     Err(e) => {
-      eprintln!("配置路径错误：{e}");
+      tracing::error!(error = %e, "resolve config path failed");
+      eprintln!("配置路径错误：{}", for_error(&e));
       return ExitCode::FAILURE;
     }
   };
@@ -73,7 +75,8 @@ async fn main() -> ExitCode {
   );
   // release 构建下三类配置异常为致命错误
   if let Some(err) = &outcome.fatal_error {
-    eprintln!("配置错误：{err}");
+    tracing::error!(error = %err, "fatal config error");
+    eprintln!("配置错误：{}", for_error(err));
     return ExitCode::FAILURE;
   }
   let root = outcome.harness.root.clone();
@@ -155,8 +158,8 @@ async fn main() -> ExitCode {
   ) {
     Ok(session) => session,
     Err(err) => {
-      tracing::error!(code = %err.code(), "assemble failed");
-      eprintln!("装配失败：{err}");
+      tracing::error!(error = %err, "assemble failed");
+      eprintln!("装配失败：{}", for_error(&err));
       return ExitCode::FAILURE;
     }
   };

@@ -17,7 +17,7 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use ra_core::{
-  error::{RiboError, RiboResult},
+  error::{RiboError, RiboResult, for_code, for_error},
   message::{
     AssistantMessage, Content, Message, StopReason, TextContent, ToolCall,
     ToolResultMessage,
@@ -448,10 +448,12 @@ async fn stream_assistant_response(
       Err(err) if err.code() == ra_provider::error::CANCELLED => {
         tracing::info!(
           model = %deps.model.as_str(),
+          error = %err,
           "gateway stream cancelled before terminal event"
         );
+        let reason = for_error(&err).to_string();
         let terminal =
-          terminal_error_message(deps, StopReason::Aborted, err.message());
+          terminal_error_message(deps, StopReason::Aborted, &reason);
         emitter
           .emit(AgentEvent::MessageEnd {
             message: Message::from(terminal.clone()),
@@ -463,10 +465,11 @@ async fn stream_assistant_response(
         tracing::warn!(
           model = %deps.model.as_str(),
           error_code = %err.code(),
+          error = %err,
           "gateway stream failed"
         );
-        let terminal =
-          terminal_error_message(deps, StopReason::Error, err.message());
+        let reason = for_error(&err).to_string();
+        let terminal = terminal_error_message(deps, StopReason::Error, &reason);
         emitter
           .emit(AgentEvent::MessageEnd {
             message: Message::from(terminal.clone()),
@@ -487,8 +490,16 @@ async fn stream_assistant_response(
           .await;
         return message;
       }
-      ProviderEvent::Error { message, code, .. } => {
-        tracing::warn!(code = ?code, "provider stream error event");
+      ProviderEvent::Error {
+        mut message, code, ..
+      } => {
+        tracing::warn!(
+          code = ?code,
+          error = message.error_message.as_deref().unwrap_or(""),
+          "provider stream error event"
+        );
+        let code = code.unwrap_or(ra_provider::error::STREAM_INTERRUPTED);
+        message.error_message = Some(for_code("provider", code).to_string());
         emitter
           .emit(AgentEvent::MessageEnd {
             message: Message::from(message.clone()),
@@ -517,11 +528,10 @@ async fn stream_assistant_response(
     }
   }
 
-  let terminal = terminal_error_message(
-    deps,
-    StopReason::Error,
-    "stream ended without a terminal event",
-  );
+  tracing::warn!("stream ended without a terminal event");
+  let reason =
+    for_code("provider", ra_provider::error::STREAM_INTERRUPTED).to_string();
+  let terminal = terminal_error_message(deps, StopReason::Error, &reason);
   emitter
     .emit(AgentEvent::MessageEnd {
       message: Message::from(terminal.clone()),
@@ -902,6 +912,28 @@ mod tests {
       |session| MockTools::new(default_behavior).with_session(session),
       |config| config,
     )
+  }
+
+  /// 建立禁用网关重试的运行环境：建流失败直接上抛，不被后续脚本步骤掩盖。
+  fn test_run_no_retry(
+    steps: Vec<MockStep>,
+    default_behavior: ToolBehavior,
+  ) -> TestRun {
+    let session = Arc::new(Session::new("s1"));
+    let config = LoopConfig::for_session(&session);
+    let collector = Arc::new(CollectorEmitter::new());
+    let (gateway, provider) = mock_gateway_no_retry(steps);
+    let tools =
+      Arc::new(MockTools::new(default_behavior).with_session(session.clone()));
+    let deps = make_deps(gateway, tools.clone());
+    TestRun {
+      session,
+      config,
+      collector,
+      deps,
+      tools,
+      provider,
+    }
   }
 
   /// 驱动一次循环（收集器已在环境中挂载）。
@@ -1640,15 +1672,20 @@ mod tests {
       panic!("终端消息应为助手消息，实际 {last:?}")
     };
     assert_eq!(assistant.stop_reason, StopReason::Error);
-    assert!(assistant.error_message.is_some());
+    let reason = assistant
+      .error_message
+      .as_deref()
+      .expect("错误摘要应进入终端消息");
+    assert!(reason.contains("模型服务暂时不可用"));
+    assert!(!reason.contains("mock stream failed as scripted"));
   }
 
   // 场景：网关建流失败（非取消）折叠为 Error 终端消息。
   // 预期：建流 Err（SERVER_ERROR）→ Error 终端 → LoopOutcome::Failed，
-  // 单次调用记录，不执行工具。
+  // 单次调用记录，不执行工具。禁用重试，避免脚本耗尽错误掩盖建流失败。
   #[tokio::test]
   async fn gateway_stream_failure_folds_to_error_terminal() {
-    let run = test_run(
+    let run = test_run_no_retry(
       vec![MockStep::Fail(ra_provider::error::pre_stream(
         ra_provider::error::SERVER_ERROR,
         "upstream down",
@@ -1659,15 +1696,20 @@ mod tests {
     let report = drive(&run, input()).await.expect("失败路径正常返回");
 
     assert_eq!(report.outcome, LoopOutcome::Failed);
-    // 网关按默认策略可能重试多次；agent 层只关心失败最终被折叠
-    assert!(!run.provider.record().is_empty(), "建流失败应触达提供方");
+    assert_eq!(run.provider.record().len(), 1, "建流失败应只调用一次");
 
     let last = report.new_messages.last().expect("存在终端消息");
     let Message::Assistant(assistant) = last else {
       panic!("终端消息应为助手消息，实际 {last:?}")
     };
     assert_eq!(assistant.stop_reason, StopReason::Error);
-    assert!(assistant.error_message.is_some(), "错误描述应进入终端消息");
+    let reason = assistant
+      .error_message
+      .as_deref()
+      .expect("错误摘要应进入终端消息");
+    assert!(reason.contains("模型服务暂时不可用"), "实际文案：{reason}");
+    assert!(!reason.contains("upstream down"));
+    assert!(!reason.contains("no more mock responses queued"));
   }
 
   // 场景：九类内容事件全部转发为 MessageUpdate（快照直用，不自行拼接）。

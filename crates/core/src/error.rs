@@ -5,7 +5,8 @@
 //! - [`RiboError`]：错误载体，按「领域 + 错误码 + 消息」组织，并附带严重程度、
 //!   结构化上下文与可选的上游错误链。
 //! - [`Severity`]：五级严重程度枚举，可比较、可排序、可序列化。
-//! - [`RiboResult`]：错误侧固定为 [`RiboError`] 的 `Result` 别名。
+//! - [`RiboResult`]：错误侧固定为 [`RiboError`] 的 `Result` 别名；
+//! - [`for_error`]：把底层错误映射为「中文结论 + 可操作建议」，供 CLI/TUI 展示。
 //!
 //! # 关键设计
 //!
@@ -79,6 +80,10 @@
 //! ```
 
 use std::{collections::HashMap, sync::Arc};
+
+pub mod user_facing;
+
+pub use user_facing::{UserFacingError, for_code, for_error};
 
 /// 跨模块传递的统一错误类型。
 ///

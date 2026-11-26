@@ -617,7 +617,7 @@ impl LoadOutcome {
     config_parent: Option<&Path>,
   ) -> LoadOutcome {
     // 逐层反序列化（单层损坏保留默认）
-    // provider 层特殊：query_model/[[providers]]/[routing] 均为根级键，
+    // provider 层特殊：[[providers]] / [routing] 均为根级键，
     // 直接从根表整体反序列化（其余五层走 [layer] 子表）
     let mut provider: ProviderSchema = match &table {
       Some(t) => match t.clone().try_into() {

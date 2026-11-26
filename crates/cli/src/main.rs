@@ -7,6 +7,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
 use ra_cli::cli_commands::{SubCommand, execute};
+use ra_core::error::for_error;
 
 use ra_cli::app::{Repl, StdinLineSource};
 use ra_cli::config::{LoadOutcome, resolve_config_path};
@@ -46,7 +47,8 @@ async fn main() -> ExitCode {
   let config_path = match resolve_config_path(args.config.as_deref()) {
     Ok(p) => p,
     Err(e) => {
-      eprintln!("配置路径错误：{e}");
+      tracing::error!(error = %e, "resolve config path failed");
+      eprintln!("配置路径错误：{}", for_error(&e));
       return ExitCode::FAILURE;
     }
   };
@@ -64,7 +66,8 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
       }
       Err(e) => {
-        eprintln!("命令失败：{e}");
+        tracing::error!(error = %e, "one-shot command failed");
+        eprintln!("命令失败：{}", for_error(&e));
         return ExitCode::FAILURE;
       }
     }
@@ -77,7 +80,8 @@ async fn main() -> ExitCode {
   );
   // release 构建下三类配置异常为致命错误
   if let Some(err) = &outcome.fatal_error {
-    eprintln!("配置错误：{err}");
+    tracing::error!(error = %err, "fatal config error");
+    eprintln!("配置错误：{}", for_error(err));
     return ExitCode::FAILURE;
   }
 
@@ -118,8 +122,8 @@ async fn main() -> ExitCode {
   ) {
     Ok(session) => session,
     Err(e) => {
-      tracing::error!(code = %e.code(), "assemble failed");
-      eprintln!("装配失败：{e}");
+      tracing::error!(error = %e, "assemble failed");
+      eprintln!("装配失败：{}", for_error(&e));
       return ExitCode::FAILURE;
     }
   };
@@ -133,7 +137,8 @@ async fn main() -> ExitCode {
   match repl.run().await {
     Ok(()) => ExitCode::SUCCESS,
     Err(e) => {
-      eprintln!("错误：{e}");
+      tracing::error!(error = %e, "repl run failed");
+      eprintln!("错误：{}", for_error(&e));
       ExitCode::FAILURE
     }
   }
