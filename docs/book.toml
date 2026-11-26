@@ -6,4 +6,5 @@ description = "Ribo Agent 的分层配置、三层信任域、技能与插件系
 
 [output.html]
 default-theme = "light"
-git-repository-url = ""
+git-repository-url = "https://github.com/zeronehost/ribo-agent"
+edit-url-template = "https://github.com/zeronehost/ribo-agent/edit/main/docs/{path}"

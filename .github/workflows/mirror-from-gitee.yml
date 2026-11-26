@@ -1,0 +1,62 @@
+name: Mirror from Gitee
+
+# 单向镜像 Gitee 仓库到 GitHub：只同步 main 分支与 tag，其他分支不动。
+#
+# Gitee 是源码仓库，GitHub 只作为构建与 Release 发布平台：
+#   Gitee main/tag →（本工作流）→ GitHub → release.yml 构建 → Release 回传 Gitee
+#
+# 触发方式：定时轮询（GitHub 无法接收 Gitee 的 push 事件）+ 手动触发。
+#
+# 启用前务必先把 GitHub main 上已有改动推送到 Gitee：本工作流以 Gitee
+# 为准强制覆盖 GitHub 的 main/tag，未回传的 GitHub 侧提交会被丢弃。
+#
+# 前置条件（仓库 Secrets）：
+# - GH_PAT：GitHub 经典 PAT，勾选 repo 权限。
+#   必须用 PAT 而非 GITHUB_TOKEN——后者推送产生的事件不会触发
+#   release.yml / ci.yml 等下游工作流，tag 推送将不会启动构建。
+# - GITEE_TOKEN：可选。Gitee 私人令牌（projects 权限）；仓库公开时可留空。
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GITEE_OWNER: 'zeronehost'
+  GITEE_REPO: 'ribo-agent'
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync main branch and tags
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_PAT:-}" ]; then
+            echo "::error::GH_PAT secret is required (classic PAT with repo scope)"
+            exit 1
+          fi
+
+          if [ -n "${GITEE_TOKEN:-}" ]; then
+            SRC="https://oauth2:${GITEE_TOKEN}@gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git"
+          else
+            SRC="https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git"
+          fi
+          DST="https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git clone --bare "$SRC" mirror.git
+          cd mirror.git
+
+          # 只推送 main 与 tag；其他分支保留 GitHub 现状，不做删除。
+          git push --force "$DST" \
+            refs/heads/main:refs/heads/main \
+            'refs/tags/*:refs/tags/*'
+
+          echo "Mirrored main and tags from Gitee to GitHub."
