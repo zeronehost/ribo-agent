@@ -1,0 +1,87 @@
+name: Sync Release to Gitee
+
+# 将 GitHub Release（标题、描述、构建产物附件）同步到 Gitee Release，
+# 形成「Gitee 源码仓库 → GitHub 构建 → 回传 Gitee Release」的闭环。
+#
+# 触发：
+# - GitHub Release 发布时（release.yml 的 softprops/action-gh-release
+#   完成发布后会发出 published 事件，自动衔接本工作流）；
+# - 手动触发（workflow_dispatch，输入 tag 名用于补录或测试）。
+#
+# 前置条件：
+# 1. Gitee 私人令牌已存入仓库 Secret：GITEE_TOKEN
+#    （Gitee → 设置 → 私人令牌，勾选 projects 权限）。
+# 2. Gitee 仓库中已存在同名 tag（tag 随代码从 Gitee 同步而来）。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: '要同步的 Release Tag（例如 v1.2.3）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  GITEE_OWNER: 'zeronehost'
+  GITEE_REPO: 'ribo-agent'
+
+jobs:
+  sync-to-gitee:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Release Info
+        id: release_info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
+        run: |
+          RELEASE_INFO=$(gh release view "$TAG_NAME" --json name,body,targetCommitish)
+          {
+            echo "release_name=$(echo "$RELEASE_INFO" | jq -r '.name')"
+            echo "target_commitish=$(echo "$RELEASE_INFO" | jq -r '.targetCommitish')"
+            echo "release_body<<EOF"
+            echo "$RELEASE_INFO" | jq -r '.body'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download Release Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
+        run: |
+          mkdir -p release_assets
+          gh release download "$TAG_NAME" --dir release_assets
+          ls -la release_assets/
+
+      - name: Create Gitee Release and Upload Assets
+        uses: nICEnnnnnnnLee/action-gitee-release@v2.0.0
+        with:
+          gitee_action: create_release
+          gitee_owner: ${{ env.GITEE_OWNER }}
+          gitee_repo: ${{ env.GITEE_REPO }}
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          gitee_tag_name: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
+          gitee_release_name: ${{ steps.release_info.outputs.release_name }}
+          gitee_release_body: ${{ steps.release_info.outputs.release_body }}
+          gitee_target_commitish: ${{ steps.release_info.outputs.target_commitish }}
+          gitee_upload_retry_times: 3
+          gitee_files: |
+            release_assets/*
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf release_assets/
+
+      - name: Summary
+        if: success()
+        run: |
+          TAG="${{ github.event.inputs.tag_name || github.event.release.tag_name }}"
+          echo "Synced release $TAG to Gitee."
+          echo "https://gitee.com/${{ env.GITEE_OWNER }}/${{ env.GITEE_REPO }}/releases/tag/$TAG"

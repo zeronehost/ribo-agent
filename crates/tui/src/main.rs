@@ -35,7 +35,7 @@ use crate::lifecycle::RawModeGuard;
 #[derive(Debug, Parser)]
 #[command(name = "ribo-tui", version, about = "Ribo Agent 终端 TUI")]
 pub struct TuiArgs {
-  /// 配置文件路径；未指定时自动探测 ribo.toml，缺失则以 mock 模式启动
+  /// 配置文件路径；未指定时自动探测 ribo.toml
   ///（与 ra-cli 共用 `resolve_config_path`）。
   #[arg(short, long, value_name = "PATH")]
   pub config: Option<PathBuf>,

@@ -17,7 +17,7 @@ use ra_cli::render::TerminalRenderer;
 #[derive(Debug, Parser)]
 #[command(name = "ribo", version, about = "Ribo Agent 命令行交互层")]
 pub struct CliArgs {
-  /// 配置文件路径；未指定时自动探测 ribo.toml，缺失则以 mock 模式启动
+  /// 配置文件路径；未指定时自动探测 ribo.toml
   #[arg(short, long, value_name = "PATH")]
   pub config: Option<PathBuf>,
 

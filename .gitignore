@@ -11,3 +11,5 @@ target/
 **/*.rs.bk
 /ribo*.toml
 !/ribo_example.toml
+# mdBook 构建产物（CI 部署 Pages 时重新生成）
+docs/book/

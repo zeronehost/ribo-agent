@@ -4,6 +4,8 @@
 
 Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端两种交互界面，底层由一组职责单一的 crate 组成：模型提供方抽象、工具系统、事件驱动的 agent 循环、会话容器与配置装配。
 
+![ribo-tui 界面截图](screenshots/tui-chat.png)
+
 - 许可证：[木兰宽松许可证，第 2 版（MulanPSL-2.0）](LICENSE)
 - 语言要求：Rust **1.85.0+**，`edition = 2024`
 
@@ -41,6 +43,12 @@ Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端
 
 - Rust 工具链 **1.85.0** 或更高（`edition 2024`）。
 - 应用形态为可执行程序，建议提交 `Cargo.lock`。
+
+---
+
+## 下载安装包
+
+无需自行编译：[GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) 提供编译好的二进制，覆盖 Windows（x64）、macOS（x64 / arm64）与 Linux（x64 / arm64，musl 静态链接）。下载对应平台的压缩包，解压后将 `ribo` / `ribo-tui` 放入 `PATH` 即可使用。
 
 ---
 
@@ -127,12 +135,12 @@ adapter     = "openai-chat"
 base_url    = "https://your-endpoint.example.com"
 api_key     = "$OPENAI_API_KEY"
 
-  [[providers.models]]
-  id             = "your-model-name"
-  context_window = 131072       # 可选，默认 8192
+[[providers.models]]
+id             = "your-model-name"
+context_window = 131072       # 可选，默认 8192
 
-  [[providers.models]]          # 同通道备选模型（隐式降级链）
-  id             = "your-model-lite"
+[[providers.models]]          # 同通道备选模型（隐式降级链）
+id             = "your-model-lite"
 
 [[routing.fallback]]            # 规则按声明顺序匹配
 match = { provider = "chat-primary" }

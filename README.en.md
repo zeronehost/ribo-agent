@@ -4,6 +4,8 @@
 
 Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ribo-tui` (a full-screen terminal TUI) — built on a set of single-responsibility crates: a provider abstraction, a tool system, an event-driven agent loop, a session container, and configuration assembly.
 
+![ribo-tui screenshot](screenshots/tui-chat.png)
+
 - License: [Mulan Permissive Software License, v2 (MulanPSL-2.0)](LICENSE)
 - Toolchain: Rust **1.85.0+**, `edition = 2024`
 
@@ -41,6 +43,12 @@ The workspace is organized in `Cargo.toml` with `resolver = "3"`; members are `c
 
 - Rust toolchain **1.85.0** or newer (`edition 2024`).
 - The project is distributed as an executable application; committing `Cargo.lock` is recommended.
+
+---
+
+## Download Prebuilt Binaries
+
+No need to build from source: [GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) provides prebuilt binaries for Windows (x64), macOS (x64 / arm64), and Linux (x64 / arm64, statically linked with musl). Download the archive for your platform, extract it, and put `ribo` / `ribo-tui` on your `PATH`.
 
 ---
 
@@ -127,12 +135,12 @@ adapter     = "openai-chat"
 base_url    = "https://your-endpoint.example.com"
 api_key     = "$OPENAI_API_KEY"
 
-  [[providers.models]]
-  id             = "your-model-name"
-  context_window = 131072       # optional, default 8192
+[[providers.models]]
+id             = "your-model-name"
+context_window = 131072       # optional, default 8192
 
-  [[providers.models]]          # same-provider fallback model
-  id             = "your-model-lite"
+[[providers.models]]          # same-provider fallback model
+id             = "your-model-lite"
 
 [[routing.fallback]]            # rules are matched in declaration order
 match = { provider = "chat-primary" }
