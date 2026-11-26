@@ -1,5 +1,5 @@
 # 主质量门禁 CI：PR 必过四门禁。
-# Rust 工具链在本文件显式固定为 1.100.0（本仓库无 rust-toolchain.toml）。
+# Rust 工具链由 rust-toolchain.toml 固定为 1.100.0，本文件与之保持一致。
 # plugin-demo 已为 workspace 成员，cargo test --workspace 会执行其 e2e
 # （内部 cargo build --target wasm32），故必须安装 wasm32 target。
 name: ci
@@ -34,6 +34,10 @@ jobs:
             ~/.cargo/git
             target
           key: gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # 提前拦截锁文件漂移：版本 bump 后忘记同步 Cargo.lock 时，
+      # release.yml 的 --locked 会在编译前直接失败（v0.0.3 即因此构建失败）。
+      - run: cargo metadata --locked --format-version 1 > /dev/null
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
