@@ -171,6 +171,23 @@ impl Session {
       .clone()
   }
 
+  /// 取转录消息条数（只读锁、不克隆消息体）。
+  ///
+  /// 与 [`Session::snapshot`] 的区别：本方法仅获取读锁并读取长度，不做
+  /// `Vec<Message>` 深拷贝。调用方只需要条数（如错误路径记录差量起点）
+  /// 时应优先使用本方法，避免大转录场景下的 O(n) 拷贝开销。
+  ///
+  /// # Panics
+  ///
+  /// 转录读写锁中毒时 panic（持有方 panic 时才会发生）。
+  pub fn message_count(&self) -> usize {
+    self
+      .messages
+      .read()
+      .expect("session transcript lock poisoned")
+      .len()
+  }
+
   /// 刷新最近活跃时间（每次写入转录后调用）。
   pub fn touch(&self) {
     self.last_active_at.store(now_ms(), Ordering::Release);
@@ -380,6 +397,22 @@ mod tests {
     session.append_messages(&messages);
 
     assert_eq!(session.snapshot(), messages);
+  }
+
+  // 场景：message_count 只读长度、不克隆消息体。
+  // 预期：条数与 snapshot().len() 一致；追加后同步增长；空切片不改变。
+  #[test]
+  fn message_count_matches_snapshot_len() {
+    let session = Session::new("s1");
+    assert_eq!(session.message_count(), 0);
+
+    session
+      .append_messages(&[fixed_user_message("a"), fixed_user_message("b")]);
+    assert_eq!(session.message_count(), 2);
+    assert_eq!(session.message_count(), session.snapshot().len());
+
+    session.append_messages(&[]);
+    assert_eq!(session.message_count(), 2);
   }
 
   // 场景：touch 刷新最近活跃时间。

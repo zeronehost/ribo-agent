@@ -1,56 +1,116 @@
 name: release
 
 # 打 tag（v*）或手动触发：编译 Windows / Linux / macOS 的二进制并发布到
-# GitHub Release。
+# GitHub Release，随后把 Release 同步到 Gitee，形成完整发布闭环。
+#   preflight（校验）→ build（5 个 target）→ release（GitHub）→ sync-to-gitee
 #
-# Linux 采用 musl 静态链接：单一二进制不依赖系统 glibc，可直接运行于
-# 全部主流发行版（Debian / Ubuntu / RHEL / Alpine 等），x64 与 arm64 双架构。
-#   Linux  x64    x86_64-unknown-linux-musl   （ubuntu-latest）
-#   Linux  arm64  aarch64-unknown-linux-musl  （ubuntu-24.04-arm 原生）
-#   macOS  x64    x86_64-apple-darwin         （macos-latest 交叉编译）
-#   macOS  arm64  aarch64-apple-darwin        （macos-latest 原生）
-#   Windows x64   x86_64-pc-windows-msvc      （windows-latest）
+#   Windows x64       x86_64-pc-windows-msvc       （windows-latest）
+#   Linux   x64 musl  x86_64-unknown-linux-musl    （ubuntu-latest）
+#   Linux   arm64 musl aarch64-unknown-linux-musl  （ubuntu-24.04-arm 原生）
+#   Linux   arm64 gnu aarch64-unknown-linux-gnu    （ubuntu-24.04-arm 原生）
+#     树莓派 3 / 4 / 5 / Zero 2 W 及后续 64 位系统
+#   macOS   arm64     aarch64-apple-darwin         （macos-latest 原生）
 #
-# 注：macOS 双架构共用 macos-latest（ARM host）——macOS host 可直接交叉
-# 编译 x86_64-apple-darwin，规避即将退休的 Intel runner 标签。
+# Linux 通用包只出 musl（静态，Alpine 与任意发行版可用）；树莓派例外，
+# 单独提供 gnu 包以贴合 Raspberry Pi OS 的 glibc 生态。
+# 32 位树莓派（Zero / 1 / 2）不出包：Cranelift 无 32 位后端，插件须走
+# Pulley 解释器（约慢 10 倍），且交叉编译需额外 C 工具链，投入产出不划算。
+# 产物以完整 target 名命名，各变体互不覆盖。
 #
-# 依赖为纯 Rust TLS（rustls），无 OpenSSL 等系统库依赖；
-# wasmtime cranelift 与 ring 均支持上述全部 target（含 musl）。
+# 依赖为纯 Rust TLS（rustls），无 OpenSSL 等系统库依赖。
+#
+# 手动触发两种用法：
+# - 默认：只构建不发布（release / sync job 自动跳过），用于验证交叉编译；
+# - 勾选「仅同步」并填 tag：跳过构建，把已有 GitHub Release 补录到 Gitee。
+#
+# Gitee 同步前置条件：仓库 Secret GITEE_TOKEN（Gitee 私人令牌，勾 projects）。
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      sync_only:
+        description: '仅同步已有 GitHub Release 到 Gitee（不重新构建）'
+        required: false
+        type: boolean
+        default: false
+      tag_name:
+        description: '要同步的 Tag（例如 v1.2.3）；仅「仅同步」模式下需要'
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  GITEE_OWNER: 'zeronehost'
+  GITEE_REPO: 'ribo-agent'
 
 jobs:
+  # 发布前校验：tag 必须指向 main 最新提交，且 Cargo.lock 与 Cargo.toml 一致。
+  # 两个校验都失败在编译前，避免 5 个 matrix job 各跑一遍才暴露同一个问题。
+  # 不接入 rust-cache：本 job 只做元数据解析，缓存无命中收益，只浪费配额。
+  preflight:
+    name: preflight
+    if: ${{ !inputs.sync_only }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+
+      # 必须是完整 metadata（不能加 --no-deps）：lock 与清单不一致时，
+      # 只有完整解析才会报 "cannot update the lock file"。
+      - name: 校验 Cargo.lock 一致
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      # 仅 tag 发布需要校验指向；手动构建时 ref 是分支，校验无意义。
+      - name: 校验 tag 指向 main 最新提交
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # tag 触发时 checkout 的是游离 HEAD，需显式 fetch main
+          git fetch --depth=1 origin main
+          TAG_SHA="$(git rev-parse HEAD)"
+          MAIN_SHA="$(git rev-parse FETCH_HEAD)"
+          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
+            echo "::error::tag $TAG_NAME 指向 $TAG_SHA，但 main 是 $MAIN_SHA；请把 tag 移到最新 main 后重推"
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.target }})
+    needs: preflight
+    if: ${{ !inputs.sync_only }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Linux 通用 musl（静态）— Alpine 与任意发行版
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+          # 树莓派 64 位 gnu — Raspberry Pi 3 / 4 / 5 / Zero 2 W 及后续
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install musl toolchain (linux)
-        if: runner.os == 'Linux'
+      # 仅 musl target 需要 musl-gcc；gnu target 用系统原生 gcc，无需额外安装。
+      - name: Install musl toolchain (linux musl only)
+        if: runner.os == 'Linux' && endsWith(matrix.target, '-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust toolchain
@@ -66,7 +126,12 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # gnu target 固定用系统 cc：树莓派 arm64 gnu runner 是原生架构，cc 必定可用，
+      # 避免交叉编译器命名差异导致链接失败。
       - name: Build release binaries
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc
         run: cargo build --release --locked --target ${{ matrix.target }} -p ra-cli -p ra-tui
 
       - name: Strip binaries
@@ -107,7 +172,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && !inputs.sync_only
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -122,3 +187,116 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  # 把 GitHub Release（标题、描述、附件）同步到 Gitee，形成闭环。
+  # 两种进入方式：tag 发布链上一步成功；或手动「仅同步」补录。
+  # 用 always() 包住，避免手动模式下 release 被跳过时本 job 也被连带跳过。
+  sync-to-gitee:
+    name: sync to gitee
+    needs: release
+    if: ${{ always() && (inputs.sync_only || needs.release.result == 'success') }}
+    runs-on: ubuntu-latest
+    # 实测完整同步约 39 分钟（pip 安装 + 跨境上传附件），60 分钟留足余量。
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # action-gitee-release 每次运行都会 pip install；复用 pip 缓存可省去重复下载。
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-gitee-release-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-gitee-release-
+
+      - name: Resolve tag
+        id: resolve_tag
+        env:
+          TAG_INPUT: ${{ inputs.tag_name }}
+        run: |
+          TAG="${TAG_INPUT:-${GITHUB_REF_NAME}}"
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            echo "::error::无法确定要同步的 Tag；请在「仅同步」模式下填写 tag_name"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Syncing release: $TAG"
+
+      - name: Get Release Info
+        id: release_info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.resolve_tag.outputs.tag }}
+        run: |
+          RELEASE_INFO=$(gh release view "$TAG_NAME" --json name,body,targetCommitish,assets)
+          {
+            echo "release_name=$(echo "$RELEASE_INFO" | jq -r '.name')"
+            echo "target_commitish=$(echo "$RELEASE_INFO" | jq -r '.targetCommitish')"
+            echo "asset_count=$(echo "$RELEASE_INFO" | jq '.assets | length')"
+            echo "release_body<<EOF"
+            echo "$RELEASE_INFO" | jq -r '.body'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download Release Assets
+        id: check_assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.resolve_tag.outputs.tag }}
+          ASSET_COUNT: ${{ steps.release_info.outputs.asset_count }}
+        run: |
+          mkdir -p release_assets
+          # 无附件时 gh release download 会报错退出，这里按附件数提前跳过；
+          # 有附件却下载失败必须报错，不能用 || true 吞掉网络/权限故障。
+          if [ "$ASSET_COUNT" -gt 0 ]; then
+            gh release download "$TAG_NAME" --dir release_assets
+          fi
+          if [ -z "$(ls -A release_assets)" ]; then
+            echo "HAS_ASSETS=false" >> "$GITHUB_OUTPUT"
+            echo "No assets found, syncing release metadata only."
+          else
+            echo "HAS_ASSETS=true" >> "$GITHUB_OUTPUT"
+            ls -la release_assets/
+          fi
+
+      - name: Create Gitee Release with Assets
+        if: steps.check_assets.outputs.HAS_ASSETS == 'true'
+        uses: nICEnnnnnnnLee/action-gitee-release@v2.0.0
+        with:
+          gitee_action: create_release
+          gitee_owner: ${{ env.GITEE_OWNER }}
+          gitee_repo: ${{ env.GITEE_REPO }}
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          gitee_tag_name: ${{ steps.resolve_tag.outputs.tag }}
+          gitee_release_name: ${{ steps.release_info.outputs.release_name }}
+          gitee_release_body: ${{ steps.release_info.outputs.release_body }}
+          gitee_target_commitish: ${{ steps.release_info.outputs.target_commitish }}
+          gitee_upload_retry_times: 3
+          gitee_files: |
+            release_assets/*
+
+      - name: Create Gitee Release (No Assets)
+        if: steps.check_assets.outputs.HAS_ASSETS == 'false'
+        uses: nICEnnnnnnnLee/action-gitee-release@v2.0.0
+        with:
+          gitee_action: create_release
+          gitee_owner: ${{ env.GITEE_OWNER }}
+          gitee_repo: ${{ env.GITEE_REPO }}
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          gitee_tag_name: ${{ steps.resolve_tag.outputs.tag }}
+          gitee_release_name: ${{ steps.release_info.outputs.release_name }}
+          gitee_release_body: ${{ steps.release_info.outputs.release_body }}
+          gitee_target_commitish: ${{ steps.release_info.outputs.target_commitish }}
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf release_assets/
+
+      - name: Summary
+        if: success()
+        env:
+          TAG_NAME: ${{ steps.resolve_tag.outputs.tag }}
+        run: |
+          echo "Synced release $TAG_NAME to Gitee."
+          echo "https://gitee.com/${{ env.GITEE_OWNER }}/${{ env.GITEE_REPO }}/releases/tag/$TAG_NAME"

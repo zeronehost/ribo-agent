@@ -7,7 +7,7 @@ Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ri
 ![ribo-tui screenshot](screenshots/tui-chat.png)
 
 - License: [Mulan Permissive Software License, v2 (MulanPSL-2.0)](LICENSE)
-- Toolchain: Rust **1.85.0+**, `edition = 2024`
+- Toolchain: Rust **1.100.0** (pinned by `rust-toolchain.toml`), `edition = 2024`
 
 ---
 
@@ -19,7 +19,7 @@ Ribo Agent ships two binaries — `ribo` (a streaming command-line REPL) and `ri
 - **Gateway resilience**: request retries (exponential backoff + jitter), first-token timeout, cross-provider fallback, circuit breaking, and admission control.
 - **Sessions & context**: session persistence, configurable context compaction (summary / sliding window), system prompt and environment injection.
 - **Skill system**: loads `SKILL.md` skills from scan roots; load diagnostics are non-fatal.
-- **Layered configuration**: six independent layers (provider / retry / compression / session / tools / harness); falls back to Mock mode when unconfigured in debug builds (release builds abort with `config.no_providers_in_release` instead). Also supports two trust domains (Project / Global) and two trust tiers (documents trusted by default, code requires explicit grant); data outside the project is exposed read-only via global `[fs.mounts]`.
+- **Layered configuration**: eight independent layers (provider / routing / retry / compression / session / tools / harness / global); falls back to Mock mode when unconfigured in debug builds (release builds abort with `config.no_providers_in_release` instead). Also supports two trust domains (Project / Global) and two trust tiers (documents trusted by default, code requires explicit grant); data outside the project is exposed read-only via global `[fs.mounts]`.
 
 ---
 
@@ -41,14 +41,14 @@ The workspace is organized in `Cargo.toml` with `resolver = "3"`; members are `c
 
 ## Requirements
 
-- Rust toolchain **1.85.0** or newer (`edition 2024`).
+- Rust toolchain **1.100.0** (pinned by `rust-toolchain.toml` at the repository root, `edition = 2024`).
 - The project is distributed as an executable application; committing `Cargo.lock` is recommended.
 
 ---
 
 ## Download Prebuilt Binaries
 
-No need to build from source: [GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) provides prebuilt binaries for Windows (x64), macOS (x64 / arm64), and Linux (x64 / arm64, statically linked with musl). Download the archive for your platform, extract it, and put `ribo` / `ribo-tui` on your `PATH`.
+No need to build from source: [GitHub Releases](https://github.com/zeronehost/ribo-agent/releases) provides prebuilt binaries for Windows (x64), macOS (arm64), and Linux (x64 / arm64). General Linux builds are `musl` (statically linked, no system library dependency, for Alpine and any glibc version); a separate `aarch64-unknown-linux-gnu` build targets 64-bit Raspberry Pi OS (Pi 3 / 4 / 5 / Zero 2 W and later). No prebuilt package is available for 32-bit Raspberry Pi (Zero / 1 / 2). Download the archive for your platform, extract it, and put `ribo` / `ribo-tui` on your `PATH`.
 
 ---
 

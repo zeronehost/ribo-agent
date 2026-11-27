@@ -130,6 +130,41 @@ fn unreachable_guest() -> Vec<u8> {
   .expect("valid unreachable wat")
 }
 
+/// 真实 `(start ...)` 段 trap guest：`unreachable` 位于 start 函数体内，
+/// 在 `linker.instantiate` 期执行（而非 execute 调用期）即触发
+/// `Trap::UnreachableCodeReached`。区别于 `memory_hog_guest`（顶层内存
+/// 声明触发 StoreLimits），本用例专门验证 start 段执行期 trap 的分类路径。
+fn start_section_unreachable_guest() -> Vec<u8> {
+  wat::parse_str(
+    r#"(module
+      (memory (export "memory") 1)
+      (func $boot unreachable)
+      (start $boot)
+      (func (export "alloc") (param i32) (result i32) (i32.const 16))
+      (func (export "dealloc") (param i32 i32))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (i32.const 0) (i32.const 0)))"#,
+  )
+  .expect("valid start-unreachable wat")
+}
+
+/// 真实 `(start ...)` 段死循环 guest：start 函数体内无限循环，
+/// 由 epoch 在 instantiate 期确定性中断（`Trap::Interrupt`）。
+/// 与 `deadloop_guest` 的区别仅在 trap 发生于实例化期而非 execute 期。
+fn start_section_deadloop_guest() -> Vec<u8> {
+  wat::parse_str(
+    r#"(module
+      (memory (export "memory") 1)
+      (func $boot (loop (br 0)))
+      (start $boot)
+      (func (export "alloc") (param i32) (result i32) (i32.const 16))
+      (func (export "dealloc") (param i32 i32))
+      (func (export "execute") (param i32 i32 i32 i32) (result i32 i32)
+        (i32.const 0) (i32.const 0)))"#,
+  )
+  .expect("valid start-deadloop wat")
+}
+
 /// 缺失 memory 导出的 guest（memory 必须显式导出）。
 fn missing_memory_guest() -> Vec<u8> {
   wat::parse_str(
@@ -241,6 +276,58 @@ async fn guest_trap_maps_to_exec_failed() {
   .await
   .unwrap_err();
   assert_eq!(err.code(), PLUGIN_EXEC_FAILED, "got: {err}");
+}
+
+/// 场景（B1 start 段 trap 专测）：真实 `(start ...)` 段 `unreachable`
+/// 在 `linker.instantiate` 期触发结构化 `Trap::UnreachableCodeReached`，
+/// 经 `classify_wasmtime_error` → `GuestError` →
+/// `plugin.plugin_exec_failed`（业务级、可回灌 LLM）。
+///
+/// 这是与 `memory_hog_guest_hits_store_limits` 不同的分类分支：
+/// 后者是顶层内存超限（StoreLimits → 字符串措辞 → Timeout），
+/// 而 start 段函数体 trap 走 `classify_trap` 的结构化 Trap 判定。
+/// 契约要点：不得因兜底分支误判 `plugin_internal`（否则误计熔断）；
+/// 即使 guest 未导出 `execute`，也必须在实例化期就被正确分类。
+#[tokio::test]
+async fn start_section_trap_maps_to_exec_failed() {
+  let err = run_guest(
+    &start_section_unreachable_guest(),
+    &full_acl(),
+    "boot_trap",
+    json!({}),
+    Duration::from_secs(2),
+  )
+  .await
+  .unwrap_err();
+  assert_eq!(err.code(), PLUGIN_EXEC_FAILED, "got: {err}");
+  // 结构化 Trap 的 reason 为 wasmtime 的 unreachable 措辞，须回灌到 message
+  assert!(
+    err.message().contains("unreachable"),
+    "reason must come from structured trap, got: {err}"
+  );
+}
+
+/// 场景（B1 start 段 trap 专测）：`(start ...)` 段纯 CPU 死循环被 epoch
+/// 在实例化期确定性中断（`Trap::Interrupt`）→
+/// `plugin.plugin_timeout`（资源限制，白名单不计熔断），
+/// 而非 `plugin_internal`。钉住「start 段 trap 不一律判 Internal」契约。
+#[tokio::test]
+async fn start_section_deadloop_is_interrupted_by_epoch() {
+  let started = std::time::Instant::now();
+  let err = run_guest(
+    &start_section_deadloop_guest(),
+    &full_acl(),
+    "boot_spin",
+    json!({}),
+    Duration::from_millis(100),
+  )
+  .await
+  .unwrap_err();
+  assert_eq!(err.code(), PLUGIN_TIMEOUT, "got: {err}");
+  // ceil 语义：等待 ≥ 请求的 timeout，且不超过 timeout + 若干 tick
+  let elapsed = started.elapsed();
+  assert!(elapsed >= Duration::from_millis(100), "elapsed {elapsed:?}");
+  assert!(elapsed < Duration::from_secs(3), "elapsed {elapsed:?}");
 }
 
 /// 场景：guest 未显式导出 `memory` →
@@ -505,11 +592,17 @@ async fn oversized_tool_name_maps_to_guest_error() {
 
 // 补充用例
 
-// 说明：`instantiate` / start 段 trap 分类由既有
-// `memory_hog_guest_hits_store_limits` 覆盖——`(memory 64)` 在模块顶层
-// 声明即实例化期分配，`StoreLimits` 在 `linker.instantiate` 时拦截，
-// 经分类映射 `plugin.plugin_timeout`（白名单不计熔断，配套
-// registry.rs `plugin_timeout_and_forbidden_do_not_open_circuit`）。
+// 说明：`instantiate` 期 trap 分类现由三类专测分别覆盖，不可互相替代：
+// - `memory_hog_guest_hits_store_limits`：顶层 `(memory 1024)` 声明在
+//   instantiate 期被 StoreLimits 拦截 → 字符串措辞分类 → plugin_timeout
+//   （白名单不计熔断，配套 registry.rs 的
+//   `plugin_timeout_and_forbidden_do_not_open_circuit`）；
+// - `start_section_trap_maps_to_exec_failed`：真实 `(start ...)` 段
+//   `unreachable` → 结构化 Trap 分类 → plugin_exec_failed；
+// - `start_section_deadloop_is_interrupted_by_epoch`：`(start ...)` 段
+//   死循环 → epoch Interrupt → plugin_timeout。
+// 旧注释曾称 start 段 trap 由内存超限用例覆盖，但二者走的分类分支不同，
+// 已由上述专测分别钉住（ai_0018 §4.2 B1）。
 
 /// 计数 guest：`alloc` 累加 leaked、`dealloc` 扣减、导出 `leaked()`
 /// 读取——用于验证宿主侧 RAII 守卫确实调用了 guest dealloc。

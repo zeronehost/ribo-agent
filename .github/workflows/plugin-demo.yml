@@ -32,14 +32,10 @@ jobs:
           toolchain: "1.100.0"
           targets: wasm32-unknown-unknown
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: plugin-demo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # 与 ci.yml / release.yml 统一：只缓存依赖产物并自动清理，
+      # 避免缓存整个 target（含 wasm32 guest 产物）占用过多配额。
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       # e2e 测试内部会先构建 wasm32 guest 再走宿主全链路
       # （加载 → 注册 → 执行 → 超时 / 越权断言），见 tests/e2e.rs

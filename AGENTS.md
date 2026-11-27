@@ -4,7 +4,7 @@ Ribo Agent — 一个模块化的 Rust 工作空间，用于构建支持工具�
 
 ## 开发环境
 
-- Rust 1.85.0+，edition 2024。
+- Rust 1.100.0（由 `rust-toolchain.toml` 固定），edition 2024。
 - 应用项目应提交 `Cargo.lock`。
 
 ## 质量门禁
@@ -101,6 +101,17 @@ tracing::info!(provider = %provider, "provider init");
 - 所有文档必须使用中文，除非特殊说明，如 `README.en.md` 使用英文
 - 必须符合 markdown 规范
 
+## 变更日志（CHANGELOG.md）
+
+- 项目根目录维护 `CHANGELOG.md`，记录所有值得注意的变更；文件名与位置固定，不另建同类文件。
+- 格式遵循 [Keep a Changelog 1.1.0](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
+- 版本划分以仓库 tag 为准：已打 tag 的改动归入对应版本；未打 tag 的改动归入当前版本——若 `Cargo.toml` 的 `version` 字段已更新，则以该字段为准，否则在最后一个 tag 的版本号上自增补丁号。
+- 每个版本按「新增 / 变更 / 修复 / 移除」四类组织；某类无内容时可省略。
+- 条目使用中文，描述变更的**影响与原因**，不写提交流水账。
+- **只记录被 git 跟踪的文件变更**：不得出现 `.gitignore` 忽略的文件或目录的改动，也不得以路径形式引用它们（当前忽略项包括 `todo/`、`.ribo/`、`.workbuddy/`、`tmp/`、`tmps/`、`docs/book/`、`target/`、`debug/`、`internals/docs/reports/`、`ribo*.toml` 等；以实际 `.gitignore` 为准）。被忽略目录中的设计过程文档不进入 CHANGELOG，仅保留其对已跟踪代码变更的影响描述。
+- 完成用户交付的改动后，按上述规则同步更新当前版本段落；打 tag 发布时只补上该版本的发布日期，不再新建「未发布」段落。
+- 破坏性变更与安全修复必须显式标注，不得混入普通条目。
+
 ## 代理工作约定
 
 - 完成 Rust 代码修改后，自动运行 `cargo fmt --all`，无需询问。
@@ -130,3 +141,5 @@ cargo test --workspace
 - 关键逻辑有英文日志。
 - 日志中没有敏感信息。
 - 需要外部服务的测试已标记 `#[ignore]`。
+
+**禁止提交代码**
