@@ -245,6 +245,10 @@ pub struct SessionSchema {
   pub default_key: String,
   /// 预留字段：`/history` 缺省条数当前固定为 10，暂不读取此配置。
   pub history_lines: usize,
+  /// 单回合最大迭代轮数（一轮 = 一次助手响应 + 其工具批）。
+  /// 超限返回 `agent.max_iterations`；已产出消息保留在转录供续跑。
+  /// 默认 150，与 `LoopConfig::DEFAULT_MAX_ITERATIONS` 对齐。
+  pub max_iterations: usize,
 }
 
 impl Default for SessionSchema {
@@ -252,6 +256,7 @@ impl Default for SessionSchema {
     Self {
       default_key: "default".to_string(),
       history_lines: 10,
+      max_iterations: ra_agent::types::LoopConfig::DEFAULT_MAX_ITERATIONS,
     }
   }
 }

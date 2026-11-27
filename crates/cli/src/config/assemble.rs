@@ -1256,7 +1256,8 @@ fn assemble_impl(
     tools,
     context_provider: context.clone() as Arc<dyn ContextProvider>,
   };
-  let agent = BaseAgent::new(deps, provider.clone());
+  let agent = BaseAgent::new(deps, provider.clone())
+    .with_max_iterations(outcome.session.max_iterations);
   let harness = Arc::new(Harness::new(agent, provider, store));
   let events = harness.subscribe(); // 透传
   Ok(CliSession {

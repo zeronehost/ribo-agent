@@ -1392,4 +1392,111 @@ mod tests {
       "degraded budget must be raw_budget (10), not 0"
     );
   }
+
+  /// 摘要超时：mock 静默 300s 远大于 SUMMARY_TIMEOUT(30s)，
+  /// start_paused 虚拟时钟推进到 30s 触发超时 → 回退滑窗，
+  /// reason=SummaryFailed、summary=None、messages 仅保留最近轮。
+  #[tokio::test(start_paused = true)]
+  async fn summary_timeout_falls_back_to_sliding_window() {
+    let (gateway, model) = make_gateway_and_model(
+      vec![MockStep::Silent {
+        duration: Duration::from_secs(300),
+      }],
+      64,
+    );
+    let compactor = Compactor::new(gateway, model);
+    let messages = padded_messages();
+    let config = CompactionConfig {
+      summarizer_model: Some(ModelId::parse("mock-model").unwrap()),
+      ..enabled_config()
+    };
+
+    let outcome = compactor.compact("s1", &messages, &config, None).await;
+
+    assert_eq!(outcome.reason, CompactionReason::SummaryFailed);
+    assert!(outcome.summary.is_none());
+    assert!(outcome.fallback_hint);
+    assert_eq!(outcome.messages.len(), 4);
+  }
+
+  /// 取消令牌注入：摘要请求发出前会话令牌已取消 → 网关建流前检测取消，
+  /// 回退滑窗且 reason=SummaryFailed。
+  /// 使用本应成功的文本步骤：若 cancel 未透传，摘要会成功，本测试即失败。
+  #[tokio::test]
+  async fn cancelled_token_falls_back_before_summary() {
+    let (gateway, model) =
+      make_gateway_and_model(vec![text_step("should not appear")], 64);
+    let compactor = Compactor::new(gateway, model);
+    let messages = padded_messages();
+    let config = CompactionConfig {
+      summarizer_model: Some(ModelId::parse("mock-model").unwrap()),
+      ..enabled_config()
+    };
+    let cancel = CancelToken::new();
+    cancel.cancel();
+
+    let outcome = compactor
+      .compact("s1", &messages, &config, Some(cancel))
+      .await;
+
+    assert_eq!(outcome.reason, CompactionReason::SummaryFailed);
+    assert!(outcome.summary.is_none());
+    assert!(outcome.fallback_hint);
+  }
+
+  /// 空文本：mock 流以空消息收敛（无 TextDelta）→ run_summarize
+  /// 返回 Err("summary stream produced no text")，由 compact 折叠为回退。
+  #[tokio::test]
+  async fn run_summarize_reports_no_text_for_empty_stream() {
+    let (gateway, model) =
+      make_gateway_and_model(vec![MockStep::Events(vec![])], 64);
+    let compactor = Compactor::new(gateway, model);
+    let summary_input = vec![user("content to summarize")];
+    let model_id = ModelId::parse("mock-model").unwrap();
+
+    let result = compactor
+      .run_summarize(&summary_input, &model_id, None)
+      .await;
+
+    assert_eq!(result, Err("summary stream produced no text".to_string()));
+  }
+
+  /// 冷却递减至 0 后重新触发：cooldown_turns=1，第一轮成功（冷却=1）、
+  /// 第二轮冷却抑制递减到 0 复用摘要、第三轮冷却为 0 且消息量翻倍
+  /// 突破滞回门槛 → 重新摘要并消耗第二个 mock 步骤。
+  #[tokio::test]
+  async fn cooldown_expires_then_resummaries() {
+    let (gateway, model) =
+      make_gateway_and_model(vec![text_step("first"), text_step("third")], 64);
+    let compactor = Compactor::new(gateway, model);
+    let messages = padded_messages();
+    let config = CompactionConfig {
+      summarizer_model: Some(ModelId::parse("mock-model").unwrap()),
+      cooldown_turns: 1,
+      ..enabled_config()
+    };
+
+    let first = compactor.compact("s1", &messages, &config, None).await;
+    assert_eq!(first.reason, CompactionReason::Summarized);
+    assert_eq!(first.summary.as_deref(), Some("first"));
+
+    // 第二轮：冷却抑制（1→0），复用摘要，不消耗 mock 步骤
+    let second = compactor.compact("s1", &messages, &config, None).await;
+    assert_eq!(second.reason, CompactionReason::CooldownSuppressed);
+    assert_eq!(second.summary.as_deref(), Some("first"));
+
+    // 第三轮：消息翻倍 → estimated 突破 1.10× 滞回门槛 → 重新摘要
+    let mut bigger = messages.clone();
+    for i in 10..20 {
+      bigger.push(user(&format!(
+        "question number {i} with some padding text to inflate char count"
+      )));
+      bigger.push(assistant(&format!(
+        "answer {i} also padded with additional text to ensure budget overflow"
+      )));
+    }
+    let third = compactor.compact("s1", &bigger, &config, None).await;
+    assert_eq!(third.reason, CompactionReason::Summarized);
+    assert_eq!(third.summary.as_deref(), Some("third"));
+  }
 }

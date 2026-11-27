@@ -2,7 +2,7 @@
 
 ## 环境要求
 
-- Rust 工具链（stable，edition 2024）
+- Rust 工具链 **1.100.0**（由仓库根目录 `rust-toolchain.toml` 固定，edition 2024）
 - Windows / macOS / Linux 均可
 
 ## 构建

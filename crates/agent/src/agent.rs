@@ -24,6 +24,8 @@ pub struct BaseAgent {
   deps: LoopDeps,
   sessions: Arc<dyn SessionProvider>,
   emitter: BroadcastEmitter,
+  /// 单回合最大迭代轮数（由配置注入，默认取 LoopConfig::DEFAULT_MAX_ITERATIONS）。
+  max_iterations: usize,
 }
 
 impl BaseAgent {
@@ -34,7 +36,16 @@ impl BaseAgent {
       deps,
       sessions,
       emitter,
+      max_iterations: LoopConfig::DEFAULT_MAX_ITERATIONS,
     }
+  }
+
+  /// 覆盖单回合最大迭代轮数（builder 风格，消费并返回自身）。
+  ///
+  /// 由装配层从配置 `[session] max_iterations` 注入；未调用时保持默认。
+  pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+    self.max_iterations = max_iterations;
+    self
   }
 
   /// 提交一批消息并驱动循环跑完，返回本次新增消息。
@@ -50,7 +61,8 @@ impl BaseAgent {
   ) -> RiboResult<Vec<Message>> {
     let session = self.sessions.get_or_create(session_key).await?;
 
-    let config = LoopConfig::for_session(&session);
+    let config = LoopConfig::for_session(&session)
+      .with_max_iterations(self.max_iterations);
 
     let emitter: Arc<dyn AgentEmitter> = Arc::new(self.emitter.clone());
     let report =
@@ -72,7 +84,8 @@ impl BaseAgent {
       .get(session_key)
       .await
       .ok_or_else(|| session_not_found(session_key))?;
-    let config = LoopConfig::for_session(&session);
+    let config = LoopConfig::for_session(&session)
+      .with_max_iterations(self.max_iterations);
     let emitter: Arc<dyn AgentEmitter> = Arc::new(self.emitter.clone());
     let report =
       run_agent_loop_continue(&self.deps, &session, &config, emitter).await?;

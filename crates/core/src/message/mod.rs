@@ -139,16 +139,32 @@ pub fn estimate_tokens_from_chars(text: &str) -> usize {
 /// 按加权字符口径估算消息序列的 token 占用（唯一真值）。
 ///
 /// 口径：各文本块加权字符数之和 / 4 + 每条消息 4 token 附加；
-/// 内联图片与工具调用占位不计（base64 会严重高估）。压缩触发、
-/// agent_loop 降级窗口、TUI ctx 占比三处共用此函数。
+/// 内联图片不计（base64 会严重高估），但**工具调用参数计入**——
+/// `ToolCall.arguments` 是明文 JSON，会完整发给模型，忽略它会系统性
+/// 低估（长会话里 toolCall 参数可达数千 token，使压缩永不触发、
+/// 真实请求越限）。压缩触发、agent_loop 降级窗口、TUI ctx 占比
+/// 三处共用此函数。
 /// ASCII 场景下与旧口径 `chars/4` 完全等价（定点累加后统一整除）。
 pub fn estimate_context_tokens(messages: &[Message]) -> usize {
   fn content_weight(content: &Content) -> usize {
     match content {
       Content::Text(t) => t.content.chars().map(char_token_weight).sum(),
       Content::Thinking(t) => t.content.chars().map(char_token_weight).sum(),
-      // 图片与工具调用占位不计（内联图片 base64 会严重高估）
-      Content::Image(_) | Content::ToolCall(_) => 0,
+      // 工具调用参数为明文 JSON（会随请求发给模型），按加权字符计入；
+      // 与 fingerprint_message 同口径取 arguments.to_string()；
+      // 工具名/id 元数据较短，一并计入更保守。
+      Content::ToolCall(call) => {
+        call.name.chars().map(char_token_weight).sum::<usize>()
+          + call.id.chars().map(char_token_weight).sum::<usize>()
+          + call
+            .arguments
+            .to_string()
+            .chars()
+            .map(char_token_weight)
+            .sum::<usize>()
+      }
+      // 内联图片 base64 会严重高估，保守计 0
+      Content::Image(_) => 0,
     }
   }
   // 各段返回放大 4 倍的定点权重，全局累加后一次整除——与旧 chars/4 对齐
@@ -351,5 +367,57 @@ mod tests {
     })];
     let tokens = estimate_context_tokens(&messages);
     assert_eq!(tokens, 100 + 4); // 100 CJK + 4×1条 消息开销
+  }
+
+  // 场景：工具调用参数不再被忽略（回归——旧口径 ToolCall 计 0，
+  // 长会话里参数可达数千 token，使压缩永不触发、真实请求越限）。
+  // 预期：一条含 toolCall 的助手消息，其估算值明显高于同构空调用消息，
+  // 且随参数文本增长而增长。
+  #[test]
+  fn estimate_context_tokens_counts_tool_call_arguments() {
+    fn with_arguments(value: serde_json::Value) -> Vec<Message> {
+      let mut assistant = AssistantMessage::empty("demo", "gpt", 0);
+      assistant.content = vec![Content::ToolCall(ToolCall {
+        id: "call_1".to_string(),
+        name: "read".to_string(),
+        arguments: value,
+        signature: None,
+        namespace: None,
+      })];
+      vec![Message::Assistant(assistant)]
+    }
+
+    let short = with_arguments(serde_json::json!({"path": "a"}));
+    // 100 个 ASCII 字符参数：信息量远大于短参数
+    let long_value = serde_json::json!({"path": "x".repeat(100)});
+    let long = with_arguments(long_value);
+    let short_tokens = estimate_context_tokens(&short);
+    let long_tokens = estimate_context_tokens(&long);
+    assert!(
+      long_tokens > short_tokens,
+      "longer tool arguments must yield a larger estimate: {short_tokens} vs {long_tokens}"
+    );
+    // 空参数调用仍有 name/id 元数据开销，绝不为 0
+    assert!(short_tokens > 0);
+  }
+
+  // 场景：工具调用参数按加权字符计入，CJK 参数不被低估。
+  // 预期：100 个汉字的参数文本至少贡献 100 token（不含元数据/消息开销）。
+  #[test]
+  fn estimate_context_tokens_tool_arguments_cjk_not_underestimated() {
+    let mut assistant = AssistantMessage::empty("demo", "gpt", 0);
+    assistant.content = vec![Content::ToolCall(ToolCall {
+      id: "c".to_string(),
+      name: "t".to_string(),
+      arguments: serde_json::json!({"q": "中".repeat(100)}),
+      signature: None,
+      namespace: None,
+    })];
+    let tokens = estimate_context_tokens(&[Message::Assistant(assistant)]);
+    // 100 CJK + JSON 结构/name/id 的 ASCII + 4 消息开销，必 ≥ 104
+    assert!(
+      tokens >= 104,
+      "CJK tool arguments must not be underestimated: got {tokens}"
+    );
   }
 }

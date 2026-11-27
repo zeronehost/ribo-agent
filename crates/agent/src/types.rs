@@ -72,7 +72,10 @@ pub struct LoopConfig {
 
 impl LoopConfig {
   /// 默认最大迭代轮数。
-  pub const DEFAULT_MAX_ITERATIONS: usize = 25;
+  ///
+  /// 150 轮为经验值：覆盖「读十几个文件 + 分析 + 总结」这类中等任务，
+  /// 同时保留循环保护。可由配置 `[session] max_iterations` 覆盖。
+  pub const DEFAULT_MAX_ITERATIONS: usize = 150;
 
   /// 由会话构造配置：复用会话内聚的队列与取消根。
   ///
@@ -160,7 +163,7 @@ mod tests {
   }
 
   // 场景：LoopConfig::for_session 复用会话内聚的队列与取消根。
-  // 预期：默认 25 轮；steering 队列与会话共享（会话入队后 config 侧可观测）；
+  // 预期：默认 150 轮；steering 队列与会话共享（会话入队后 config 侧可观测）；
   // abort 会话取消根后 config 信号同步触发。
   #[test]
   fn for_session_shares_queues_and_signal() {
@@ -168,7 +171,7 @@ mod tests {
     let config = LoopConfig::for_session(&session);
 
     assert_eq!(config.max_iterations, LoopConfig::DEFAULT_MAX_ITERATIONS);
-    assert_eq!(LoopConfig::DEFAULT_MAX_ITERATIONS, 25);
+    assert_eq!(LoopConfig::DEFAULT_MAX_ITERATIONS, 150);
 
     // 队列共享：会话入队后 config 侧锁内可见（非克隆副本）
     session.enqueue_steering(crate::traits::user_text_message("inject"));

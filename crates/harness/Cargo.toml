@@ -21,6 +21,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# start_paused 测试需要 test-util 特性（tokio 的 full 特性不包含它）；
+# 摘要超时分支用虚拟时钟确定性驱动 SUMMARY_TIMEOUT。
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 ra-tools = { workspace = true }
 toml.workspace = true

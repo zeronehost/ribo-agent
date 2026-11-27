@@ -961,6 +961,7 @@ mod tests {
     let outcome = LoadOutcome::load(None, None);
     assert_eq!(outcome.mode, ConfigMode::Mock);
     assert_eq!(outcome.session.default_key, "default");
+    assert_eq!(outcome.session.max_iterations, 150, "默认轮次 150");
     assert!(outcome.harness.include_environment);
 
     // 完整文件 → Real + 覆盖生效
@@ -992,6 +993,7 @@ fs_root = "tool-space"
 
 [session]
 history_lines = 5
+max_iterations = 200
 "#,
     )
     .expect("write");
@@ -1001,6 +1003,7 @@ history_lines = 5
     assert!(!outcome.harness.include_environment);
     assert!(outcome.fs_mounts.mounts.is_empty());
     assert_eq!(outcome.session.history_lines, 5);
+    assert_eq!(outcome.session.max_iterations, 200, "配置覆盖默认轮次");
     assert_eq!(outcome.provider.providers.len(), 1);
     assert_eq!(outcome.provider.providers[0].models[0].context_window, 8192); // 缺省
 

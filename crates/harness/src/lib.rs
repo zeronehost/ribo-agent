@@ -115,9 +115,21 @@ impl Harness {
     key: &str,
     messages: Vec<Message>,
   ) -> RiboResult<Vec<Message>> {
-    let new_messages = self.agent.prompt_messages(key, messages).await?;
-    self.store.append(key, &new_messages).await?;
-    Ok(new_messages)
+    // 先物化会话（与 BaseAgent 共享同一 Arc），记下调用前转录长度。
+    // 失败路径（如 agent.max_iterations）由循环写回内存转录，据此取增量落盘。
+    let session = self.provider.get_or_create(key).await?;
+    let before = session.message_count();
+
+    match self.agent.prompt_messages(key, messages).await {
+      Ok(new_messages) => {
+        self.store.append(key, &new_messages).await?;
+        Ok(new_messages)
+      }
+      Err(err) => {
+        self.append_error_path(key, &session, before).await;
+        Err(err)
+      }
+    }
   }
 
   /// 续跑（无新输入）。
@@ -125,10 +137,44 @@ impl Harness {
   /// 冷启动必须先物化会话：`BaseAgent::continue_run` 内部走 `sessions.get`，
   /// 未知键会返回 `agent.session_not_found`。
   pub async fn continue_run(&self, key: &str) -> RiboResult<Vec<Message>> {
-    self.provider.get_or_create(key).await?;
-    let new_messages = self.agent.continue_run(key).await?;
-    self.store.append(key, &new_messages).await?;
-    Ok(new_messages)
+    let session = self.provider.get_or_create(key).await?;
+    let before = session.message_count();
+    match self.agent.continue_run(key).await {
+      Ok(new_messages) => {
+        self.store.append(key, &new_messages).await?;
+        Ok(new_messages)
+      }
+      Err(err) => {
+        self.append_error_path(key, &session, before).await;
+        Err(err)
+      }
+    }
+  }
+
+  /// 错误路径兜底落盘：把循环已写回内存转录、但尚未落盘的增量消息落盘。
+  ///
+  /// `run_agent_loop` 在成功与失败路径都会 `session.append_messages(&msgs)`；
+  /// 此前上层用 `?` 在 Err 时提前返回，跳过落盘，导致轮次耗尽等错误的产出
+  /// 只存在于内存、重启即丢。这里取调用前后快照差量补写，落盘失败仅告警、
+  /// 不覆盖原始业务错误。
+  async fn append_error_path(
+    &self,
+    key: &str,
+    session: &std::sync::Arc<ra_agent::session::Session>,
+    before: usize,
+  ) {
+    let snapshot = session.snapshot();
+    if snapshot.len() <= before {
+      return;
+    }
+    let produced = &snapshot[before..];
+    if let Err(err) = self.store.append(key, produced).await {
+      tracing::warn!(
+        session_key = %key,
+        error = %err,
+        "error path transcript append failed"
+      );
+    }
   }
 
   /// 读取会话完整转录（冷启动会触发一次回放，但不产生磁盘写入）。

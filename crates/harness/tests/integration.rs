@@ -67,19 +67,69 @@ fn mock_gateway(steps: Vec<MockStep>) -> Arc<Gateway> {
   Arc::new(gateway)
 }
 
+/// 回显工具边界：执行 echo 调用并返回成功结果（用于制造多轮 tool_use）。
+struct EchoTools;
+
+#[async_trait::async_trait]
+impl ToolProvider for EchoTools {
+  async fn get_tool_schemas(&self) -> Vec<ToolSchema> {
+    Vec::new()
+  }
+
+  async fn execute(
+    &self,
+    call: ra_core::message::ToolCall,
+    _ctx: ToolContext,
+  ) -> RiboResult<ToolExecutionResult> {
+    Ok(ToolExecutionResult {
+      content: vec![ra_tools::types::ToolOutput::Text(TextContent {
+        content: call.arguments["text"].as_str().unwrap_or("ok").to_string(),
+        signature: None,
+      })],
+      ..Default::default()
+    })
+  }
+
+  fn execution_mode(&self, _name: &str) -> ToolExecutionMode {
+    ToolExecutionMode::Sequential
+  }
+}
+
 /// 组装一轮 Harness（共享同一 store 目录）。
 fn build_harness(
   store: Arc<JsonlSessionStore>,
   steps: Vec<MockStep>,
 ) -> (Harness, Arc<PersistentSessionProvider>) {
+  build_harness_tuned(store, steps, None)
+}
+
+/// 可注入 max_iterations 的构造器（None = 用默认轮次）。
+fn build_harness_tuned(
+  store: Arc<JsonlSessionStore>,
+  steps: Vec<MockStep>,
+  max_iterations: Option<usize>,
+) -> (Harness, Arc<PersistentSessionProvider>) {
+  build_harness_full(store, steps, max_iterations, Arc::new(NoTools))
+}
+
+/// 完整构造器：可替换工具边界（超限场景需要 EchoTools）。
+fn build_harness_full(
+  store: Arc<JsonlSessionStore>,
+  steps: Vec<MockStep>,
+  max_iterations: Option<usize>,
+  tools: Arc<dyn ToolProvider>,
+) -> (Harness, Arc<PersistentSessionProvider>) {
   let provider = Arc::new(PersistentSessionProvider::new(store.clone()));
   let deps = LoopDeps {
     gateway: mock_gateway(steps),
     model: ModelId::parse("mock-model").expect("mock 模型 ID 合法"),
-    tools: Arc::new(NoTools),
+    tools,
     context_provider: Arc::new(PassthroughContextProvider::default()),
   };
-  let agent = BaseAgent::new(deps, provider.clone());
+  let mut agent = BaseAgent::new(deps, provider.clone());
+  if let Some(limit) = max_iterations {
+    agent = agent.with_max_iterations(limit);
+  }
   (Harness::new(agent, provider.clone(), store), provider)
 }
 
@@ -94,6 +144,22 @@ fn stop_step(text: &'static str) -> MockStep {
     })];
     msg.stop_reason = StopReason::Stop;
     (StopReason::Stop, msg)
+  }))
+}
+
+/// 构造 ToolUse 助手步骤（触发下一轮，配合极小 max_iterations 制造超限）。
+fn tool_use_step(call_id: &'static str) -> MockStep {
+  MockStep::Complete(Arc::new(move |_ctx| {
+    let mut msg = AssistantMessage::empty("mock", "mock-model", 0);
+    msg.content = vec![Content::ToolCall(ra_core::message::ToolCall {
+      id: call_id.to_string(),
+      name: "echo".to_string(),
+      arguments: serde_json::json!({ "text": "hi" }),
+      signature: None,
+      namespace: None,
+    })];
+    msg.stop_reason = StopReason::ToolUse;
+    (StopReason::ToolUse, msg)
   }))
 }
 
@@ -158,4 +224,64 @@ async fn session_survives_restart_without_duplicates() {
   let (harness3, _provider3) = build_harness(store.clone(), Vec::new());
   let final_snapshot = harness3.session_messages("s1").await.unwrap();
   assert_eq!(final_snapshot.len(), 5, "二次冷启动应含续跑产物");
+}
+
+/// 轮次耗尽的已产出消息不丢失：错误路径落盘 → 重启回放保留 → 可续跑。
+///
+/// 场景：max_iterations=1 + 首轮 tool_use（产出 user + 助手 + 工具结果后超限）
+/// → prompt 返回 agent.max_iterations → 磁盘含 3 条 → 重建后回放 3 条
+/// → 追加 user 后续跑成功并再落盘。
+#[tokio::test]
+async fn max_iterations_output_persists_and_can_continue() {
+  let dir = test_dir("max_iterations_output_persists_and_can_continue");
+  let config = HarnessConfig::new(dir.clone());
+  let store = Arc::new(JsonlSessionStore::new(config.sessions_dir()));
+
+  // 首轮 tool_use 产出工具结果，随后第 2 轮前触发超限（limit=1）。
+  let (harness, _provider) = build_harness_full(
+    store.clone(),
+    vec![tool_use_step("c1")],
+    Some(1),
+    Arc::new(EchoTools),
+  );
+  let err = harness
+    .prompt("s1", "analyze")
+    .await
+    .expect_err("应因轮次超限失败");
+  assert_eq!(err.code(), "agent.max_iterations");
+
+  // 内存转录含 3 条：user + 助手(tool_use) + 工具结果
+  let in_memory = harness.session_messages("s1").await.unwrap();
+  assert_eq!(in_memory.len(), 3);
+
+  // 关键：失败路径也已落盘（此前 ? 短路会跳过，重启后丢失）
+  drop(harness);
+  let (harness2, provider2) =
+    build_harness(store.clone(), vec![stop_step("resumed")]);
+  let replayed = harness2.session_messages("s1").await.unwrap();
+  assert_eq!(replayed.len(), 3, "超限产出应在重启后回放保留");
+
+  // 尾条为工具结果（非助手），可直接续跑
+  {
+    use ra_agent::traits::SessionProvider;
+    let session = provider2.get_or_create("s1").await.unwrap();
+    session.append_messages(&[user_text_message("continue")]);
+  }
+  let continued = harness2.continue_run("s1").await.unwrap();
+  assert_eq!(continued.len(), 1);
+  assert!(matches!(
+    continued[0],
+    ra_core::message::Message::Assistant(_)
+  ));
+
+  // 续跑产物落盘，再次冷启动含 4 条：超限产出 3 + 续跑助手 1。
+  // 手动 append 的 user 未走 harness 落盘路径，故不计入磁盘。
+  drop(harness2);
+  let (harness3, _provider3) = build_harness(store.clone(), Vec::new());
+  let final_snapshot = harness3.session_messages("s1").await.unwrap();
+  assert_eq!(final_snapshot.len(), 4, "续跑产物应落盘");
+  assert!(matches!(
+    final_snapshot.last().expect("非空转录"),
+    ra_core::message::Message::Assistant(_)
+  ));
 }

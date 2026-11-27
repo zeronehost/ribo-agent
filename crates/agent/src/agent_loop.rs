@@ -178,7 +178,15 @@ pub async fn run_agent_loop(
     msgs.push(message.clone());
   }
 
-  let outcome = run_loop(&mut context, &mut msgs, deps, config, &emitter).await;
+  let outcome = run_loop(
+    &session.key,
+    &mut context,
+    &mut msgs,
+    deps,
+    config,
+    &emitter,
+  )
+  .await;
 
   // 收尾（成功与失败路径统一执行）
   // 已产出消息写回转录（错误路径也不丢失），再复位运行状态
@@ -200,7 +208,9 @@ pub async fn run_agent_loop(
       })
     }
     Err(err) => {
-      tracing::warn!(session_key = %session.key, error_code = %err.code(), "agent run failed");
+      // 带 error 文本：max_iterations 等错误在 message 中携带「N > M」
+      // 轮次，失败日志单条即可读到耗尽点，无需逐行回数 turn start。
+      tracing::warn!(session_key = %session.key, error_code = %err.code(), error = %err, "agent run failed");
       Err(err)
     }
   }
@@ -229,6 +239,7 @@ pub async fn run_agent_loop_continue(
 ///
 /// `messages` / `context` 就地追加（入口收尾统一写回会话转录）。
 async fn run_loop(
+  session_key: &str,
   context: &mut AgentContext,
   new_messages: &mut Vec<Message>,
   deps: &LoopDeps,
@@ -245,9 +256,24 @@ async fn run_loop(
   // 内层条件：仍有工具调用待续（模型继续请求工具）或尚有排队注入
   'outer: loop {
     while has_more_tool_calls || !pending.is_empty() {
-      // 轮计数超限：已产出消息保留在转录（由入口收尾统一写回）
       turns += 1;
+      // 每轮开始留痕：日志可直接看到「第 N / max 轮」，失败时无需
+      // 反推轮次（27 号日志曾因缺此项无法定位轮次耗尽过程）。
+      tracing::info!(
+        session_key = %session_key,
+        turn = turns,
+        turns_limit = config.max_iterations,
+        "agent loop turn start"
+      );
+      // 轮计数超限：已产出消息保留在转录（由入口收尾统一写回）
       if turns > config.max_iterations {
+        // 补发终态事件：这是 run_loop 唯一不经 AgentEnd 收敛的错误路径，
+        // 缺失会让 TUI 的 turn 永久停留在 InFlight（app.rs 靠 AgentEnd 复位 Idle）。
+        emitter
+          .emit(AgentEvent::AgentEnd {
+            messages: new_messages.clone(),
+          })
+          .await;
         return Err(max_iterations(turns, config.max_iterations));
       }
 
@@ -1154,7 +1180,8 @@ mod tests {
 
   // 场景：max_iterations 超限。
   // 预期：第二轮前返回 agent.max_iterations；已产出消息（助手 + 工具结果）
-  // 写回转录；运行标志复位；只发生一次 LLM 调用。
+  // 写回转录；运行标志复位；只发生一次 LLM 调用；补发 agent_end 终态事件
+  //（否则 TUI turn 永久停留 InFlight）。
   #[tokio::test]
   async fn max_iterations_returns_error_and_writes_back() {
     let run = test_run_tuned(
@@ -1180,6 +1207,20 @@ mod tests {
     let result = tool_result_at(&snapshot, 2);
     assert_eq!(result.tool_call_id, "c1");
     assert!(!result.is_error);
+
+    // 错误路径仍补发 agent_end：恰好一个终态事件，且为末事件
+    let tags = run.collector.tags();
+    assert_eq!(tags.last().copied(), Some("agent_end"));
+    assert_eq!(
+      run
+        .collector
+        .snapshot()
+        .iter()
+        .filter(|event| event.is_terminal())
+        .count(),
+      1,
+      "仅一个终态事件"
+    );
   }
 
   // 场景：截断失败不变式——Length 且带工具调用时全部原位失败。

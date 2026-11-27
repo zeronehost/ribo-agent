@@ -7,7 +7,7 @@ Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端
 ![ribo-tui 界面截图](screenshots/tui-chat.png)
 
 - 许可证：[木兰宽松许可证，第 2 版（MulanPSL-2.0）](LICENSE)
-- 语言要求：Rust **1.85.0+**，`edition = 2024`
+- 语言要求：Rust **1.100.0**（由 `rust-toolchain.toml` 固定），`edition = 2024`
 
 ---
 
@@ -41,7 +41,7 @@ Ribo Agent 以 `ribo` / `ribo-tui` 两个二进制提供命令行与全屏终端
 
 ## 环境要求
 
-- Rust 工具链 **1.85.0** 或更高（`edition 2024`）。
+- Rust 工具链 **1.100.0**（由仓库根目录 `rust-toolchain.toml` 固定，`edition = 2024`）。
 - 应用形态为可执行程序，建议提交 `Cargo.lock`。
 
 ---
